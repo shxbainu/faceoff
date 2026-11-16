@@ -102,26 +102,24 @@ while (Date.now() - start < 9 * 60000 && results.length < MATCHES + 0.5) {
   const near = opps.reduce((m, k) => Math.min(m, Math.hypot(k.x - me.x, k.y - me.y)), 99);
   const dGoal = Math.hypot(L - me.x, me.y);
   if (p.owner === me.id) {
-    if (held.has('KeyK') && !shootUntil) shootUntil = now + 420;
+    if (held.has('KeyI') && !shootUntil) shootUntil = now + 420;
     if (shootUntil) {
-      want.add('KeyK');
-      if (now >= shootUntil) { want.delete('KeyK'); shootUntil = 0; }
-    } else if (dGoal < 10.5 && me.x < L - 1.5) { want.add('KeyK'); shootUntil = now + 450; }
+      want.add('KeyI');
+      if (now >= shootUntil) { want.delete('KeyI'); shootUntil = 0; }
+    } else if (dGoal < 10.5 && me.x < L - 1.5) { want.add('KeyI'); shootUntil = now + 450; }
     else if (near < 2.3 && now - lastPass > 900 && dGoal > 12) { lastPass = now; await tap('KeyJ'); }
     go(L - 5, me.y * 0.4);
-    if (dGoal > 14) want.add('ShiftLeft');
   } else {
     shootUntil = 0;
     const owner = s.skaters.find(k => k.id === p.owner);
     if ((owner && owner.team === 0) || (p.kind === 'pass' && p.target === me.id)) {
       const oy = owner ? owner.y : p.y;
       if (p.target === me.id) go(me.x + 0.01, me.y); else go(L - 7, oy > 0 ? -3.4 : 3.4);
-      if (dGoal < 12) { want.add('KeyK'); if (owner && now - lastCall > 700) { lastCall = now; await tap('KeyJ'); } }
+      if (dGoal < 12) { want.add('KeyI'); if (owner && now - lastCall > 700) { lastCall = now; await tap('KeyJ'); } }
     } else if (owner) {
       go(owner.x + owner.vx * 0.2, owner.y + owner.vy * 0.2);
       const d = Math.hypot(owner.x - me.x, owner.y - me.y);
-      if (d < 3.2 && now - lastCheck > 600) { lastCheck = now; await tap('KeyL'); }
-      if (d > 6) want.add('ShiftLeft');
+      if (d < 3.2 && now - lastCheck > 600) { lastCheck = now; await tap('ShiftLeft'); }
     } else go(p.x + p.vx * 0.25, p.y + p.vy * 0.25);
   }
   await hold(want);

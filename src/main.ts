@@ -28,7 +28,7 @@ function emptyPowers(): Record<PowerId, number> {
 
 // ---------------------------------------------------------------- input
 const keys = new Set<string>();
-const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyK', 'KeyL',
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyK', 'KeyL', 'KeyI', 'KeyU', 'KeyO', 'KeyQ',
   'ShiftLeft', 'ShiftRight', 'Space', 'Enter', 'Digit1', 'Digit2', 'Digit3', 'KeyR']);
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
@@ -46,7 +46,8 @@ function ctl(): Ctl {
     // the camera looks up-ice (+x), so screen up is +x and screen right is +y
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
     my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-    pass: k('KeyJ'), shoot: k('KeyK'), check: k('KeyL'), burst: k('ShiftLeft', 'ShiftRight'), swap: k('Space'),
+    pass: k('KeyJ', 'Space'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('ShiftLeft', 'ShiftRight'), poke: k('KeyU'),
+    burst: false, swap: k('KeyQ'),
   };
 }
 
@@ -91,11 +92,14 @@ function showTitle() {
     <h1>Faceoff</h1>
     <p>3-on-3 arcade hockey. First to ${WIN_GOALS} goals. Win a round, stack a power, face a team that bends the rules.</p>
     <div class="keys">
-      <span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate &nbsp;(<kbd>Shift</kbd> burst)</span>
-      <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it</span>
-      <span><kbd>K</kbd></span><span>Hold and release to shoot · hold before a pass lands for a one-timer</span>
-      <span><kbd>L</kbd></span><span>Check · hit with speed, tie up from a standstill, poke by reaching the puck</span>
-      <span><kbd>Space</kbd></span><span>Switch to the skater nearest the puck</span>
+      <span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>
+      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>K</kbd></span><span>Saucer pass · lifted over sticks</span>
+      <span><kbd>L</kbd></span><span>Wrist shot · quick release</span>
+      <span><kbd>I</kbd></span><span>Slapshot · hold to wind up, release · hold before a pass lands for a one-timer</span>
+      <span><kbd>Shift</kbd></span><span>Body check · needs speed</span>
+      <span><kbd>U</kbd></span><span>Poke check · reach the puck with your stick</span>
+      <span><kbd>Q</kbd></span><span>Switch to the skater nearest the puck</span>
     </div>
     <div class="go">Press Enter to drop the puck</div></div>`);
 }

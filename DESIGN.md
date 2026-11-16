@@ -97,12 +97,19 @@ The cartoon pass (cream paper boxes, comic starburst, blob skaters, tilted panel
 
 ### Controls (keyboard only)
 
-- **WASD**: skate, with glide and momentum. **Shift**: short burst, uses stamina.
-- **J**: pass. Auto-targets the best open teammate in the direction you face and leads the pass. A teammate pressing their pass key is "calling for it" and gets priority, shown with a ring.
-- **K**: hold to wind up, release to shoot. Always goes at the net; the held direction key picks the corner; a wide sweet spot on the wind-up gives a harder shot.
-- **One-timer**: hold K before a pass arrives to shoot the instant it lands. This is the main skill shot.
-- **L**: context defend. Poke-check near the carrier, block in a shooting lane, body-check at speed. Checks must drive through the target, not stop on contact.
-- **1 / 2 / 3**: pick a power card between rounds.
+Changed 2026-11-16 at the user's request to follow the reference game's key layout, kept simple:
+
+- **W A S D** or arrows: skate. No sprint button.
+- **J** or **Space**: pass (auto-targets the best open teammate in the direction you face). Without the puck it calls for a pass. Tap on the faceoff drop.
+- **K**: saucer pass, lifted over sticks so it cannot be picked off; a little slower.
+- **L**: wrist shot, instant release, accurate, not as hard.
+- **I**: slapshot, hold to wind up and release; the sweet spot in the wind-up hits hardest. Hold it before a pass lands for a one-timer.
+- **Shift**: body check (needs speed; from a standstill it only ties the player up).
+- **U**: poke check (only works if your stick reaches the puck).
+- **Q**: switch to the skater nearest the puck (control also follows passes and possession automatically).
+- **O**: special ability (reserved; no active abilities yet).
+- **1 / 2 / 3**: pick a power card between rounds. **R**: restart the run.
+- Hold A or D while shooting to pick the corner.
 
 ### Heat meter (the dopamine layer)
 

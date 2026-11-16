@@ -49,6 +49,12 @@ export interface Ctl {
   mx: number; my: number; pass: boolean; shoot: boolean; check: boolean; burst: boolean;
   passTo?: Skater | null;
   swap?: boolean;
+  /** lifted pass that sails over sticks */
+  saucer?: boolean;
+  /** quick wrist shot, no wind-up (the held shoot button is the slapshot) */
+  wrist?: boolean;
+  /** poke check only (check is the body check) */
+  poke?: boolean;
 }
 
 export interface Skater {
@@ -58,7 +64,7 @@ export interface Skater {
   wind: number; checkT: number; checkCd: number; blockT: number; pickupCd: number;
   stamina: number; calling: number; frost: boolean;
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
-  pPass: boolean; pShoot: boolean; pCheck: boolean;
+  pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
   ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean };
 }
@@ -72,6 +78,8 @@ export interface Puck {
   kind: 'loose' | 'pass' | 'shot'; target: Skater | null; from: Skater | null;
   ax: number; ay: number; q: number; oneTimer: boolean; fire: boolean;
   ghost: boolean; alive: boolean; checked: Set<number>; age: number;
+  /** saucer pass in the air: cannot be picked off; liftT is its flight time */
+  lifted: boolean; liftT: number;
   cpx: number; cpy: number; cc: number; cT: number;
 }
 
@@ -127,7 +135,7 @@ export class Game {
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
         stamina: 1, calling: 0, frost: false, slow: 0, settle: 0,
-        pPass: false, pShoot: false, pCheck: false,
+        pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
       });
@@ -148,7 +156,7 @@ export class Game {
   private newPuck(): Puck {
     return {
       x: 0, y: 0, vx: 0, vy: 0, owner: null, lastTeam: -1, shooter: null, kind: 'loose', target: null, from: null,
-      ax: 0, ay: 0, q: 0, oneTimer: false, fire: false, ghost: false, alive: true, checked: new Set(), age: 0,
+      ax: 0, ay: 0, q: 0, oneTimer: false, fire: false, ghost: false, alive: true, checked: new Set(), age: 0, lifted: false, liftT: 0,
       cpx: 0, cpy: 0, cc: 0, cT: 0,
     };
   }
@@ -371,7 +379,7 @@ export class Game {
     const o = this.ctrl;
     if (n === o || n.team !== 0) return;
     o.human = false; o.wind = -1; o.calling = 0;
-    n.human = true; n.pPass = true; n.pCheck = true; n.pShoot = false;
+    n.human = true; n.pPass = true; n.pCheck = true; n.pShoot = false; n.pSaucer = true; n.pWrist = true; n.pPoke = true;
     this.ctrl = n;
     this.ev({ t: 'switch', x: n.x, y: n.y });
   }
@@ -484,7 +492,11 @@ export class Game {
     // buttons
     const passEdge = c.pass && (!s.pPass || !s.human);
     const checkEdge = c.check && (!s.pCheck || !s.human);
-    if (has && (c.passTo || passEdge)) this.doPass(s, c.passTo || null, mx, my, ml > 0);
+    const saucerEdge = !!c.saucer && (!s.pSaucer || !s.human);
+    const wristEdge = !!c.wrist && (!s.pWrist || !s.human);
+    const pokeEdge = !!c.poke && (!s.pPoke || !s.human);
+    if (has && (c.passTo || passEdge || saucerEdge)) this.doPass(s, c.passTo || null, mx, my, ml > 0, saucerEdge && !passEdge);
+    else if (has && wristEdge && s.wind < 0) this.doShot(s, 0.5, false, my, true);
     else if (passEdge && s.human && p.owner && p.owner.team === s.team) { s.calling = 0.9; this.ev({ t: 'call' }); }
     if (c.shoot) {
       s.wind = s.wind < 0 ? 0 : s.wind + dt;
@@ -493,18 +505,21 @@ export class Game {
       if (p.owner === s && s.wind >= 0) this.doShot(s, s.wind, false, my);
       s.wind = -1;
     }
-    if (checkEdge && s.checkCd <= 0 && p.owner !== s) this.startCheck(s);
-    s.pPass = c.pass; s.pShoot = c.shoot; s.pCheck = c.check;
+    if (checkEdge && s.checkCd <= 0 && p.owner !== s) this.startCheck(s, s.human ? 'body' : 'auto');
+    if (pokeEdge && s.checkCd <= 0 && p.owner !== s) this.startCheck(s, 'poke');
+    s.pPass = c.pass; s.pShoot = c.shoot; s.pCheck = c.check; s.pSaucer = !!c.saucer; s.pWrist = !!c.wrist; s.pPoke = !!c.poke;
 
     s.x += s.vx * dt; s.y += s.vy * dt;
     collideBoards(s, SR, 0.2, false);
   }
 
-  private startCheck(s: Skater) {
+  /** 'poke' = stick only, 'body' = shoulder check, 'auto' = bots pick by distance and speed */
+  private startCheck(s: Skater, mode: 'poke' | 'body' | 'auto' = 'auto') {
     const p = this.pucks[0], car = p.owner;
     const sp = Math.hypot(s.vx, s.vy);
     const dC = car ? Math.hypot(car.x - s.x, car.y - s.y) : 99;
-    if (car && car.team !== s.team && dC < 1.9 && (sp < 4.5 || Math.hypot(s.vx - car.vx, s.vy - car.vy) < 4.5)) {
+    if (mode === 'poke' && !(car && car.team !== s.team && dC < 1.9)) { s.checkCd = 0.45; this.ev({ t: 'poke', x: s.x + Math.cos(s.face), y: s.y + Math.sin(s.face) }); return; }
+    if (mode !== 'body' && car && car.team !== s.team && dC < 1.9 && (mode === 'poke' || sp < 4.5 || Math.hypot(s.vx - car.vx, s.vy - car.vy) < 4.5)) {
       s.checkCd = 0.9;
       // a poke is aim and timing, not a dice roll: the stick has to reach the puck itself.
       // The puck rides in front of the carrier, so turning away puts their body in the way.
@@ -556,6 +571,7 @@ export class Game {
 
   private gain(p: Puck, s: Skater) {
     const prevTeam = p.lastTeam;
+    p.lifted = false;
     p.owner = s; p.kind = 'loose'; p.target = null; p.from = null; p.cc = 0; p.oneTimer = false; p.fire = false;
     p.lastTeam = s.team; p.checked.clear();
     if (prevTeam !== s.team) this.chain = 0;
@@ -598,7 +614,7 @@ export class Game {
     return [b, bd];
   }
 
-  private doPass(s: Skater, to: Skater | null, mx: number, my: number, hasDir: boolean) {
+  private doPass(s: Skater, to: Skater | null, mx: number, my: number, hasDir: boolean, lifted = false) {
     const p = this.pucks[0];
     const ax = hasDir ? mx : Math.cos(s.face), ay = hasDir ? my : Math.sin(s.face);
     if (!to) {
@@ -610,7 +626,8 @@ export class Game {
         if (sc > bs) { bs = sc; to = m; }
       }
     }
-    const speed = 18 + 2 * this.pw(s.team, 'curve');
+    const speed = (lifted ? 15 : 18) + 2 * this.pw(s.team, 'curve');
+    p.lifted = lifted; p.liftT = 0;
     p.owner = null; p.age = 0; p.checked.clear(); p.from = s; p.lastTeam = s.team; p.shooter = null; p.cc = 0;
     p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6;
     s.pickupCd = 0.4; s.wind = -1;
@@ -627,6 +644,7 @@ export class Game {
     tx = clamp(tx, -L + 1, L - 1); ty = clamp(ty, -W + 1, W - 1);
     const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1;
     p.kind = 'pass'; p.target = to; p.ax = tx; p.ay = ty;
+    if (lifted) p.liftT = Math.hypot(tx - p.x, ty - p.y) / speed;
     p.vx = (dx / d) * speed; p.vy = (dy / d) * speed;
     const cl = this.pw(s.team, 'curve');
     if (cl > 0 && d > 4) {
@@ -645,15 +663,17 @@ export class Game {
     this.ev({ t: 'pass', x: s.x, y: s.y });
   }
 
-  private doShot(s: Skater, wind: number, oneTimer: boolean, my: number) {
+  private doShot(s: Skater, wind: number, oneTimer: boolean, my: number, wrist = false) {
     const p = this.pucks[0];
     const dir = s.team === 0 ? 1 : -1, gx = dir * L;
     const sweet = oneTimer || (wind >= 0.32 && wind <= 0.82);
     let pw = clamp(wind / 0.32, 0.3, 1);
     if (wind > 0.82) pw = Math.max(0.55, 1 - (wind - 0.82) * 0.8);
     if (oneTimer) pw = 1;
+    if (wrist) pw = 0.75; // quick release: accurate, not as hard
     const fire = s.team === 0 && this.fireT > 0;
     let speed = 18 + 7 * pw + (sweet ? 4 : 0) + (oneTimer ? 7 : 0);
+    if (wrist) speed *= 0.86;
     speed *= 1 + 0.1 * this.pw(s.team, 'slapper') + 0.02 * this.tier(s.team);
     if (fire) speed *= 1.08;
     let q = 0.015 * this.tier(s.team) - (s.team === 1 ? 0.12 * (1 - this.skillLevel) : 0) + 0.25 + 0.25 * pw + (sweet ? 0.2 : 0) + (oneTimer ? 0.25 : 0) + (fire ? 0.08 : 0) + 0.05 * this.pw(s.team, 'slapper');
@@ -835,6 +855,7 @@ export class Game {
           if (d < (s === p.target ? reach + 0.25 : reach * 0.8)) { this.receive(p, s); return; }
         } else if (d < 1.15 && !p.checked.has(s.id)) {
           p.checked.add(s.id);
+          if (p.lifted) { if (p.lastTeam === 0) this.addHeat(100, 'Saucer pass', s.x, s.y); continue; }
           let ch = s.blockT > 0 ? 0.8 : 0.35;
           ch *= Math.pow(0.5, this.pw(p.lastTeam, 'curve'));
           if (this.rnd() < ch) {

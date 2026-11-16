@@ -661,7 +661,8 @@ export class View {
 
     // puck
     const dropH = g.phase === 'faceoff' && !g.foLive ? Math.min(3.5, g.foDrop * 5) : 0;
-    this.puck.position.set(p.x, 0.09 + dropH, p.y);
+    const lift = p.kind === 'pass' && p.lifted && p.liftT > 0 ? Math.sin(Math.PI * Math.min(1, p.age / p.liftT)) * 0.9 : 0;
+    this.puck.position.set(p.x, 0.09 + dropH + lift, p.y);
     this.puckGlow.position.set(p.x, 0.03, p.y);
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
     this.puckGlow.scale.setScalar(fire ? 1.5 + Math.sin(this.t * 20) * 0.2 : 1);
