@@ -28,5 +28,10 @@
   "start": 163,
   "end": 183,
   "loop": false
+ },
+ "goalie": {
+  "start": 189,
+  "end": 212,
+  "loop": true
  }
 }

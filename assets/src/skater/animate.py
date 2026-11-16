@@ -151,6 +151,14 @@ def check(t):
     stick(rot=[((0, 0, 1), 15 * drive)], move=(0.05 * drive, -0.1 * drive, 0.05 * drive))
 f = clip('check', f, 20, False, check, [0, 4, 7, 10, 12, 16, 20])
 
+# ---- goalie: wide, low stance, stick flat on the ice in front, a little side-to-side shuffle ----
+def goalie(t):
+    sw = S(TAU * t)
+    foot('l', dx=0.16, dy=0.02, yaw=-12); foot('r', dx=-0.16, dy=0.02, yaw=12)
+    bmove('pelvis', (0.02 * sw, 0, -0.07)); brot('spine_01', 'X', -10); brot('Head', 'X', -6)
+    stick_pose((-0.16, -0.38, 0.68), (-0.14, -0.84, -0.52), 0.0)
+f = clip('goalie', f, 24, True, goalie, range(0, 25, 6))
+
 reset()
 sc.frame_start = 1; sc.frame_end = f
 for o in (arm, ctl, *FT.values()):

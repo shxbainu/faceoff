@@ -90,9 +90,37 @@ def drop_controls():
     for pb in arm.pose.bones:
         for c in list(pb.constraints): pb.constraints.remove(c)
 
+# ---------------------------------------------------------------- 2b. clips from the Quaternius library
+# Universal Animation Library (CC0) uses this same skeleton, so its clips play on the skater directly.
+# 'fall' = Death01 with the backward slide removed (the game already moves a knocked-down skater);
+# only the drop of the hips is kept.
+def library_clip(name, src):
+    old = bpy.data.actions.get(name)
+    if old: bpy.data.actions.remove(old)
+    a = bpy.data.actions[src].copy(); a.name = name; a.use_fake_user = True
+    curves = {f.array_index: f for f in fcurves_of(a) if f.data_path == 'pose.bones["pelvis"].location'}
+    if 1 in curves and 2 in curves:
+        B = arm.data.bones['pelvis'].matrix_local.to_3x3(); ay, az = B.col[1], B.col[2]   # local y/z in armature space
+        fy, fz = curves[1], curves[2]
+        frames = sorted({round(k.co.x) for f in (fy, fz) for k in f.keyframe_points})
+        ly0, lz0 = fy.evaluate(frames[0]), fz.evaluate(frames[0])
+        back0 = ly0 * ay.y + lz0 * az.y
+        vals = []
+        for fr in frames:
+            ly, lz = fy.evaluate(fr), fz.evaluate(fr)
+            up = ly * ay.z + lz * az.z                 # keep the drop
+            # back/forward stays at its first value: solve local y/z for (back0, up)
+            det = ay.y * az.z - az.y * ay.z
+            vals.append((fr, (back0 * az.z - az.y * up) / det, (ay.y * up - back0 * ay.z) / det))
+        for f in (fy, fz):
+            while f.keyframe_points: f.keyframe_points.remove(f.keyframe_points[0])
+        for fr, ly, lz in vals:
+            fy.keyframe_points.insert(fr, ly); fz.keyframe_points.insert(fr, lz)
+    return a
+
 # ---------------------------------------------------------------- 3. export
 def export(actions, mat):
-    me = out.data; saved = list(me.materials)
+    me = out.data; saved = list(me.materials); saved_idx = [p.material_index for p in me.polygons]
     me.materials.clear(); me.materials.append(mat)
     for p in me.polygons: p.material_index = 0
     arm.animation_data.action = None
@@ -117,10 +145,14 @@ def export(actions, mat):
     for o in objs: col.objects.unlink(o)
     for t in list(arm.animation_data.nla_tracks): arm.animation_data.nla_tracks.remove(t)   # so re-posing starts clean
     sc.collection.children.unlink(col); vl.active_layer_collection = vl.layer_collection
+    me.materials.clear()                        # back to the editable outfit materials
+    for m in saved: me.materials.append(m)
+    for p, i in zip(me.polygons, saved_idx): p.material_index = i
     return saved
 
 if bpy.context.object and bpy.context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
 img = bake_texture(); mat = export_material(img)
 acts = bake_clips(); drop_controls()
+acts.append(library_clip('fall', 'Death01'))
 saved = export(acts, mat)
 print('exported', OUTF, os.path.getsize(OUTF) // 1024, 'KB', [a.name for a in acts])

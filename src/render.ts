@@ -421,7 +421,7 @@ export class View {
       const mixer = new THREE.AnimationMixer(model), acts: Record<string, THREE.AnimationAction> = {};
       for (const clip of gltf.animations) {
         const a = mixer.clipAction(clip);
-        if (!['idle', 'stride', 'glide'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+        if (!['idle', 'stride', 'glide', 'goalie'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
         acts[clip.name] = a;
       }
       acts.idle.play();
@@ -447,8 +447,14 @@ export class View {
       const act = play(name, 0.08); act.paused = false; act.timeScale = 0;
       act.time = Math.max(0, Math.min(0.999, f)) * act.getClip().duration;
     };
-    if (!s) { play('glide'); a.mixer.update(dt); return; }   // goalie: low, quiet stance
+    if (!s) { play(a.acts.goalie ? 'goalie' : 'glide'); a.mixer.update(dt); return; }   // goalie: wide, low stance
     const sp = Math.hypot(s.vx, s.vy);
+    // knocked down: fall (Quaternius library clip, joined after its standing start), lie there, then
+    // blend back to the stance when the sim lets him up
+    if (s.stun > 0.25 && !s.air && a.acts.fall) {
+      if (a.cur !== 'fall') { const f = play('fall', 0.1); f.time = 0.45; f.timeScale = 1.7; f.paused = false; }
+      a.mixer.update(dt); return;
+    }
     if (s.wind >= 0 && has) { a.prevWind = s.wind; scrub('slapshot', Math.min(1, s.wind / 0.6) * 0.5); }
     else {
       if (a.prevWind >= 0 && shotByMe) { a.shotT = 0.35; a.shotKind = 'slap'; }
@@ -716,8 +722,8 @@ export class View {
       if (s.air) { v.spin += rdt * 14; v.body.rotation.x = v.spin; v.body.position.y = 0.6; }
       else {
         v.spin = 0;
-        v.body.rotation.x = v.fall * 1.5;
-        v.body.position.y = v.fall * 0.3;
+        v.body.rotation.x = v.anim?.acts.fall ? 0 : v.fall * 1.5;   // the fall clip lays him down
+        v.body.position.y = v.anim?.acts.fall ? 0 : v.fall * 0.3;
       }
       if (v.anim) {
         v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
