@@ -71,13 +71,22 @@ for side in 'lr':
 vl.update()
 
 # the stick runs from the top palm to the blade spot on the ice; the bottom hand takes the point on the
-# shaft nearest its shoulder that is within reach, so both hands really hold it
+# shaft nearest its shoulder that is within reach, so both hands really hold it.
+# Each wrist turns so the shaft lies ACROSS the palm (the hand's local X axis, the axis the fingers curl
+# around), not along the forearm; otherwise the stick runs past the side of the fist.
 def palm(side):
     M = arm.matrix_world @ P['hand_' + side].matrix
-    return M.translation + M.to_3x3() @ Vector((0, 0.07, 0.035))   # along the hand, then into the palm
-pt = palm('l')
+    return M.translation + M.to_3x3() @ Vector((0, 0.075, 0.03))   # inside the curled fingers
+def align_hand(side, d):
+    pb = P['hand_' + side]; Mw = arm.matrix_world @ pb.matrix
+    x = Mw.to_3x3().col[0].normalized(); tgt = d if x.dot(d) > 0 else -d
+    o = Mw.translation
+    Mw2 = Matrix.Translation(o) @ x.rotation_difference(tgt).to_matrix().to_4x4() @ Matrix.Translation(-o) @ Mw
+    pb.matrix = arm.matrix_world.inverted() @ Mw2; vl.update()
 HEEL = Vector((pelvis.x - 0.30, pelvis.y - 0.82, 0.035))
-d = (HEEL - pt).normalized(); Ls = (HEEL - pt).length
+for _ in range(3):
+    pt = palm('l'); d = (HEEL - pt).normalized(); align_hand('l', d)
+pt = palm('l'); d = (HEEL - pt).normalized(); Ls = (HEEL - pt).length
 S = arm.matrix_world @ P['upperarm_r'].matrix.translation
 reach = (arm.data.bones['upperarm_r'].length + arm.data.bones['lowerarm_r'].length) * 0.97 + 0.07 + 0.1  # the shoulder drops toward the stick
 best = 0.25
@@ -86,9 +95,9 @@ for k in range(26, 75):
     if (pt + d * t - S).length <= reach: best = t
 goal = pt + d * best
 g = bpy.data.objects['grip_r']; g.location = goal
-for _ in range(6):   # the IK aims the wrist; walk it until the palm itself sits on the shaft
-    vl.update(); err = goal - palm('r'); g.location += err * 0.9
-vl.update()
+for _ in range(8):   # turn the wrist across the shaft, then walk the IK until the grip sits on the shaft
+    vl.update(); align_hand('r', d); err = goal - palm('r'); g.location += err * 0.9
+vl.update(); align_hand('r', d)
 pb_ = palm('r')
 TOP = pt - d * 0.12
 L = (HEEL - TOP).length

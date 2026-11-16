@@ -8,6 +8,7 @@ import bpy, bmesh, math
 from mathutils import Vector
 from collections import Counter
 
+YOKE = 1.45
 HEM = 0.93; KNEE = 0.60; SKATE = 0.20; CUFF = 0.62; GLOVE = 0.665; COLLAR = 1.49; NECK_W = 0.095
 E = 1e-4
 
@@ -31,14 +32,17 @@ def region(c, bone):
     if ax > CUFF - E and c.z > 1.2: return 'cuff'
     if c.z > HEM - E:
         if c.z > 1.2 and 0.52 - E < ax < 0.57 + E: return 'stripe'
-        if c.z < HEM + 0.06 + E: return 'stripe'
+        if c.z > YOKE - E and NECK_W < ax < 0.22 and c.y > -0.06: return 'stripe'   # yoke: top of the shoulders only
+        if c.z < HEM + 0.03 + E: return 'stripe'                         # double hem stripe
+        if HEM + 0.05 - E < c.z < HEM + 0.08 + E: return 'stripe'
         return 'jersey'
     if c.z < SKATE + E: return 'skate'
     if c.z < KNEE + E: return 'stripe' if 0.36 - E < c.z < 0.41 + E else 'sock'
+    if ax > 0.17 and abs(c.y - 0.035) < 0.022 and c.z < 0.88: return 'pstripe'   # breezer side stripe, down the thigh
     return 'pants'
 
 REGION_MAT = {'jersey': 'team_body', 'stripe': 'team_trim', 'pants': 'team_trim', 'sock': 'team_body',
-              'glove': 'team_trim', 'cuff': 'team_trim', 'skate': 'skate_boot', 'neck': 'neck_guard', 'head': 'skin'}
+              'glove': 'team_trim', 'cuff': 'team_trim', 'skate': 'skate_boot', 'neck': 'neck_guard', 'head': 'skin', 'pstripe': 'team_body'}
 
 def build():
     src = bpy.data.objects['SuperHero_Male']; o = bpy.data.objects['skater_outfit']
@@ -47,8 +51,9 @@ def build():
     gname = {g.index: g.name for g in o.vertex_groups}
     bm = bmesh.new(); bm.from_mesh(me)
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0008)
-    cuts = [((0, 0, z), (0, 0, 1)) for z in (HEM, HEM + 0.06, KNEE, 0.36, 0.41, SKATE, COLLAR)]
-    cuts += [((s * x, 0, 0), (1, 0, 0)) for s in (1, -1) for x in (CUFF, GLOVE, 0.52, 0.57, NECK_W)]
+    cuts = [((0, 0, z), (0, 0, 1)) for z in (HEM, HEM + 0.03, HEM + 0.05, HEM + 0.08, KNEE, 0.36, 0.41, SKATE, COLLAR, YOKE, 0.88)]
+    cuts += [((0, y, 0), (0, 1, 0)) for y in (0.013, 0.057, -0.06)]
+    cuts += [((s * x, 0, 0), (1, 0, 0)) for s in (1, -1) for x in (CUFF, GLOVE, 0.52, 0.57, NECK_W, 0.22, 0.17)]
     for co, no in cuts:
         bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=co, plane_no=no)
     bm.verts.ensure_lookup_table(); bm.faces.ensure_lookup_table(); bm.normal_update()
@@ -61,6 +66,8 @@ def build():
     fregion = [region(f.calc_center_median(), Counter(vbone[v.index] for v in f.verts).most_common(1)[0][0]) for f in bm.faces]
     vregion = {v.index: region(v.co, vbone[v.index]) for v in bm.verts}
 
+    torso = [v for v in bm.verts if vregion[v.index] in ('jersey', 'stripe') and v.co.z > HEM - E and abs(v.co.x) < 0.33]
+    for _ in range(12): bmesh.ops.smooth_vert(bm, verts=torso, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=False)
     for v in bm.verts:
         c = v.co.copy(); r = vregion[v.index]; ax = abs(c.x); sx = 1 if c.x >= 0 else -1
         if r in ('jersey', 'stripe') and c.z > 1.46 and ax < 0.16:
@@ -75,7 +82,7 @@ def build():
             R = 0.064 if r == 'cuff' else lerp(0.08, 0.066, sstep(0.25, 0.6, ax))
             axis = Vector((c.x, 0.07, 1.456)); d = c - axis; d.x = 0
             if d.length > 1e-5: v.co = c.lerp(axis + d.normalized() * R, sstep(0.22, 0.32, ax))
-        if r == 'pants':
+        if r in ('pants', 'pstripe'):
             if c.z > 0.86:
                 a, b = 0.195, 0.14; ang = math.atan2((c.y - 0.03) / b, c.x / a); px, py = superell(ang, a, b, 2.4)
                 v.co = Vector((px, 0.03 + py, c.z))
@@ -105,8 +112,25 @@ def build():
     bm.normal_update()
     for v in gl: v.co += v.normal * (0.03 if abs(v.co.x) < GLOVE + 0.05 else 0.012)  # padded back of hand, slim fingers
     for v in sk: v.co += v.normal * 0.02
-    cl = [v for v in bm.verts if vregion[v.index] in ('jersey', 'stripe', 'pants', 'sock', 'cuff')]
+    cl = [v for v in bm.verts if vregion[v.index] in ('jersey', 'stripe', 'pants', 'pstripe', 'sock', 'cuff')]
     for _ in range(3): bmesh.ops.smooth_vert(bm, verts=cl, factor=0.4, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.normal_update()
+    from mathutils import noise
+    for v in bm.verts:
+        r = vregion[v.index]; c = v.co
+        if r in ('jersey', 'stripe') and c.z > HEM - E:
+            # soft vertical drape folds plus a little crumple, strongest low on the jersey where it hangs
+            hang = 1 - sstep(1.15, 1.42, c.z)
+            fold = 0.006 * math.sin(math.atan2(c.y - 0.02, c.x) * 9 + c.z * 3) * hang
+            v.co += v.normal * (fold + 0.004 * noise.noise(c * 14))
+        elif r in ('pants', 'pstripe'):
+            # breezers: horizontal padding ridges and a little crumple
+            v.co += v.normal * (0.005 * max(0, math.sin(c.z * 70)) + 0.003 * noise.noise(c * 16))
+        elif r == 'sock' and c.z < KNEE - 0.06:
+            v.co += v.normal * 0.003 * noise.noise(c * 22)
+        if r in ('jersey', 'stripe') and c.z > 1.2 and 0.38 < abs(c.x) < 0.48:
+            # elbow pad bump under the sleeve
+            v.co += v.normal * 0.012 * max(0, 1 - abs(abs(c.x) - 0.43) / 0.05)
 
     names = ['team_body', 'team_trim', 'skate_boot', 'neck_guard', 'skin']
     me.materials.clear()
@@ -115,6 +139,10 @@ def build():
     for f, r in zip(bm.faces, fregion):
         f.material_index = idx[REGION_MAT[r]]; f.smooth = True
     bm.to_mesh(me); bm.free()
+    # corrective smooth after the skeleton: stops the padded shoulders pinching when the arms come down
+    if not any(m.type == 'CORRECTIVE_SMOOTH' for m in o.modifiers):
+        cs = o.modifiers.new('settle', 'CORRECTIVE_SMOOTH'); cs.factor = 0.6; cs.iterations = 12; cs.rest_source = 'ORCO'
+        cs.smooth_type = 'LENGTH_WEIGHTED'
     return Counter(fregion)
 
 result = build()
