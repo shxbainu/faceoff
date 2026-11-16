@@ -29,9 +29,10 @@ for s, side in ((1, 'l'), (-1, 'r')):
     rot('thigh_' + side, 'Z', s * 12)       # toes out
 # torso: lean forward from the hips, chest up, eyes up the ice
 rot('pelvis', 'X', 8)
-rot('spine_01', 'X', 36); rot('spine_02', 'X', 12)
+rot('spine_01', 'X', 46); rot('spine_02', 'X', 2); rot('spine_03', 'X', -6)   # flat back, chest up
 rot('spine_02', 'Z', -10)   # chest turned a little toward the stick side
-rot('neck_01', 'X', -10); rot('Head', 'X', -16)
+rot('clavicle_r', 'X', 12)  # bottom-hand shoulder rolls forward a touch, as it does on a real stick
+rot('neck_01', 'X', -22); rot('Head', 'X', -26)   # eyes up the ice
 vl.update()
 
 # drop the body so the blades rest on the ice
@@ -43,7 +44,7 @@ arm.location.z -= low; vl.update()
 
 # stick: out in front, blade ahead and a little to the right, shaft at a natural lie angle
 pelvis = arm.matrix_world @ P['pelvis'].matrix.translation
-TOP = pelvis + Vector((-0.04, -0.20, 0.12))          # top hand in front of the belly
+TOP = pelvis + Vector((0.0, -0.36, 0.10))            # top hand out in front of the body, not against it
 HEEL = Vector((pelvis.x - 0.32, pelvis.y - 1.05, 0.035))  # out front, to his right
 for n in ('stick', 'grip_l', 'grip_r', 'pole_l', 'pole_r'):
     x = bpy.data.objects.get(n)
@@ -78,12 +79,25 @@ vl.update()
 def palm(side):
     M = arm.matrix_world @ P['hand_' + side].matrix
     return M.translation + M.to_3x3() @ Vector((0, 0.075, 0.03))   # inside the curled fingers
-def align_hand(side, d):
+def align_hand(side, d, max_bend=30):
+    # Turn the hand so the shaft crosses the palm, the way a real wrist does it: the twist about the
+    # forearm is free (forearm roll), the bend away from the forearm is capped at max_bend degrees.
     pb = P['hand_' + side]; Mw = arm.matrix_world @ pb.matrix
-    x = Mw.to_3x3().col[0].normalized(); tgt = d if x.dot(d) > 0 else -d
+    R = Mw.to_3x3(); x = R.col[0].normalized(); tgt = d if x.dot(d) > 0 else -d
+    q = x.rotation_difference(tgt)
+    fore = (arm.matrix_world @ P['lowerarm_' + side].matrix).to_3x3().col[1].normalized()
+    # swing-twist split of q about the forearm axis
+    v = Vector((q.x, q.y, q.z)); proj = fore * v.dot(fore)
+    twist = Quaternion((q.w, proj.x, proj.y, proj.z)); twist.normalize()
+    swing = q @ twist.inverted()
+    new = (swing @ twist).to_matrix() @ R
+    # cap the bend between hand and forearm
+    hy = new.col[1].normalized(); bend = math.degrees(fore.angle(hy))
+    if bend > max_bend:
+        fix = hy.rotation_difference(fore.slerp(hy, max_bend / bend) if hasattr(fore, 'slerp') else fore)
+        new = fix.to_matrix() @ new
     o = Mw.translation
-    Mw2 = Matrix.Translation(o) @ x.rotation_difference(tgt).to_matrix().to_4x4() @ Matrix.Translation(-o) @ Mw
-    pb.matrix = arm.matrix_world.inverted() @ Mw2; vl.update()
+    pb.matrix = arm.matrix_world.inverted() @ (Matrix.Translation(o) @ new.to_4x4()); vl.update()
 HEEL = Vector((pelvis.x - 0.50, pelvis.y - 0.60, 0.035))   # blade out to his right, so the bottom hand can reach with a bent elbow
 for _ in range(3):
     pt = palm('l'); d = (HEEL - pt).normalized(); align_hand('l', d)
@@ -94,11 +108,17 @@ best = 0.25
 for k in range(15, 75):
     t = Ls * k / 100
     if (pt + d * t - S).length <= reach: best = t
-goal = pt + d * best
-g = bpy.data.objects['grip_r']; g.location = goal
-for _ in range(8):   # turn the wrist across the shaft, then walk the IK until the grip sits on the shaft
-    vl.update(); align_hand('r', d); err = goal - palm('r'); g.location += err * 0.9
-vl.update(); align_hand('r', d)
+def elbow_r():
+    u = (arm.matrix_world @ P['upperarm_r'].matrix).to_3x3().col[1]; l = (arm.matrix_world @ P['lowerarm_r'].matrix).to_3x3().col[1]
+    return 180 - math.degrees(u.angle(l))
+g = bpy.data.objects['grip_r']
+while True:
+    goal = pt + d * best; g.location = goal
+    for _ in range(8):   # turn the wrist across the shaft, then walk the IK until the grip sits on the shaft
+        vl.update(); align_hand('r', d); err = goal - palm('r'); g.location += err * 0.9
+    vl.update(); align_hand('r', d)
+    if elbow_r() <= 150 or best <= Ls * 0.12: break
+    best -= Ls * 0.02   # arm too straight: slide the bottom hand up the shaft
 pb_ = palm('r')
 TOP = pt - d * 0.12
 L = (HEEL - TOP).length
