@@ -21,7 +21,7 @@ def superell(ang, a, b, p):
 def torso_ab(z):
     # jersey section: straight hang from the hem, widening into rounded shoulder pads
     a = lerp(0.195, 0.21, sstep(HEM, 1.30, z)); a = lerp(a, 0.245, sstep(1.32, 1.44, z))
-    b = lerp(0.135, 0.148, sstep(HEM, 1.35, z))
+    b = lerp(0.124, 0.136, sstep(HEM, 1.35, z))
     return a, b
 
 def region(c, bone):
@@ -79,7 +79,7 @@ def build():
             if 0.13 < ax < 0.32 and c.z > 1.34:   # sloped shoulder pads
                 v.co.z -= 0.06 * ((ax - 0.13) / 0.19) ** 2 * sstep(1.34, 1.5, c.z); c = v.co.copy()
         if r in ('jersey', 'stripe', 'cuff') and ax > 0.22 and c.z > 1.2:
-            R = 0.064 if r == 'cuff' else lerp(0.08, 0.066, sstep(0.25, 0.6, ax))
+            R = 0.06 if r == 'cuff' else lerp(0.07, 0.06, sstep(0.25, 0.6, ax))
             axis = Vector((c.x, 0.07, 1.456)); d = c - axis; d.x = 0
             if d.length > 1e-5: v.co = c.lerp(axis + d.normalized() * R, sstep(0.22, 0.32, ax))
         if r in ('pants', 'pstripe'):
@@ -110,7 +110,9 @@ def build():
     sk = [v for v in bm.verts if vregion[v.index] == 'skate']
     for _ in range(10): bmesh.ops.smooth_vert(bm, verts=sk, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
     bm.normal_update()
-    for v in gl: v.co += v.normal * (0.03 if abs(v.co.x) < GLOVE + 0.05 else 0.012)  # padded back of hand, slim fingers
+    for v in gl:   # padded back of the hand, thin leather palm, slim fingers
+        if abs(v.co.x) < GLOVE + 0.05: v.co += v.normal * (0.006 + 0.024 * max(0.0, v.normal.z))
+        else: v.co += v.normal * 0.009
     for v in sk: v.co += v.normal * 0.02
     cl = [v for v in bm.verts if vregion[v.index] in ('jersey', 'stripe', 'pants', 'pstripe', 'sock', 'cuff')]
     for _ in range(3): bmesh.ops.smooth_vert(bm, verts=cl, factor=0.4, use_axis_x=True, use_axis_y=True, use_axis_z=True)
@@ -121,13 +123,13 @@ def build():
         if r in ('jersey', 'stripe') and c.z > HEM - E:
             # soft vertical drape folds plus a little crumple, strongest low on the jersey where it hangs
             hang = 1 - sstep(1.15, 1.42, c.z)
-            fold = 0.006 * math.sin(math.atan2(c.y - 0.02, c.x) * 9 + c.z * 3) * hang
-            v.co += v.normal * (fold + 0.004 * noise.noise(c * 14))
+            fold = 0.004 * math.sin(math.atan2(c.y - 0.02, c.x) * 9 + c.z * 3) * hang
+            v.co += v.normal * (fold + 0.0015 * noise.noise(c * 14))
         elif r in ('pants', 'pstripe'):
             # breezers: horizontal padding ridges and a little crumple
-            v.co += v.normal * (0.005 * max(0, math.sin(c.z * 70)) + 0.003 * noise.noise(c * 16))
+            v.co += v.normal * (0.004 * max(0, math.sin(c.z * 70)) + 0.001 * noise.noise(c * 16))
         elif r == 'sock' and c.z < KNEE - 0.06:
-            v.co += v.normal * 0.003 * noise.noise(c * 22)
+            v.co += v.normal * 0.001 * noise.noise(c * 22)
         if r in ('jersey', 'stripe') and c.z > 1.2 and 0.38 < abs(c.x) < 0.48:
             # elbow pad bump under the sleeve
             v.co += v.normal * 0.012 * max(0, 1 - abs(abs(c.x) - 0.43) / 0.05)
@@ -147,3 +149,6 @@ def build():
 
 result = build()
 print(result)
+# colour pattern (yoke, stripes, side stripes) is drawn by the uniform material, not by face colours
+HERE = '/Users/brianyao/claude-web-game/assets/src/skater/'
+exec(open(HERE + 'uniform_pattern.py').read())
