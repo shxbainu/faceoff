@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { positionLocal, normalLocal } from 'three/tsl';
+import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3 } from 'three/tsl';
 import { Game, L, W, CR, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
@@ -72,7 +72,7 @@ export class View {
   private playerSrc: ImageData | null = null;
   private playerTex: { cv: HTMLCanvasElement; tex: THREE.CanvasTexture }[] = [];
   private teamHex: [number, number][] = [[0xffffff, 0x222222], [0xffffff, 0x222222]];
-  private helmetMat: THREE.MeshToonMaterial[] = [];
+  private helmetMat: THREE.MeshToonNodeMaterial[] = [];
   assetsReady: Promise<void> = Promise.resolve();
   private hemi!: THREE.HemisphereLight; private sun!: THREE.DirectionalLight; private lightK = 1;
   private laneMesh!: THREE.Mesh; private laneMat!: THREE.MeshBasicMaterial;
@@ -355,6 +355,17 @@ export class View {
     this.scene.add(...fans);
   }
 
+  /** toon material that also inks contours: wherever the surface turns away from the camera it goes to ink,
+   *  which outlines arms, helmet and breezers inside the silhouette, not just around it */
+  private static inkToon(params: THREE.MeshToonMaterialParameters): THREE.MeshToonNodeMaterial {
+    const m = new THREE.MeshToonNodeMaterial(params);
+    const facing = dot(normalView, positionViewDirection).abs();
+    const keep = smoothstep(0.1, 0.24, facing);
+    const ink = new THREE.Color(INK);
+    m.colorNode = mix(vec3(ink.r, ink.g, ink.b), materialColor, keep);
+    return m;
+  }
+
   /** skaters: one animated, skinned skater per view, drawn with flat cel shading and an ink outline.
    *  The box skater stays underneath, hidden, as the fallback. */
   private async loadPlayer(loader: GLTFLoader, url: string) {
@@ -368,18 +379,18 @@ export class View {
     const rc = read.getContext('2d', { willReadFrequently: true })!;
     rc.drawImage(img, 0, 0);
     this.playerSrc = rc.getImageData(0, 0, read.width, read.height);
-    // three tones: shadow, base, highlight
-    const ramp = new THREE.DataTexture(new Uint8Array([132, 136, 150, 255, 200, 202, 210, 255, 236, 238, 242, 255]), 3, 1);
+    // comic shading: one crisp shadow tone and one light tone
+    const ramp = new THREE.DataTexture(new Uint8Array([128, 132, 148, 255, 240, 241, 245, 255]), 2, 1);
     ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
     const outfitMats = [0, 1].map(() => {
       const cv = document.createElement('canvas'); cv.width = read.width; cv.height = read.height;
       const tex = new THREE.CanvasTexture(cv);
       tex.flipY = src.flipY; tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = src.wrapS; tex.wrapT = src.wrapT;
       this.playerTex.push({ cv, tex });
-      return new THREE.MeshToonMaterial({ map: tex, gradientMap: ramp });
+      return View.inkToon({ map: tex, gradientMap: ramp });
     });
     this.tintPlayers();
-    this.helmetMat = [0, 1].map(t => new THREE.MeshToonMaterial({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
+    this.helmetMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
     const ink = new THREE.MeshBasicNodeMaterial({ color: INK, side: THREE.BackSide });
     ink.positionNode = positionLocal.add(normalLocal.mul(INK_W));
     const toon = new Map<THREE.Material, THREE.Material>();
@@ -387,7 +398,8 @@ export class View {
       let t = toon.get(m);
       if (!t) {
         const s = m as THREE.MeshStandardMaterial;
-        t = new THREE.MeshToonMaterial({ color: s.color, map: s.map, gradientMap: ramp, transparent: s.transparent, opacity: s.opacity, side: s.side });
+        t = s.transparent ? new THREE.MeshToonMaterial({ color: s.color, map: s.map, gradientMap: ramp, transparent: true, opacity: s.opacity, side: s.side })
+          : View.inkToon({ color: s.color, map: s.map, gradientMap: ramp, side: s.side });
         toon.set(m, t);
       }
       return t;

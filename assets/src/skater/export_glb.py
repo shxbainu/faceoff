@@ -12,7 +12,7 @@ import bpy, json, os
 ROOT = '/Users/brianyao/claude-web-game/'
 SRC = ROOT + 'assets/src/skater/'
 OUTF = ROOT + 'assets/models/skater.glb'
-TEX = 1024
+TEX = 2048
 sc = bpy.context.scene; vl = bpy.context.view_layer
 arm = bpy.data.objects['Armature']; out = bpy.data.objects['skater_outfit']
 PARTS = ['skater_outfit', 'helmet3', 'visor_half', 'blade_l', 'blade_r', 'stick']
