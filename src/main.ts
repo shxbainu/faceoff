@@ -29,7 +29,20 @@ function emptyPowers(): Record<PowerId, number> {
 // ---------------------------------------------------------------- input
 const keys = new Set<string>();
 const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyK', 'KeyL', 'KeyI', 'KeyU', 'KeyO', 'KeyQ',
-  'ShiftLeft', 'ShiftRight', 'Space', 'Enter', 'Digit1', 'Digit2', 'Digit3', 'KeyR']);
+  'ShiftLeft', 'ShiftRight', 'Space', 'Enter', 'Digit1', 'Digit2', 'Digit3', 'KeyR', 'KeyC']);
+
+// Two control schemes. Advanced: one key per move (pass, saucer, wrist, slapshot, body check, poke).
+// Simple: three keys. J pass, K shoot (tap for a wrist shot, hold for a slapshot), L check (poke when
+// the puck is within reach, body check otherwise). C on the title screen switches; the choice is saved.
+type Scheme = 'simple' | 'advanced';
+const SCHEME_KEY = 'faceoff.controls';
+let scheme: Scheme = (() => {
+  const q = new URLSearchParams(location.search).get('controls');
+  if (q === 'simple' || q === 'advanced') return q;
+  try { return localStorage.getItem(SCHEME_KEY) === 'simple' ? 'simple' : 'advanced'; } catch { return 'advanced'; }
+})();
+const TAP = 0.18;            // simple scheme: a shoot press shorter than this is a wrist shot
+let shootDownAt = -1, wristQueued = false;
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   if (e.repeat) return;
@@ -37,11 +50,33 @@ window.addEventListener('keydown', e => {
   keys.add(e.code);
   onPress(e.code);
 });
-window.addEventListener('keyup', e => keys.delete(e.code));
+window.addEventListener('keyup', e => {
+  keys.delete(e.code);
+  if (e.code === 'KeyK' && scheme === 'simple' && shootDownAt >= 0) {
+    if (performance.now() / 1000 - shootDownAt < TAP) wristQueued = true;   // quick tap: wrist shot
+    shootDownAt = -1;
+  }
+});
 window.addEventListener('blur', () => keys.clear());
 
 function ctl(): Ctl {
   const k = (...c: string[]) => c.some(x => keys.has(x));
+  if (scheme === 'simple') {
+    const now = performance.now() / 1000;
+    if (keys.has('KeyK') && shootDownAt < 0) shootDownAt = now;
+    const held = shootDownAt >= 0 ? now - shootDownAt : 0;
+    const wrist = wristQueued; wristQueued = false;
+    // check key: poke when the stick can reach the puck, shoulder check otherwise
+    const h = game?.ctrl, p = game?.pucks[0];
+    const near = !!(h && p && Math.hypot(p.x - h.x, p.y - h.y) < 1.8);
+    return {
+      mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
+      my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
+      pass: k('KeyJ', 'Space'), saucer: false, wrist, shoot: held >= TAP,
+      check: k('KeyL') && !near, poke: k('KeyL') && near,
+      burst: false, swap: k('KeyQ'),
+    };
+  }
   return {
     // the camera looks up-ice (+x), so screen up is +x and screen right is +y
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
@@ -54,6 +89,11 @@ function ctl(): Ctl {
 function onPress(code: string) {
   const go = code === 'Enter' || code === 'Space' || code === 'KeyJ';
   if (code === 'KeyR' && mode !== 'title') { startRun(); return; }
+  if (code === 'KeyC' && mode === 'title') {
+    scheme = scheme === 'simple' ? 'advanced' : 'simple';
+    try { localStorage.setItem(SCHEME_KEY, scheme); } catch { /* private window: keep it for this session */ }
+    showTitle(); return;
+  }
   if (mode === 'title' && go) startRun();
   else if (mode === 'intro' && go && modeT > 0.3) beginMatch();
   else if (mode === 'end' && go && modeT > 0.5) {
@@ -90,18 +130,26 @@ function showTitle() {
   showOverlay(`<div>
     ${champion ? '<div class="tag">Run complete · champions</div>' : ''}
     <h1>Faceoff</h1>
-    <p>3-on-3 arcade hockey. First to ${WIN_GOALS} goals. Win a round, stack a power, face a team that bends the rules.</p>
-    <div class="keys">
-      <span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>
+    <p>5-on-5 arcade hockey. First to ${WIN_GOALS} goals. Win a round, stack a power, face a team that bends the rules.</p>
+    ${controlsHelp()}
+    <div class="go">Press Enter to drop the puck</div></div>`);
+}
+
+function controlsHelp() {
+  const skate = '<span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>';
+  const swap = '<span><kbd>Q</kbd></span><span>Switch to the skater nearest the puck</span>';
+  const rows = scheme === 'simple' ? `
+      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>K</kbd></span><span>Shoot · tap for a quick wrist shot, hold to wind up a slapshot</span>
+      <span><kbd>L</kbd></span><span>Check · pokes when the puck is in reach, body checks otherwise</span>` : `
       <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Saucer pass · lifted over sticks</span>
       <span><kbd>L</kbd></span><span>Wrist shot · quick release</span>
       <span><kbd>I</kbd></span><span>Slapshot · hold to wind up, release · hold before a pass lands for a one-timer</span>
       <span><kbd>Shift</kbd></span><span>Body check · needs speed</span>
-      <span><kbd>U</kbd></span><span>Poke check · reach the puck with your stick</span>
-      <span><kbd>Q</kbd></span><span>Switch to the skater nearest the puck</span>
-    </div>
-    <div class="go">Press Enter to drop the puck</div></div>`);
+      <span><kbd>U</kbd></span><span>Poke check · reach the puck with your stick</span>`;
+  return `<div class="tag">Controls: ${scheme === 'simple' ? 'Simple' : 'Advanced'} · press <kbd>C</kbd> to switch</div>
+    <div class="keys">${skate}${rows}${swap}</div>`;
 }
 
 function startRun() {

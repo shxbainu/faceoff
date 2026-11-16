@@ -25,7 +25,7 @@ interface SkaterView {
   anim?: SkaterAnim;
 }
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
-const INK = 0x16141c, INK_W = 0.042, SKATER_SCALE = 1.4;
+const INK = 0x2a3140, INK_W = 0.03, SKATER_SCALE = 1.4;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
   const pts: [number, number][] = [];
@@ -369,7 +369,7 @@ export class View {
     rc.drawImage(img, 0, 0);
     this.playerSrc = rc.getImageData(0, 0, read.width, read.height);
     // three tones: shadow, base, highlight
-    const ramp = new THREE.DataTexture(new Uint8Array([96, 96, 104, 255, 196, 196, 200, 255, 255, 255, 255, 255]), 3, 1);
+    const ramp = new THREE.DataTexture(new Uint8Array([132, 136, 150, 255, 200, 202, 210, 255, 236, 238, 242, 255]), 3, 1);
     ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
     const outfitMats = [0, 1].map(() => {
       const cv = document.createElement('canvas'); cv.width = read.width; cv.height = read.height;
@@ -379,7 +379,7 @@ export class View {
       return new THREE.MeshToonMaterial({ map: tex, gradientMap: ramp });
     });
     this.tintPlayers();
-    this.helmetMat = [0, 1].map(t => new THREE.MeshToonMaterial({ color: this.teamHex[t][1], gradientMap: ramp }));
+    this.helmetMat = [0, 1].map(t => new THREE.MeshToonMaterial({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
     const ink = new THREE.MeshBasicNodeMaterial({ color: INK, side: THREE.BackSide });
     ink.positionNode = positionLocal.add(normalLocal.mul(INK_W));
     const toon = new Map<THREE.Material, THREE.Material>();
@@ -480,7 +480,9 @@ export class View {
     const S = src.data, ss = (a: number, b: number, x: number) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
     this.playerTex.forEach(({ cv, tex }, team) => {
       const [bodyHex, trimHex] = this.teamHex[team];
-      const B = [bodyHex >> 16 & 255, bodyHex >> 8 & 255, bodyHex & 255], T = [trimHex >> 16 & 255, trimHex >> 8 & 255, trimHex & 255];
+      // team colours a quarter toward grey, so the skaters sit in the rink instead of glowing on it
+      const soften = (h: number) => { const c = [h >> 16 & 255, h >> 8 & 255, h & 255], l = 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]; return c.map(v => v * 0.75 + l * 0.25); };
+      const B = soften(bodyHex), T = soften(trimHex);
       const out = new ImageData(src.width, src.height), O = out.data;
       for (let i = 0; i < S.length; i += 4) {
         const r = S[i], g = S[i + 1], b = S[i + 2];
@@ -620,7 +622,7 @@ export class View {
     this.teamMat[1].body.color.setHex(away.color); this.teamMat[1].trim.color.setHex(away.trim);
     this.teamHex = [[home.color, home.trim], [away.color, away.trim]];
     this.tintPlayers();
-    this.helmetMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]));
+    this.helmetMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25));
     this.gems.forEach((g, i) => {
       g.visible = i < gemColors.length;
       if (g.visible) (g.material as THREE.MeshBasicMaterial).color.setHex(gemColors[i]);

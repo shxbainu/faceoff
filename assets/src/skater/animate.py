@@ -42,7 +42,16 @@ def stick(rot=(), move=(0, 0, 0)):
         Mw = Matrix.Translation(piv) @ Matrix.Rotation(math.radians(deg), 4, Vector(ax).normalized()) @ Matrix.Translation(-piv) @ Mw
     ctl.matrix_world = Matrix.Translation(Vector(move)) @ Mw; vl.update()
 
+STICK = bpy.data.objects['stick']
+def blade_on_ice(floor=0.012):
+    # lift the stick (and so the hands) if any part of it would go below the ice
+    vl.update(); Mw = STICK.matrix_world
+    low = min((Mw @ v.co).z for v in STICK.data.vertices)
+    if low < floor:
+        ctl.matrix_world = Matrix.Translation(Vector((0, 0, floor - low))) @ ctl.matrix_world; vl.update()
+
 def key(f):
+    blade_on_ice()
     for n in BODY:
         P[n].keyframe_insert('location', frame=f); P[n].keyframe_insert('rotation_quaternion', frame=f)
     for o in (ctl, *FT.values()):

@@ -108,7 +108,7 @@ def library_clip(name, src):
         vals = []
         for fr in frames:
             ly, lz = fy.evaluate(fr), fz.evaluate(fr)
-            up = ly * ay.z + lz * az.z                 # keep the drop
+            up = ly * ay.z + lz * az.z - arm.location.z   # keep the drop; the library rig stands 17 cm taller than our crouch
             # back/forward stays at its first value: solve local y/z for (back0, up)
             det = ay.y * az.z - az.y * ay.z
             vals.append((fr, (back0 * az.z - az.y * up) / det, (ay.y * up - back0 * ay.z) / det))

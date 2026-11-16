@@ -8,7 +8,8 @@ export const CR = 8.5; // corner radius
 const KX = L / 22, KY = W / 11;
 export const GOAL_HALF = 2.1;
 export const NET_DEPTH = 1.5;
-export const SR = 0.7; // skater radius
+export const SR = 0.7; // skater radius: check reach and boards
+const BODY = 0.5;      // body radius for skater-on-skater contact
 export const PR = 0.22; // puck radius
 export const WIN_GOALS = 3;
 export const MATCH_SECONDS = 90;
@@ -64,6 +65,8 @@ export interface Skater {
   wind: number; checkT: number; checkCd: number; blockT: number; pickupCd: number;
   stamina: number; calling: number; frost: boolean;
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
+  /** time spent in contact with an opponent; when beaten from behind; stay off the carrier for a moment */
+  tangle: number; beaten: number; disengage: number;
   pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
   ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean };
@@ -134,7 +137,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0,
+        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, tangle: 0, beaten: 0, disengage: 0,
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -202,6 +205,7 @@ export class Game {
       else { s.x = d * 13 * KX; s.y = -d * side * 3 * KY; }
       s.vx = s.vy = 0; s.face = d < 0 ? 0 : Math.PI;
       s.stun = 0; s.air = false; s.z = 0; s.out = 0; s.wind = -1; s.checkT = 0; s.checkCd = 0.3; s.pickupCd = 0;
+      s.tangle = 0; s.beaten = 0; s.disengage = 0;
       s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6);
       if (s.boxed > 0) s.boxed = 0;
     }
@@ -284,7 +288,7 @@ export class Game {
       const c = s.human && !this.autoplay ? human : this.ai(s, dt);
       this.updateSkater(s, c, dt);
     }
-    this.collide();
+    this.collide(dt);
     for (const p of this.pucks) if (p.alive) this.updatePuck(p, dt);
     for (let i = this.pucks.length - 1; i >= 1; i--) if (!this.pucks[i].alive) this.pucks.splice(i, 1);
     const o = this.pucks[0].owner;
@@ -771,8 +775,9 @@ export class Game {
     }
   }
 
-  private collide() {
-    const S = this.skaters;
+  private collide(dt: number) {
+    const S = this.skaters, owner = this.pucks[0].owner;
+    for (const s of S) { s.disengage -= dt; s.tangle = Math.max(0, s.tangle - dt * 2); }
     for (let i = 0; i < S.length; i++) for (let j = i + 1; j < S.length; j++) {
       const a = S[i], b = S[j];
       if (a.air || b.air || a.out > 0 || b.out > 0 || a.boxed > 0 || b.boxed > 0) continue;
@@ -782,10 +787,33 @@ export class Game {
         if (a.checkT > 0 && !a.hits.has(b.id) && b.stun <= 0) { this.hit(a, b); continue; }
         if (b.checkT > 0 && !b.hits.has(a.id) && a.stun <= 0) { this.hit(b, a); continue; }
       }
-      const nx = dx / d, ny = dy / d, ov = (SR * 2 - d) / 2;
-      a.x -= nx * ov; a.y -= ny * ov; b.x += nx * ov; b.y += ny * ov;
+      // bodies are smaller than the check reach, so skaters brush past instead of locking together
+      if (d >= BODY * 2) continue;
+      const nx = dx / d, ny = dy / d, ov = BODY * 2 - d;
+      // whoever is moving faster, or carrying the puck, keeps more of their momentum
+      const ia = 1 / (1 + 0.12 * Math.hypot(a.vx, a.vy) + (owner === a ? 0.8 : 0));
+      const ib = 1 / (1 + 0.12 * Math.hypot(b.vx, b.vy) + (owner === b ? 0.8 : 0));
+      const wa = ia / (ia + ib), wb = ib / (ia + ib);
+      a.x -= nx * ov * wa; a.y -= ny * ov * wa; b.x += nx * ov * wb; b.y += ny * ov * wb;
       const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-      if (rv < 0) { const k = rv * 0.5; a.vx += nx * k; a.vy += ny * k; b.vx -= nx * k; b.vy -= ny * k; }
+      if (rv < 0) {
+        const jn = (-(1 + 0.15) * rv) / (ia + ib);
+        a.vx -= nx * jn * ia; a.vy -= ny * jn * ia; b.vx += nx * jn * ib; b.vy += ny * jn * ib;
+      }
+      if (a.team === b.team) continue;
+      // the carrier peels off around the defender, sliding the way he is already leaning
+      const c = owner === a ? a : owner === b ? b : null;
+      if (c) {
+        const tx = -ny, ty = nx, side = Math.sign(c.vx * tx + c.vy * ty) || (c === a ? 1 : -1);
+        c.vx += tx * side * 9 * dt; c.vy += ty * side * 9 * dt;
+      }
+      // two skaters grinding against each other get pushed apart, and the defender backs off
+      a.tangle += dt * 3; b.tangle += dt * 3;
+      if (a.tangle > 0.35 && b.tangle > 0.35) {
+        a.vx -= nx * 2.5; a.vy -= ny * 2.5; b.vx += nx * 2.5; b.vy += ny * 2.5;
+        a.tangle = b.tangle = 0;
+        for (const k of [a, b]) if (k !== owner) k.disengage = 0.7;
+      }
     }
     // the goalie holds the crease: skaters slide off
     for (const g of this.goalies) for (const s of S) {
@@ -969,9 +997,12 @@ export class Game {
     const deep = (team === 0 ? tx < -0.3 * L : tx > 0.3 * L);
     for (const k of this.skaters) {
       if (k.team !== team || !this.active(k)) continue;
+      if (k.disengage > 0 && !k.human) continue;   // just untangled from the carrier
       const isD = k.slot === 2 || k.slot === 4;
       // defenders only press inside their own zone
-      const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1);
+      // a defender already goal-side of the puck should take it; one chasing from behind is a last resort
+      const ngx = (team === 0 ? -L : L) - tx, behind = (k.x - tx) * ngx + (k.y - ty) * -ty < 0;
+      const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1) * (behind && !k.human ? 2.5 : 1);
       if (d < bd) { bd = d; best = k; }
     }
     return best;
@@ -1098,6 +1129,18 @@ export class Game {
       const pr = ownTeam === s.team ? null : this.presser(s.team, fx, fy);
       if (pr === s) {
         tx = fx; ty = fy;
+        if (car && car.team !== s.team) {
+          // contain: skate to a point just goal-side of the carrier instead of at his back
+          const ngx = -dir * L, gx = ngx - car.x, gy = -car.y, gl = Math.hypot(gx, gy) || 1;
+          const behind = (s.x - car.x) * gx + (s.y - car.y) * gy < 0;   // carrier is between me and my net
+          s.beaten = behind ? s.beaten + dt : 0;
+          tx = car.x + (gx / gl) * 1.4; ty = car.y + (gy / gl) * 1.4;
+          if (behind) {   // beaten: come alongside for a poke instead of trailing in his skate marks
+            const px = -gy / gl, py = gx / gl, side = Math.sign((s.x - car.x) * px + (s.y - car.y) * py) || 1;
+            tx = car.x + (gx / gl) * 0.6 + px * 1.2 * side; ty = car.y + (gy / gl) * 0.6 + py * 1.2 * side;
+          }
+          if (s.beaten > 0.55) { s.disengage = 1.2; s.beaten = 0; }   // stop riding him: backcheck to position
+        }
         const dS = Math.hypot(fx - s.x, fy - s.y);
         c.burst = dS > 5;
         if (car && car.team !== s.team) {
