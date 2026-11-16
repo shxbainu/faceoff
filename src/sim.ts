@@ -69,7 +69,7 @@ export interface Skater {
   tangle: number; beaten: number; disengage: number;
   pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
-  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean };
+  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number };
 }
 
 /** goalies stay in their crease and slide along the goal line */
@@ -1130,16 +1130,34 @@ export class Game {
       if (pr === s) {
         tx = fx; ty = fy;
         if (car && car.team !== s.team) {
-          // contain: skate to a point just goal-side of the carrier instead of at his back
-          const ngx = -dir * L, gx = ngx - car.x, gy = -car.y, gl = Math.hypot(gx, gy) || 1;
-          const behind = (s.x - car.x) * gx + (s.y - car.y) * gy < 0;   // carrier is between me and my net
+          // 1-on-1 defending, after hockey coaching practice (gap control, angling, stick before body)
+          // built from standard steering behaviours (pursuit, interpose, offset):
+          // predict where the carrier is going, stand between that point and our net at a stick-length
+          // gap, shade to the inside so the open lane runs to the boards, tighten the gap near our net or
+          // once he is pinned on the boards. Beaten from behind: come alongside for a poke, then give up.
+          const ngx = -dir * L;
+          const dC = Math.hypot(car.x - s.x, car.y - s.y);
+          const lead = clamp(dC / 9, 0.1, 0.45);
+          const px = car.x + car.vx * lead, py = car.y + car.vy * lead;
+          const gx = ngx - px, gy = -py, gl = Math.hypot(gx, gy) || 1, ux = gx / gl, uy = gy / gl;
+          const behind = (s.x - car.x) * (ngx - car.x) + (s.y - car.y) * -car.y < 0;   // carrier between me and my net
           s.beaten = behind ? s.beaten + dt : 0;
-          tx = car.x + (gx / gl) * 1.4; ty = car.y + (gy / gl) * 1.4;
+          const pinned = Math.abs(py) > W - 4.5, danger = gl < 12;
+          const gap = pinned ? 1.1 : danger ? 1.3 : 1.55;   // about one poke length: close enough to work the puck
+          // inside = toward the middle of the ice, perpendicular to the line to our net
+          let ix = -uy, iy = ux; if (iy * -Math.sign(py || 1) < 0) { ix = -ix; iy = -iy; }
+          const shade = pinned ? 0.2 : 0.75;
+          tx = px + ux * gap + ix * shade; ty = py + uy * gap + iy * shade;
           if (behind) {   // beaten: come alongside for a poke instead of trailing in his skate marks
-            const px = -gy / gl, py = gx / gl, side = Math.sign((s.x - car.x) * px + (s.y - car.y) * py) || 1;
-            tx = car.x + (gx / gl) * 0.6 + px * 1.2 * side; ty = car.y + (gy / gl) * 0.6 + py * 1.2 * side;
+            const qx = -uy, qy = ux, side = Math.sign((s.x - car.x) * qx + (s.y - car.y) * qy) || 1;
+            tx = car.x + ux * 0.6 + qx * 1.2 * side; ty = car.y + uy * 0.6 + qy * 1.2 * side;
           }
           if (s.beaten > 0.55) { s.disengage = 1.2; s.beaten = 0; }   // stop riding him: backcheck to position
+          s.ai.pinned = pinned;
+          // from a good gap, attack the puck in short bursts (stick first), then settle back
+          s.ai.stab = (s.ai.stab ?? 0) - dt;
+          if (!behind && dC < 2.8 && s.ai.stab <= -0.4 && this.rnd() < dt * (1.4 + 1.6 * sk)) s.ai.stab = 0.3;
+          if (s.ai.stab > 0 && !behind) { tx = p.x; ty = p.y; }
         }
         const dS = Math.hypot(fx - s.x, fy - s.y);
         c.burst = dS > 5;
@@ -1147,7 +1165,9 @@ export class Game {
           // only commit when the stick can reach the puck, or with real closing speed for a hit
           const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
           const dPk = Math.hypot(p.x - s.x, p.y - s.y);
-          if (((dS < 1.9 && dPk < 1.45 && dPk < dS + 0.1) || (dS < 3.4 && closing > 6)) && s.checkCd <= 0) {
+          const poke = dPk < 1.45 && dPk < dS + 0.1 && dS < 1.9;
+          const body = (s.ai.pinned && dS < 2.2 && closing > 2.5) || (dS < 3.4 && closing > 6);
+          if ((poke || body) && s.checkCd <= 0) {
             s.ai.react -= dt;
             if (s.ai.react <= 0) { c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
           }
