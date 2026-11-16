@@ -57,6 +57,8 @@ def bake_clips():
     clips = json.load(open(SRC + 'clips.json'))
     select_only([arm], arm); bpy.ops.object.mode_set(mode='POSE')
     bpy.ops.pose.select_all(action='SELECT')
+    for n in clips:                      # old bakes of the same clips
+        if bpy.data.actions.get(n): bpy.data.actions.remove(bpy.data.actions[n])
     actions = []; orig = arm.animation_data.action
     for name, c in clips.items():
         arm.animation_data.action = orig     # always sample the authored timeline, not the last bake
@@ -113,6 +115,7 @@ def export(actions, mat):
                               export_def_bones=True, export_image_format='WEBP', export_yup=True,
                               export_extras=False, export_cameras=False, export_lights=False)
     for o in objs: col.objects.unlink(o)
+    for t in list(arm.animation_data.nla_tracks): arm.animation_data.nla_tracks.remove(t)   # so re-posing starts clean
     sc.collection.children.unlink(col); vl.active_layer_collection = vl.layer_collection
     return saved
 

@@ -25,7 +25,7 @@ interface SkaterView {
   anim?: SkaterAnim;
 }
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
-const INK = 0x16141c, INK_W = 0.042, SKATER_SCALE = 1.25;
+const INK = 0x16141c, INK_W = 0.042, SKATER_SCALE = 1.4;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
   const pts: [number, number][] = [];
@@ -41,7 +41,7 @@ function roundedOutline(off: number, seg = 10): [number, number][] {
 
 // vertical camera: distance, elevation (rad) and how far ahead of the focus it looks
 // pitch measured from the reference: about 38 degrees above the ice, not overhead
-const CAM_DIST = 33, CAM_EL = 0.66, CAM_LEAD = 3;
+const CAM_DIST = 25, CAM_EL = 0.66, CAM_LEAD = 3;   // closer: skaters about as big on screen as the reference
 
 export class View {
   renderer!: THREE.WebGPURenderer;
@@ -55,7 +55,7 @@ export class View {
   private arrow!: THREE.Mesh; private disc!: THREE.Mesh; private discMat!: THREE.MeshBasicMaterial;
   private ring!: THREE.Mesh;
   private discInk!: THREE.Mesh; private beam!: THREE.Mesh; private toPuck!: THREE.Group;
-  private camZ = 0; private camD = 33;
+  private camZ = 0; private camD = CAM_DIST;
   private gems: THREE.Mesh[] = [];
   private parts!: THREE.InstancedMesh;
   private pp = new Float32Array(400 * 8); // x y z vx vy vz life size
@@ -429,6 +429,11 @@ export class View {
     });
   }
 
+  /** test hook: which clip each skater is playing and where it is */
+  animStates() {
+    return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2) } : null);
+  }
+
   /** choose and advance the skater's clip from what the sim says it is doing */
   private animate(v: SkaterView, s: Skater | null, has: boolean, shotByMe: boolean, dt: number) {
     const a = v.anim!;
@@ -533,8 +538,14 @@ export class View {
     const skate = new THREE.BoxGeometry(0.5, 0.14, 0.2);
     const shaft = new THREE.BoxGeometry(1.5, 0.07, 0.07);
     const blade = new THREE.BoxGeometry(0.42, 0.12, 0.08);
-    const shadowG = new THREE.CircleGeometry(0.85, 14);
-    const shadowM = new THREE.MeshBasicMaterial({ color: 0x1a2a44, transparent: true, opacity: 0.28, depthWrite: false });
+    // soft round shadow under the skates, as in the reference: darkest in the middle, fading out
+    const sc = document.createElement('canvas'); sc.width = sc.height = 128;
+    const sg = sc.getContext('2d')!, grad = sg.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(40,46,62,0.55)'); grad.addColorStop(0.55, 'rgba(40,46,62,0.32)'); grad.addColorStop(1, 'rgba(40,46,62,0)');
+    sg.fillStyle = grad; sg.fillRect(0, 0, 128, 128);
+    const shadowTex = new THREE.CanvasTexture(sc); shadowTex.colorSpace = THREE.SRGBColorSpace;
+    const shadowG = new THREE.PlaneGeometry(1.9, 1.35);
+    const shadowM = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false });
     for (let t = 0; t < 2; t++) this.teamMat.push({ body: this.std(0xffffff), trim: this.std(0x222222) });
     for (let i = 0; i < TEAM * 2 + 2; i++) {
       const tm = this.teamMat[View.teamOf(i)];
@@ -698,6 +709,7 @@ export class View {
       const boxed = s.boxed > 0;
       v.root.position.set(s.x, s.z, s.y);
       v.shadow.position.x = s.x; v.shadow.position.z = s.y;
+      v.shadow.rotation.z = -s.face - Math.PI / 2;   // long axis across the stance
       v.body.rotation.y = -s.face;
       const down = s.stun > 0.25 ? 1 : 0;
       v.fall += (down - v.fall) * Math.min(1, rdt * 14);
@@ -717,7 +729,7 @@ export class View {
       const v = this.skaters[g.skaters.length + gi];
       if (!v) return;
       v.root.visible = v.shadow.visible = true;
-      v.root.position.set(k.x, 0, k.y); v.shadow.position.x = k.x; v.shadow.position.z = k.y;
+      v.root.position.set(k.x, 0, k.y); v.shadow.position.x = k.x; v.shadow.position.z = k.y; v.shadow.rotation.z = -Math.PI / 2;
       // crouched, facing up the ice, leaning into the slide
       v.body.rotation.set(0, k.team === 0 ? 0 : -Math.PI, v.anim ? 0 : -0.3);
       if (v.anim) this.animate(v, null, false, false, dt);

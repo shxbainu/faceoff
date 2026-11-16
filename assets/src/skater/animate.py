@@ -78,17 +78,20 @@ def stride(t):
             p = (u - 0.55) / 0.45; e = 0.5 + 0.5 * C(math.pi * p)
             foot(s, dx=sx * (0.36 * e - 0.03), dy=0.22 * e - 0.05 - 0.04 * S(math.pi * p), dz=0.07 * S(math.pi * p), yaw=sx * 10 * (1 - p) + sx * 25 * e * (1 - p))
     sway = S(TAU * t)                    # weight over the gliding (non-pushing) leg
-    bmove('pelvis', (-0.06 * sway, 0, -0.02 - 0.015 * abs(C(TAU * t))))
-    brot('pelvis', 'Z', 5 * sway); brot('spine_02', 'Z', -6 * sway); brot('spine_01', 'X', 4)
-    brot('Head', 'Z', 4 * sway)
-    stick(rot=[((0, 0, 1), -6 * sway)], move=(-0.04 * sway, 0, 0))
+    bob = abs(C(TAU * t))                # lowest as each push finishes
+    bmove('pelvis', (-0.09 * sway, 0, -0.025 - 0.03 * bob))
+    brot('pelvis', 'Z', 9 * sway); brot('spine_02', 'Z', -13 * sway); brot('spine_01', 'X', 4 + 4 * bob)
+    brot('spine_03', 'Y', 5 * sway)      # shoulders roll with each push
+    brot('Head', 'Z', 6 * sway)
+    stick(rot=[((0, 0, 1), -14 * sway), ((1, 0, 0), 3 * bob)], move=(-0.08 * sway, 0, 0))
 f = clip('stride', f, 20, True, stride, range(0, 21, 2))
 
 # ---- glide: both blades on the ice, low and quiet ----
 def glide(t):
     for s, sx in (('l', 1), ('r', -1)): foot(s, dx=-sx * 0.03, yaw=-sx * 4)
-    bmove('pelvis', (0, 0, -0.03 - 0.004 * (1 + S(TAU * t))))
-    brot('spine_01', 'X', 3)
+    bmove('pelvis', (0, 0, -0.03 - 0.01 * (1 + S(TAU * t))))
+    brot('spine_01', 'X', 3); brot('spine_02', 'Z', 4 * S(TAU * t))
+    stick(rot=[((0, 0, 1), 8 * S(TAU * t))])   # stick sweeps the ice while coasting
 f = clip('glide', f, 24, True, glide, range(0, 25, 6))
 
 # Shots are keyed as stick poses: where the bottom hand is and which way the shaft points (top hand to

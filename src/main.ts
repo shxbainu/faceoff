@@ -325,6 +325,8 @@ function perf() {
     snap: () => ({ mode, round, cards, powers, ...game.snapshot() }),
     perf, resetPerf: () => { frameMs.length = 0; simMs = 0; simN = 0; },
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
+    anims: () => view.animStates(),
+    screen: (x: number, y: number) => view.project(x, 1.1, y),
   };
   requestAnimationFrame(tick);
 })();
