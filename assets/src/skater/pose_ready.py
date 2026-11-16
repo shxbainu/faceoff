@@ -133,7 +133,7 @@ cands.sort(key=lambda c: c[1], reverse=True)
 # ---- put each hand on the shaft ----
 def poles(side):
     S = W @ P['upperarm_' + side].head; sx = 1 if side == 'l' else -1
-    return [S + Vector((sx * ox, oy, oz)) for ox in (0.3, 0.5) for oy in (0.0, 0.25) for oz in (-0.3, 0.0)]
+    return [S + Vector((sx * ox, oy, oz)) for ox in (0.2, 0.4, 0.6) for oy in (-0.2, 0.1, 0.35) for oz in (-0.4, -0.1, 0.2)]
 iks = {}
 for side in 'lr':
     g = bpy.data.objects.new('grip_' + side, None); sc.collection.objects.link(g)
@@ -141,8 +141,20 @@ for side in 'lr':
     c = P['lowerarm_' + side].constraints.new('IK'); c.target = g; c.chain_count = 2
     c.pole_target = p; c.pole_angle = math.radians(-90); iks[side] = (g, p)
 
+def hand_twist(side, Rt):
+    """Twist of the hand about the forearm (degrees) if the hand had world rotation Rt."""
+    B = arm.data.bones; rest = (B['lowerarm_' + side].matrix_local.inverted() @ B['hand_' + side].matrix_local).to_3x3()
+    Rlow = (W @ P['lowerarm_' + side].matrix).to_3x3()
+    q = ((Rlow @ rest).inverted() @ Rt).to_quaternion(); tw = Quaternion((q.w, 0, q.y, 0)); tw.normalize()
+    a = math.degrees(2 * math.atan2(tw.y, tw.w))
+    return (a + 180) % 360 - 180
+def wrist_cost(side, Rt):
+    # a real wrist bends a little and turns over mostly through the forearm, so big twists are expensive
+    fore = (W @ P['lowerarm_' + side].matrix).to_3x3().col[1].normalized()
+    bend = math.degrees(fore.angle(Rt.col[1])); tw = abs(hand_twist(side, Rt))
+    return bend + 1.5 * max(0.0, tw - 90)   # the forearm twist bones carry the turn
 def place_hand(side, G):
-    """Hand so the hollow is at G and runs along the shaft; roll chosen for the straightest wrist."""
+    """Hand so the hollow is at G and runs along the shaft; roll chosen for the most natural wrist."""
     c_loc, a_loc = HOLLOW[side]; g, pole = iks[side]
     best = None
     for pp in poles(side):
@@ -151,19 +163,15 @@ def place_hand(side, G):
         for _ in range(5):
             fore = (W @ P['lowerarm_' + side].matrix).to_3x3().col[1].normalized()
             R0 = (R @ a_loc).rotation_difference(d).to_matrix() @ R
-            pick = None
-            for th in range(0, 360, 5):
-                Rt = Matrix.Rotation(math.radians(th), 3, d) @ R0
-                bend = math.degrees(fore.angle(Rt.col[1]))
-                if pick is None or bend < pick[0]: pick = (bend, Rt)
-            R = pick[1]; wrist = G - R @ c_loc
+            R = min((Matrix.Rotation(math.radians(th), 3, d) @ R0 for th in range(0, 360, 5)), key=lambda Rt: wrist_cost(side, Rt))
+            wrist = G - R @ c_loc
             g.location = wrist; vl.update()
             Mh = Matrix.Translation(wrist) @ R.to_4x4()
             P['hand_' + side].matrix = W.inverted() @ Mh; vl.update()
         fore = (W @ P['lowerarm_' + side].matrix).to_3x3().col[1].normalized()
         bend = math.degrees(fore.angle(hand_frame(side).to_3x3().col[1]))
         miss = ((W @ P['lowerarm_' + side].tail) - wrist).length
-        score = bend + miss * 2000
+        score = wrist_cost(side, hand_frame(side).to_3x3()) + miss * 2000
         if best is None or score < best[0]: best = (score, pp.copy(), bend, miss)
     pole.location = best[1]; vl.update()
     # settle once more with the chosen pole
@@ -171,7 +179,7 @@ def place_hand(side, G):
     for _ in range(5):
         fore = (W @ P['lowerarm_' + side].matrix).to_3x3().col[1].normalized()
         R0 = (R @ a_loc).rotation_difference(d).to_matrix() @ R
-        R = min((Matrix.Rotation(math.radians(th), 3, d) @ R0 for th in range(0, 360, 5)), key=lambda Rt: fore.angle(Rt.col[1]))
+        R = min((Matrix.Rotation(math.radians(th), 3, d) @ R0 for th in range(0, 360, 5)), key=lambda Rt: wrist_cost(side, Rt))
         wrist = G - R @ c_loc; g.location = wrist; vl.update()
         P['hand_' + side].matrix = W.inverted() @ (Matrix.Translation(wrist) @ R.to_4x4()); vl.update()
     return best
@@ -187,8 +195,9 @@ tried = []
 for cand in cands[:24]:
     s_grip, _, _, T, HEEL = cand; d = (HEEL - T).normalized()
     rl = place_hand('l', T); rr = place_hand('r', T + d * s_grip)
-    ok = rl[3] < 0.005 and rr[3] < 0.005 and wrist_bend('l') <= 35 and wrist_bend('r') <= 35 and elbow('r') <= 160
-    score = s_grip * 100 - max(0, wrist_bend('l') - 25) - max(0, wrist_bend('r') - 25) - (rl[3] + rr[3]) * 1000 - max(0, elbow('r') - 150)
+    tl = abs(hand_twist('l', hand_frame('l').to_3x3())); tr = abs(hand_twist('r', hand_frame('r').to_3x3()))
+    ok = rl[3] < 0.005 and rr[3] < 0.005 and wrist_bend('l') <= 35 and wrist_bend('r') <= 35 and elbow('r') <= 160 and tl <= 100 and tr <= 100
+    score = s_grip * 100 - max(0, wrist_bend('l') - 25) - max(0, wrist_bend('r') - 25) - (rl[3] + rr[3]) * 1000 - max(0, elbow('r') - 150) - max(0, tl - 90) - max(0, tr - 90)
     tried.append((score, cand))
     if ok: break
 else:
@@ -196,6 +205,13 @@ else:
     s_grip, _, _, T, HEEL = cand; d = (HEEL - T).normalized()
     place_hand('l', T); place_hand('r', T + d * s_grip)
 GL = T
+# spread each hand's twist along its forearm (twist bones from twist_bones.py)
+for side in 'lr':
+    tw = hand_twist(side, hand_frame(side).to_3x3())
+    for i, f in ((1, 1 / 3), (2, 2 / 3), (3, 1.0)):
+        pb = P.get(f'lowerarm_twist_0{i}_{side}')
+        if pb: pb.rotation_quaternion = Quaternion((0, 1, 0), math.radians(tw * f))
+vl.update()
 
 # ---- the stick: knob just past the top hand, through both hollows, heel on the ice ----
 KNOB = GL - d * 0.05; L = (HEEL - KNOB).length
@@ -247,7 +263,7 @@ def grip_check(side):
     dist = [((p - KNOB) - d * (p - KNOB).dot(d)).length for p in pts if abs((p - cw).dot(d)) < 0.05]
     return dict(hollow_off_shaft_cm=round(off * 100, 2), axis_vs_shaft_deg=round(ang, 1), finger_thick_cm=CURL_K[side][0], ring_r_cm=round(CURL_K[side][3] * 100, 2), finger_to_axis_min_cm=round(min(dist) * 100, 2),
                 finger_to_axis_mean_cm=round(sum(dist) / len(dist) * 100, 2),
-                wrist_bend=round(wrist_bend(side)), elbow=round(elbow(side)))
+                wrist_bend=round(wrist_bend(side)), wrist_twist=round(hand_twist(side, hand_frame(side).to_3x3())), elbow=round(elbow(side)))
 REPORT = dict(tried=len(tried), stick_len=round(L, 2), grip_gap_cm=round(s_grip * 100), top=tuple(round(x, 2) for x in T),
               heel=tuple(round(x, 2) for x in HEEL), left=grip_check('l'), right=grip_check('r'))
 print(REPORT)

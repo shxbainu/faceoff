@@ -152,3 +152,4 @@ print(result)
 # colour pattern (yoke, stripes, side stripes) is drawn by the uniform material, not by face colours
 HERE = '/Users/brianyao/claude-web-game/assets/src/skater/'
 exec(open(HERE + 'uniform_pattern.py').read())
+exec(open(HERE + 'twist_bones.py').read())
