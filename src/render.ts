@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3 } from 'three/tsl';
+import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute } from 'three/tsl';
 import { Game, L, W, CR, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
@@ -25,7 +25,8 @@ interface SkaterView {
   anim?: SkaterAnim;
 }
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
-// debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?flat (no toon ramp)
+// debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
+// ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
 const DBG = new URLSearchParams(location.search);
 const INK = 0x2a3140, INK_W = 0.014, SKATER_SCALE = 1.4;
 
@@ -369,6 +370,40 @@ export class View {
     return m;
   }
 
+  /** Per-vertex outline-shell thickness (0..1), stored as the 'outlineW' attribute. The inflated shell pokes
+   *  through the body where two parts fold against each other, so it shrinks to near zero there:
+   *  - skinned meshes: vertices shared between a tight pair of bones (torso/upper arm = shoulder and armpit,
+   *    neck/collar, hip/thigh) by how evenly they are shared; the neck itself; the collarbone area
+   *  - the helmet (one bone): its lower rim, which sits on the shoulders and collar
+   *  - anything else (stick): full thickness */
+  private static outlineWeights(mesh: THREE.Mesh, kind: 'body' | 'helmet' | 'rigid') {
+    const g = mesh.geometry;
+    if (g.getAttribute('outlineW')) return;
+    const n = g.getAttribute('position').count, w = new Float32Array(n).fill(1);
+    if (DBG.has('nomask')) { g.setAttribute('outlineW', new THREE.BufferAttribute(w, 1)); return; }   // old uniform shell, for comparisons
+    const ss = (a: number, b: number, x: number) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    if (kind === 'body') {
+      const sk = mesh as THREE.SkinnedMesh, si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight');
+      const part = (b: number) => sk.skeleton.bones[b].name.replace(/_[lr]$/, '').replace(/^lowerarm_twist.*/, 'lowerarm');
+      const tight = new Set(['spine_03|upperarm', 'clavicle|upperarm', 'spine_02|upperarm', 'clavicle|spine_03', 'clavicle|neck_01',
+        'neck_01|spine_03', 'Head|neck_01', 'pelvis|thigh', 'spine_01|thigh']);
+      for (let v = 0; v < n; v++) {
+        const pairs = [0, 1, 2, 3].map(k => [sw.getComponent(v, k), si.getComponent(v, k)] as [number, number]).sort((x, y) => y[0] - x[0]);
+        const a = part(pairs[0][1]), b = pairs[1][0] > 0.02 ? part(pairs[1][1]) : a;
+        let k = 1;
+        if (a !== b && tight.has([a, b].sort().join('|'))) k = 1 - ss(0.06, 0.32, pairs[1][0]);   // evenly shared = deep in the fold
+        if (a === 'neck_01' || a === 'Head') k = Math.min(k, 0.05);   // under the helmet and behind the clear visor: an outline here only shows through the visor
+        if (a === 'clavicle') k = Math.min(k, 0.3);
+        w[v] = Math.max(0.05, k);
+      }
+    } else if (kind === 'helmet') {
+      g.computeBoundingBox(); const bb = g.boundingBox!, p = g.getAttribute('position');
+      const lo = bb.min.y, h = bb.max.y - bb.min.y;
+      for (let v = 0; v < n; v++) w[v] = 0.1 + 0.9 * ss(0.15, 0.45, (p.getY(v) - lo) / h);   // thin at the rim, full on the dome
+    }
+    g.setAttribute('outlineW', new THREE.BufferAttribute(w, 1));
+  }
+
   /** skaters: one animated, skinned skater per view, drawn with flat cel shading and an ink outline.
    *  The box skater stays underneath, hidden, as the fallback. */
   private async loadPlayer(loader: GLTFLoader, url: string) {
@@ -395,8 +430,11 @@ export class View {
     });
     this.tintPlayers();
     this.helmetMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
-    const ink = new THREE.MeshBasicNodeMaterial({ color: INK, side: THREE.BackSide });
-    ink.positionNode = positionLocal.add(normalLocal.mul(INK_W));
+    // ?hulldbg paints the shell magenta so any poke-through is easy to spot in test frames
+    const ink = new THREE.MeshBasicNodeMaterial({ color: DBG.has('hulldbg') ? 0xff00ff : INK, side: THREE.BackSide,
+      // pushed slightly back in depth: a sliver of shell just in front of the body loses to the body
+      polygonOffset: !DBG.has('nomask'), polygonOffsetFactor: 2, polygonOffsetUnits: 4 });
+    ink.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W)));
     const toon = new Map<THREE.Material, THREE.Material>();
     const toToon = (m: THREE.Material) => {
       let t = toon.get(m);
@@ -424,6 +462,7 @@ export class View {
         // (the stick is a plain box, so its shell is clean)
         if (name.startsWith('visor') || name.startsWith('blade')) return;
         const sk = m as THREE.SkinnedMesh;
+        View.outlineWeights(m, sk.isSkinnedMesh && !name.startsWith('helmet') ? 'body' : name.startsWith('helmet') ? 'helmet' : 'rigid');
         let hull: THREE.Mesh;
         if (sk.isSkinnedMesh) { const h = new THREE.SkinnedMesh(sk.geometry, ink); h.bind(sk.skeleton, sk.bindMatrix); hull = h; }
         else hull = new THREE.Mesh(m.geometry, ink);
@@ -466,6 +505,8 @@ export class View {
       const act = play(name, 0.08); act.paused = false; act.timeScale = 0;
       act.time = Math.max(0, Math.min(0.999, f)) * act.getClip().duration;
     };
+    const forced = DBG.get('pose');   // ?pose=slapshot:0.45 holds every skater in that clip and moment (test frames)
+    if (forced) { const [c, f] = forced.split(':'); if (a.acts[c]) { scrub(c, parseFloat(f || '0.5')); a.mixer.update(dt); return; } }
     if (!s) { play(a.acts.goalie ? 'goalie' : 'glide'); a.mixer.update(dt); return; }   // goalie: wide, low stance
     const sp = Math.hypot(s.vx, s.vy);
     // knocked down: fall (Quaternius library clip, joined after its standing start), lie there, then
@@ -620,8 +661,10 @@ export class View {
     }
     // puck
     this.puckMat = new THREE.MeshStandardMaterial({ color: 0x1d1b26, roughness: 0.8 });
-    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.16, 12), this.puckMat);
-    this.puckGlow = new THREE.Mesh(new THREE.CircleGeometry(0.56, 20), new THREE.MeshBasicMaterial({ color: 0xe5482d, depthWrite: false }));
+    // slimmer, smoother puck (about 3:1 like a real one, 48 sides); the top face is a touch lighter so it reads as a disc
+    const puckTop = new THREE.MeshStandardMaterial({ color: 0x3a3846, roughness: 0.6 });
+    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.09, 48), [this.puckMat, puckTop, this.puckMat]);
+    this.puckGlow = new THREE.Mesh(new THREE.CircleGeometry(0.48, 40), new THREE.MeshBasicMaterial({ color: 0xe5482d, depthWrite: false }));
     this.puckGlow.rotation.x = -Math.PI / 2;
     this.scene.add(this.puck, this.puckGlow);
     for (let i = 0; i < 4; i++) {
@@ -800,7 +843,7 @@ export class View {
     // puck
     const dropH = g.phase === 'faceoff' && !g.foLive ? Math.min(3.5, g.foDrop * 5) : 0;
     const lift = p.kind === 'pass' && p.lifted && p.liftT > 0 ? Math.sin(Math.PI * Math.min(1, p.age / p.liftT)) * 0.9 : 0;
-    this.puck.position.set(p.x, 0.09 + dropH + lift, p.y);
+    this.puck.position.set(p.x, 0.05 + dropH + lift, p.y);
     this.puckGlow.position.set(p.x, 0.03, p.y);
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
     this.puckGlow.scale.setScalar(fire ? 1.5 + Math.sin(this.t * 20) * 0.2 : 1);

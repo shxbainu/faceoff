@@ -19,8 +19,8 @@ for (const v of variants) {
     await page.keyboard.press('Enter'); await page.waitForTimeout(150);
   }
   await page.waitForTimeout(1200);
-  await page.screenshot({ path: `tests/out/look-${v}.png` });
+  await page.screenshot({ path: `tests/out/look-${v.replace(/[^a-z0-9_.-]+/gi, "_")}.png` });
   await page.close();
 }
 await browser.close(); server.kill();
-console.log('saved', variants.map(v => `tests/out/look-${v}.png`).join(' '));
+console.log("saved", variants.map(v => `tests/out/look-${v.replace(/[^a-z0-9_.-]+/gi, "_")}.png`).join(" "));
