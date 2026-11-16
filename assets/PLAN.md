@@ -190,3 +190,22 @@ piping on the jersey, a number and crest (our own design), shoulder and elbow pa
 cloth, segmented glove fingers and a cuff roll, helmet vents and ear guards, skate boot panels and
 laces, stick tape spiral and blade curve, a tie-down strap at the jersey hem. Also still open: the
 jersey rounds out over the back in side view, and the semi-realistic face behind the visor.
+
+### 7g. 2D player assets for a 2.5D build (searched 2026-11-16)
+
+The user wants a separate 2.5D build drawn with real 2D art (not sprites rendered from our 3D
+model), and a smooth look, not pixel art. Every source checked:
+
+| Source | Hockey players found | Usable? |
+|---|---|---|
+| itch.io (tag hockey, 2D, searches for hockey sprite / sprite sheet) | Mini Hockey by CanadianBoy (free, overhead); Pixel Hockey 32x32 by Masalimov Ilnur ($5, chibi 3/4 view); Ice Hockey NES by chasersgaming (GBP 2, public domain, 3/4 side view, skate/shoot/fight/keeper/celebrate) | All pixel art |
+| OpenGameArt (2D art search) | ICE Hockey Pack (CC0: puck and icon art, no players); hockey players by wutang33 (CC0, tiny overhead); Ice Hockey jersey (CC-BY 3.0, jersey only) | No |
+| GameDev Market | Only the NES pack above | Pixel art |
+| Unity Asset Store | Hockey Player Animated ($19) is 3D; 2D Spine packs exist but none are hockey | No |
+| CraftPix, GameArt2D, Kenney | No hockey characters | No |
+| Vecteezy, Freepik/Magnific | Many smooth vector hockey players, static poses only | Art source only |
+| Creative Market | "Ice Hockey Player Vector. Animated" listing no longer exists | No |
+
+No free, smooth, animated 2D hockey player exists. Realistic routes: a paid vector character
+kit with hockey gear that can be cut into parts and animated as 2D cut-out (bones), a commission,
+or static vector art from Vecteezy/Freepik as a base.
