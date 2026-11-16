@@ -630,7 +630,9 @@ export class Game {
         if (sc > bs) { bs = sc; to = m; }
       }
     }
-    const speed = (lifted ? 15 : 18) + 2 * this.pw(s.team, 'curve');
+    // crisp passes: about 3x skating speed, harder over distance (was a flat 18, which drifted)
+    const far = to ? Math.hypot(to.x - s.x, to.y - s.y) : 12;
+    const speed = clamp(16 + far * 0.55, 20, 28) * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
     p.lifted = lifted; p.liftT = 0;
     p.owner = null; p.age = 0; p.checked.clear(); p.from = s; p.lastTeam = s.team; p.shooter = null; p.cc = 0;
     p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6;
@@ -854,6 +856,18 @@ export class Game {
     if (p.cc > 0 && p.age < p.cT) {
       const k = p.cc * (1 - (2 * p.age) / p.cT) * dt;
       p.x += p.cpx * k; p.y += p.cpy * k;
+    }
+    // tape to tape: a pass bends gently toward its receiver as he moves (not for curve passes mid-bend)
+    if (p.kind === 'pass' && p.target && this.active(p.target) && !(p.cc > 0 && p.age < p.cT)) {
+      const t = p.target, sp0 = Math.hypot(p.vx, p.vy) || 1;
+      const lead = Math.min(0.4, Math.hypot(t.x - p.x, t.y - p.y) / sp0);
+      const wx = t.x + t.vx * lead - p.x, wy = t.y + t.vy * lead - p.y, wl = Math.hypot(wx, wy) || 1;
+      const cur = Math.atan2(p.vy, p.vx), want = Math.atan2(wy, wx);
+      let da = want - cur; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+      if (Math.abs(da) < 1.1 && wl > 0.8) {
+        const turn = clamp(da, -2.2 * dt, 2.2 * dt), na = cur + turn;
+        p.vx = Math.cos(na) * sp0; p.vy = Math.sin(na) * sp0;
+      }
     }
     if (this.goalieTouch(p, x0, y0)) return;
     // goal?

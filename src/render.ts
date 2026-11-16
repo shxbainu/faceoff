@@ -88,7 +88,8 @@ export class View {
     this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true, forceWebGL });
     await this.renderer.init();
     this.backend = (this.renderer.backend as any).isWebGPUBackend ? 'webgpu' : 'webgl2';
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // at least 1.5x even on a 1x screen: the skaters are small on screen and soften badly at 1x
+    this.renderer.setPixelRatio(Math.min(2, Math.max(window.devicePixelRatio, 1.5)));
     this.scene.background = new THREE.Color(0x0d1018);
     this.hemi = new THREE.HemisphereLight(0xffffff, 0x7f8fb5, 1.25);
     this.sun = new THREE.DirectionalLight(0xffffff, 1.7);
@@ -386,6 +387,7 @@ export class View {
       const cv = document.createElement('canvas'); cv.width = read.width; cv.height = read.height;
       const tex = new THREE.CanvasTexture(cv);
       tex.flipY = src.flipY; tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = src.wrapS; tex.wrapT = src.wrapT;
+      tex.anisotropy = 8;   // stripes stay crisp on surfaces seen at an angle
       this.playerTex.push({ cv, tex });
       return View.inkToon({ map: tex, gradientMap: ramp });
     });
