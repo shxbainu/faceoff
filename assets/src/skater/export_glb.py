@@ -12,7 +12,7 @@ import bpy, json, os
 ROOT = '/Users/brianyao/claude-web-game/'
 SRC = ROOT + 'assets/src/skater/'
 OUTF = ROOT + 'assets/models/skater.glb'
-TEX = 2048
+TEX = 4096
 sc = bpy.context.scene; vl = bpy.context.view_layer
 arm = bpy.data.objects['Armature']; out = bpy.data.objects['skater_outfit']
 PARTS = ['skater_outfit', 'helmet3', 'visor_half', 'blade_l', 'blade_r', 'stick']
@@ -23,11 +23,31 @@ def select_only(objs, active):
     vl.objects.active = active
 
 # ---------------------------------------------------------------- 1. texture bake
+def game_uv():
+    # A UV layout for the game texture where every face gets pixels in proportion to its real surface area.
+    # The body's own layout spends most of the image on the head and hands (hidden under helmet and gloves),
+    # which left the jersey and stripes soft.
+    me = out.data
+    if 'GameUV' not in me.uv_layers:
+        me.uv_layers.new(name='GameUV')
+    me.uv_layers.active = me.uv_layers['GameUV']
+    for u in me.uv_layers: u.active_render = (u.name == 'UVMap')   # materials keep sampling their own UVs
+    select_only([out], out)
+    bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.002, area_weight=0.0, correct_aspect=True, scale_to_bounds=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+def subdivide():
+    # one level of subdivision before skinning: smoother silhouettes and folds at game size
+    if not out.modifiers.get('subd'):
+        m = out.modifiers.new('subd', 'SUBSURF'); m.levels = 1; m.render_levels = 1; m.quality = 2
+        out.modifiers.move(out.modifiers.find('subd'), 0)   # before the armature: subdivide the rest shape, then skin
+
 def bake_texture():
     me = out.data
     img = bpy.data.images.get('skater_tex') or bpy.data.images.new('skater_tex', TEX, TEX)
     img.scale(TEX, TEX)
-    if me.uv_layers.get('UVMap'): me.uv_layers.active = me.uv_layers['UVMap']
+    me.uv_layers.active = me.uv_layers['GameUV'] if me.uv_layers.get('GameUV') else me.uv_layers['UVMap']
     nodes = []
     for m in me.materials:
         n = m.node_tree.nodes.new('ShaderNodeTexImage'); n.image = img; m.node_tree.nodes.active = n; nodes.append((m, n))
@@ -47,6 +67,7 @@ def export_material(img):
     m = bpy.data.materials.get('skater_export') or bpy.data.materials.new('skater_export'); m.use_nodes = True
     nt = m.node_tree; nt.nodes.clear()
     t = nt.nodes.new('ShaderNodeTexImage'); t.image = img
+    uvn = nt.nodes.new('ShaderNodeUVMap'); uvn.uv_map = 'GameUV'; nt.links.new(uvn.outputs[0], t.inputs['Vector'])
     b = nt.nodes.new('ShaderNodeBsdfPrincipled'); b.inputs['Roughness'].default_value = 0.7
     o = nt.nodes.new('ShaderNodeOutputMaterial')
     nt.links.new(t.outputs[0], b.inputs['Base Color']); nt.links.new(b.outputs[0], o.inputs[0])
@@ -120,7 +141,11 @@ def library_clip(name, src):
 
 # ---------------------------------------------------------------- 3. export
 def export(actions, mat):
-    me = out.data; saved = list(me.materials); saved_idx = [p.material_index for p in me.polygons]
+    # export a slim copy of the outfit: only the game UV layout, no colour attributes
+    full = out.data; me = full.copy(); out.data = me
+    for u in [u for u in me.uv_layers if u.name != 'GameUV']: me.uv_layers.remove(u)
+    for a in [a for a in me.color_attributes]: me.color_attributes.remove(a)
+    saved = list(full.materials)
     me.materials.clear(); me.materials.append(mat)
     for p in me.polygons: p.material_index = 0
     arm.animation_data.action = None
@@ -145,12 +170,11 @@ def export(actions, mat):
     for o in objs: col.objects.unlink(o)
     for t in list(arm.animation_data.nla_tracks): arm.animation_data.nla_tracks.remove(t)   # so re-posing starts clean
     sc.collection.children.unlink(col); vl.active_layer_collection = vl.layer_collection
-    me.materials.clear()                        # back to the editable outfit materials
-    for m in saved: me.materials.append(m)
-    for p, i in zip(me.polygons, saved_idx): p.material_index = i
+    out.data = full; bpy.data.meshes.remove(me)   # back to the editable outfit
     return saved
 
 if bpy.context.object and bpy.context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
+game_uv()
 img = bake_texture(); mat = export_material(img)
 acts = bake_clips(); drop_controls()
 acts.append(library_clip('fall', 'Death01'))
