@@ -22,14 +22,15 @@ def rot(name, axis, deg):
 # legs: shoulder-width stance, toes turned out, knees bent over the toes, skates flat on the ice
 for s, side in ((1, 'l'), (-1, 'r')):
     rot('thigh_' + side, 'Y', -s * 16)      # spread the legs (left leg out to +X)
-    rot('thigh_' + side, 'X', -40)          # knee forward
-    rot('calf_' + side, 'X', 66)            # shin back
+    rot('thigh_' + side, 'X', -48)          # knee forward: a low, athletic stance
+    rot('calf_' + side, 'X', 80)            # shin back
     rot('foot_' + side, 'Y', s * 14)        # keep the blade flat after the spread
-    rot('foot_' + side, 'X', -26)
+    rot('foot_' + side, 'X', -32)
     rot('thigh_' + side, 'Z', s * 12)       # toes out
 # torso: lean forward from the hips, chest up, eyes up the ice
 rot('pelvis', 'X', 8)
-rot('spine_01', 'X', 26); rot('spine_02', 'X', 10)
+rot('spine_01', 'X', 36); rot('spine_02', 'X', 12)
+rot('spine_02', 'Z', -10)   # chest turned a little toward the stick side
 rot('neck_01', 'X', -10); rot('Head', 'X', -16)
 vl.update()
 
@@ -42,7 +43,7 @@ arm.location.z -= low; vl.update()
 
 # stick: out in front, blade ahead and a little to the right, shaft at a natural lie angle
 pelvis = arm.matrix_world @ P['pelvis'].matrix.translation
-TOP = pelvis + Vector((0.14, -0.30, 0.12))           # in front of the left hip
+TOP = pelvis + Vector((-0.04, -0.20, 0.12))          # top hand in front of the belly
 HEEL = Vector((pelvis.x - 0.32, pelvis.y - 1.05, 0.035))  # out front, to his right
 for n in ('stick', 'grip_l', 'grip_r', 'pole_l', 'pole_r'):
     x = bpy.data.objects.get(n)
@@ -55,9 +56,9 @@ def empty(name, loc):
 gl = empty('grip_l', TOP + d * 0.06)
 gr = empty('grip_r', TOP + d * (L * 0.46))
 pl = empty('pole_l', pelvis + Vector((0.6, 0.15, 0.45)))
-pr = empty('pole_r', pelvis + Vector((-0.6, 0.1, 0.25)))
+pr = empty('pole_r', pelvis + Vector((-0.6, 0.25, 0.35)))   # elbow out and back
 for side, g, pole in (('l', gl, pl), ('r', gr, pr)):
-    c = P['lowerarm_' + side].constraints.new('IK'); c.target = g; c.chain_count = 3 if side == 'r' else 2
+    c = P['lowerarm_' + side].constraints.new('IK'); c.target = g; c.chain_count = 2   # shoulders stay in place; only the arms reach
     c.pole_target = pole; c.pole_angle = math.radians(-90)
 vl.update()
 
@@ -83,14 +84,14 @@ def align_hand(side, d):
     o = Mw.translation
     Mw2 = Matrix.Translation(o) @ x.rotation_difference(tgt).to_matrix().to_4x4() @ Matrix.Translation(-o) @ Mw
     pb.matrix = arm.matrix_world.inverted() @ Mw2; vl.update()
-HEEL = Vector((pelvis.x - 0.30, pelvis.y - 0.82, 0.035))
+HEEL = Vector((pelvis.x - 0.50, pelvis.y - 0.60, 0.035))   # blade out to his right, so the bottom hand can reach with a bent elbow
 for _ in range(3):
     pt = palm('l'); d = (HEEL - pt).normalized(); align_hand('l', d)
 pt = palm('l'); d = (HEEL - pt).normalized(); Ls = (HEEL - pt).length
 S = arm.matrix_world @ P['upperarm_r'].matrix.translation
-reach = (arm.data.bones['upperarm_r'].length + arm.data.bones['lowerarm_r'].length) * 0.97 + 0.07 + 0.1  # the shoulder drops toward the stick
+reach = (arm.data.bones['upperarm_r'].length + arm.data.bones['lowerarm_r'].length) * 0.86 + 0.07  # keep the elbow bent
 best = 0.25
-for k in range(26, 75):
+for k in range(15, 75):
     t = Ls * k / 100
     if (pt + d * t - S).length <= reach: best = t
 goal = pt + d * best
