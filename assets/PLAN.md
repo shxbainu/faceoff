@@ -225,3 +225,27 @@ Verdict: generation can give the smooth 2D look. Consistency within one image is
 separate images it drifts (stick colour, angle). Image-to-image with the first sprite as a
 reference would hold the character; Weave (in Figma) offers that but the user's Figma account is
 not linked to Weave yet.
+
+### 8. Free local generation for game assets (researched 2026-11-16)
+
+This Mac: Apple M4, 24 GB unified memory, ComfyUI Desktop 0.45 (MPS). Licences read from the
+Hugging Face / GitHub pages, not blogs. Apple's GPU backend generally can't run fp8 files, so
+use GGUF quantised models.
+
+| Job | Model / tool | Licence | Mac | Notes |
+|---|---|---|---|---|
+| Same character, new angle or pose | Qwen-Image-Edit 2511 (GGUF Q4_K_M, 12.8 GB) | Apache 2.0 | yes (GGUF) | Main 2D tool; downloading. Lightning 4-step LoRA for speed. |
+| Split a drawing into transparent layers (cut-out parts) | Qwen-Image-Layered | Apache 2.0 | likely (GGUF exists) | 3 or 8 RGBA layers; unproven for limbs; hidden areas need repainting. |
+| Animate a drawing (frames for sprite sheets) | Wan 2.2 TI2V 5B | Apache 2.0 | yes, slow | Image-to-video, 24 fps; one report: 49 frames at 1280x704 in about 7 min on a Mac. |
+| Other video models | LTX-2 | own community licence | - | Check terms before use. |
+| Image to 3D | TRELLIS.2 | MIT | via trellis-silicon port (MIT, new, 10 stars), needs 24 GB+ | Official code is Linux + NVIDIA only. |
+| Image to 3D, bundled with auto-rig and animations | AssetFurnace (image-to-3dlab) | Apache 2.0 (tool) | yes, 32 GB recommended | Wraps TRELLIS.2, Hunyuan3D, SF3D; each model keeps its own licence. |
+| Image to 3D | TripoSR | MIT | yes | Older, lower quality. |
+| Image to 3D | Hunyuan3D 2.1 / 2mini | Tencent Hunyuan Community | - | Excludes some regions and has usage limits: avoid for a commercial game. |
+| Image to 3D | Stable Fast 3D | Stability Community | yes | Free under a revenue threshold. |
+| 2D bone animation editors | DragonBones (free, open source); Rigby2D (claims unverified) | - | - | For a cut-out rig like the reference's. |
+
+Planned 2D route (reference-style cut-out): design one cartoon skater, redraw 5 directions with
+Qwen-Image-Edit (mirror 3), split each into body parts (Qwen-Image-Layered, or Qwen-Image-Edit
+asked for each part alone), rig with bones in the game, key the motion in 2D. Frame-based backup:
+Wan 2.2 image-to-video per direction, cut out with background removal.
