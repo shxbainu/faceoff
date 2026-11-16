@@ -1,5 +1,5 @@
 // Playbot: plays Faceoff through real keyboard input in Chromium, takes screenshots,
-// and reports frame timing. Usage: node tests/playbot.mjs [--matches 1] [--headed] [--webgl] [--query "round=2"]
+// and reports frame timing. Usage: node tests/playbot.mjs [--matches 1] [--headed] [--webgl] [--query "round=2"] [--dpr 2]
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -26,7 +26,7 @@ const browser = await chromium.launch({
   headless: !HEADED, channel: 'chromium',
   args: ['--enable-gpu', '--use-angle=metal', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
 });
-const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: Number(arg('dpr', 1)) });
 const errors = [];
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', e => errors.push('PAGEERROR ' + e.message));

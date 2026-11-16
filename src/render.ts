@@ -1,21 +1,31 @@
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { positionLocal, normalLocal } from 'three/tsl';
 import { Game, L, W, CR, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
 // if a file is missing or broken the procedural model simply stays.
 const ASSET_URL = {
   crowd: new URL('../assets/models/crowd.glb', import.meta.url).href,
-  player: new URL('../assets/models/player.glb', import.meta.url).href,
+  // animated, skinned skater (assets/src/skater/): idle, stride, glide, wrist_shot, slapshot, check
+  player: new URL('../assets/models/skater.glb', import.meta.url).href,
   net: new URL('../assets/models/net.glb', import.meta.url).href,
 };
 export type AssetState = 'procedural' | 'glb' | 'failed';
 
 const BLUE = 0x1e90ff;
 
+interface SkaterAnim {
+  mixer: THREE.AnimationMixer; acts: Record<string, THREE.AnimationAction>; cur: string;
+  shotT: number; shotKind: 'wrist' | 'slap'; prevWind: number; checkLen: number;
+}
 interface SkaterView {
   root: THREE.Group; body: THREE.Group; shadow: THREE.Mesh; fall: number; spin: number;
+  anim?: SkaterAnim;
 }
+/** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
+const INK = 0x16141c, INK_W = 0.042, SKATER_SCALE = 1.25;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
   const pts: [number, number][] = [];
@@ -62,6 +72,7 @@ export class View {
   private playerSrc: ImageData | null = null;
   private playerTex: { cv: HTMLCanvasElement; tex: THREE.CanvasTexture }[] = [];
   private teamHex: [number, number][] = [[0xffffff, 0x222222], [0xffffff, 0x222222]];
+  private helmetMat: THREE.MeshToonMaterial[] = [];
   assetsReady: Promise<void> = Promise.resolve();
   private hemi!: THREE.HemisphereLight; private sun!: THREE.DirectionalLight; private lightK = 1;
   private laneMesh!: THREE.Mesh; private laneMat!: THREE.MeshBasicMaterial;
@@ -344,29 +355,111 @@ export class View {
     this.scene.add(...fans);
   }
 
-  /** skaters: one textured mesh per skater; the box skater stays underneath, hidden, as the fallback */
+  /** skaters: one animated, skinned skater per view, drawn with flat cel shading and an ink outline.
+   *  The box skater stays underneath, hidden, as the fallback. */
   private async loadPlayer(loader: GLTFLoader, url: string) {
     const gltf = await loader.loadAsync(url);
-    const src = View.meshes(gltf.scene)[0];
-    const map = src && (src.material as THREE.MeshStandardMaterial).map;
-    if (!src || !map || !map.image) throw new Error('player.glb has no textured mesh');
-    const img = map.image as CanvasImageSource & { width: number; height: number };
+    let map: THREE.Texture | null = null;
+    gltf.scene.traverse(o => { const m = o as THREE.SkinnedMesh; if (m.isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) map = (m.material as THREE.MeshStandardMaterial).map; });
+    const src = map as THREE.Texture | null;
+    if (!src || !src.image || gltf.animations.length < 4) throw new Error('skater.glb is missing its textured outfit or its clips');
+    const img = src.image as CanvasImageSource & { width: number; height: number };
     const read = document.createElement('canvas'); read.width = img.width; read.height = img.height;
     const rc = read.getContext('2d', { willReadFrequently: true })!;
     rc.drawImage(img, 0, 0);
     this.playerSrc = rc.getImageData(0, 0, read.width, read.height);
-    const mats = [0, 1].map(() => {
+    // three tones: shadow, base, highlight
+    const ramp = new THREE.DataTexture(new Uint8Array([96, 96, 104, 255, 196, 196, 200, 255, 255, 255, 255, 255]), 3, 1);
+    ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
+    const outfitMats = [0, 1].map(() => {
       const cv = document.createElement('canvas'); cv.width = read.width; cv.height = read.height;
       const tex = new THREE.CanvasTexture(cv);
-      tex.flipY = map.flipY; tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = map.wrapS; tex.wrapT = map.wrapT;
+      tex.flipY = src.flipY; tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = src.wrapS; tex.wrapT = src.wrapT;
       this.playerTex.push({ cv, tex });
-      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.75, metalness: 0, flatShading: true });
+      return new THREE.MeshToonMaterial({ map: tex, gradientMap: ramp });
     });
     this.tintPlayers();
+    this.helmetMat = [0, 1].map(t => new THREE.MeshToonMaterial({ color: this.teamHex[t][1], gradientMap: ramp }));
+    const ink = new THREE.MeshBasicNodeMaterial({ color: INK, side: THREE.BackSide });
+    ink.positionNode = positionLocal.add(normalLocal.mul(INK_W));
+    const toon = new Map<THREE.Material, THREE.Material>();
+    const toToon = (m: THREE.Material) => {
+      let t = toon.get(m);
+      if (!t) {
+        const s = m as THREE.MeshStandardMaterial;
+        t = new THREE.MeshToonMaterial({ color: s.color, map: s.map, gradientMap: ramp, transparent: s.transparent, opacity: s.opacity, side: s.side });
+        toon.set(m, t);
+      }
+      return t;
+    };
     this.skaters.forEach((v, i) => {
+      const team = View.teamOf(i);
+      const model = SkeletonUtils.clone(gltf.scene) as THREE.Object3D;
+      const hulls: THREE.Object3D[] = [];
+      model.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const name = (m.material as THREE.Material).name || '';
+        if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) m.material = outfitMats[team];
+        else if (name.startsWith('helmet')) m.material = this.helmetMat[team];
+        else m.material = toToon(m.material as THREE.Material);
+        m.frustumCulled = false;
+        if (name.startsWith('visor')) return;   // the clear visor gets no outline
+        const sk = m as THREE.SkinnedMesh;
+        let hull: THREE.Mesh;
+        if (sk.isSkinnedMesh) { const h = new THREE.SkinnedMesh(sk.geometry, ink); h.bind(sk.skeleton, sk.bindMatrix); hull = h; }
+        else hull = new THREE.Mesh(m.geometry, ink);
+        hull.position.copy(m.position); hull.quaternion.copy(m.quaternion); hull.scale.copy(m.scale);
+        hull.frustumCulled = false; hulls.push(hull); (m.parent as THREE.Object3D).userData.hulls ??= [];
+        ((m.parent as THREE.Object3D).userData.hulls as THREE.Object3D[]).push(hull);
+      });
+      model.traverse(o => { for (const h of (o.userData.hulls as THREE.Object3D[] | undefined) ?? []) o.add(h); });
+      // the model faces +Z and is 1.8 m tall; the box skater faces +X and is about 2.25 units
+      model.rotation.y = Math.PI / 2; model.scale.setScalar(SKATER_SCALE);
       for (const c of v.body.children) c.visible = false;
-      const m = new THREE.Mesh(src.geometry, mats[View.teamOf(i)]); v.body.add(m);
+      v.body.add(model);
+      const mixer = new THREE.AnimationMixer(model), acts: Record<string, THREE.AnimationAction> = {};
+      for (const clip of gltf.animations) {
+        const a = mixer.clipAction(clip);
+        if (!['idle', 'stride', 'glide'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+        acts[clip.name] = a;
+      }
+      acts.idle.play();
+      v.anim = { mixer, acts, cur: 'idle', shotT: 0, shotKind: 'wrist', prevWind: -1, checkLen: 0 };
     });
+  }
+
+  /** choose and advance the skater's clip from what the sim says it is doing */
+  private animate(v: SkaterView, s: Skater | null, has: boolean, shotByMe: boolean, dt: number) {
+    const a = v.anim!;
+    const play = (name: string, fade = 0.15) => {
+      if (a.cur === name) return a.acts[name];
+      const next = a.acts[name]; next.reset(); next.enabled = true; next.setEffectiveWeight(1); next.play();
+      a.acts[a.cur].crossFadeTo(next, fade, false); a.cur = name; return next;
+    };
+    // scrubbed clips: time follows game state, not the clock
+    const scrub = (name: string, f: number) => {
+      const act = play(name, 0.08); act.paused = false; act.timeScale = 0;
+      act.time = Math.max(0, Math.min(0.999, f)) * act.getClip().duration;
+    };
+    if (!s) { play('glide'); a.mixer.update(dt); return; }   // goalie: low, quiet stance
+    const sp = Math.hypot(s.vx, s.vy);
+    if (s.wind >= 0 && has) { a.prevWind = s.wind; scrub('slapshot', Math.min(1, s.wind / 0.6) * 0.5); }
+    else {
+      if (a.prevWind >= 0 && shotByMe) { a.shotT = 0.35; a.shotKind = 'slap'; }
+      else if (shotByMe && a.shotT <= 0 && a.cur !== 'wrist_shot' && a.cur !== 'slapshot') { a.shotT = 0.35; a.shotKind = 'wrist'; }
+      a.prevWind = -1;
+      if (a.shotT > 0) {
+        a.shotT -= dt; const f = 1 - Math.max(0, a.shotT) / 0.35;
+        if (a.shotKind === 'slap') scrub('slapshot', 0.5 + 0.5 * f); else scrub('wrist_shot', 0.3 + 0.7 * f);
+      } else if (s.checkT > 0) {
+        if (a.cur !== 'check') a.checkLen = s.checkT;
+        scrub('check', 0.3 + 0.7 * (1 - s.checkT / Math.max(0.05, a.checkLen)));
+      } else if (sp > 2.2) { const act = play('stride'); act.timeScale = Math.max(0.6, Math.min(1.5, sp / 6)); }
+      else if (sp > 0.6) play('glide');
+      else play('idle');
+    }
+    a.mixer.update(dt);
   }
 
   /** repaint both team textures: white cloth takes the team colour, red gear takes the trim colour */
@@ -510,6 +603,7 @@ export class View {
     this.teamMat[1].body.color.setHex(away.color); this.teamMat[1].trim.color.setHex(away.trim);
     this.teamHex = [[home.color, home.trim], [away.color, away.trim]];
     this.tintPlayers();
+    this.helmetMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]));
     this.gems.forEach((g, i) => {
       g.visible = i < gemColors.length;
       if (g.visible) (g.material as THREE.MeshBasicMaterial).color.setHex(gemColors[i]);
@@ -613,7 +707,10 @@ export class View {
         v.body.rotation.x = v.fall * 1.5;
         v.body.position.y = v.fall * 0.3;
       }
-      v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
+      if (v.anim) {
+        v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
+        this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
+      } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
       v.root.scale.setScalar(boxed ? 0.6 : 1);
     }
     g.goalies.forEach((k, gi) => {
@@ -622,7 +719,8 @@ export class View {
       v.root.visible = v.shadow.visible = true;
       v.root.position.set(k.x, 0, k.y); v.shadow.position.x = k.x; v.shadow.position.z = k.y;
       // crouched, facing up the ice, leaning into the slide
-      v.body.rotation.set(0, k.team === 0 ? 0 : -Math.PI, -0.3);
+      v.body.rotation.set(0, k.team === 0 ? 0 : -Math.PI, v.anim ? 0 : -0.3);
+      if (v.anim) this.animate(v, null, false, false, dt);
       v.body.position.y = 0; v.root.scale.setScalar(1.12);
       v.root.rotation.x = Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
     });

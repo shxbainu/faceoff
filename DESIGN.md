@@ -273,3 +273,16 @@ Stepped through the reference at its native 59.94 fps (ffmpeg), following one sk
 - **What this means for us:** separately generated 2D images can't give continuous turning or a
   20-30 fps stride with one consistent character. Our animated 3D skater drawn in the game with an
   ink outline and cel shading can, and that is not converting 3D into sprites: it stays 3D.
+
+### 3D skater in the game (2026-11-16)
+
+- `assets/models/skater.glb` replaces the old player model: one skinned skater cloned per skater and
+  goalie, team-tinted (white cloth takes the team colour, red gear the trim; helmets take the trim).
+- Drawn look: flat cel shading (three tones) and an ink outline that follows the skinned mesh
+  (back-face hull pushed out along the normal), the style the reference uses.
+- Clips follow the sim: stride (speed scales the playback), glide, idle, slapshot wind-up held while
+  the shot button is down then released, wrist shot, body check; goalies hold the glide stance.
+- 2560x1440 playbot run: 59 fps on WebGPU, skater GLB loads in about 0.3 s, no errors. Old box
+  skater stays as the fallback.
+- Still open: skaters are about 55 px tall on a 720p screen (reference about 90 px), so the camera
+  could come closer; no fall/hit clips yet (falls still tip the whole body).
