@@ -209,3 +209,19 @@ model), and a smooth look, not pixel art. Every source checked:
 No free, smooth, animated 2D hockey player exists. Realistic routes: a paid vector character
 kit with hockey gear that can be cut into parts and animated as 2D cut-out (bones), a commission,
 or static vector art from Vecteezy/Freepik as a base.
+
+### 7h. Generated 2D skater tests (2026-11-16)
+
+Generated with GPT-image 2.5 (Figma AI, user's credits, Figma file "Faceoff 2D skater tests"),
+saved in `assets/src/sprites2d/gen/`.
+
+| Test | Result |
+|---|---|
+| test1_single.png: one skater, ready stance | Smooth inked cartoon look, clean uniform, reads well. Camera lower than the game's 38 degrees. |
+| test2_turnaround.png: 8 directions in one image | Same character in all 8, consistent size and gear. Stick switches hands between views; camera near eye level. Fix: draw 5 directions and mirror 3. |
+| test3_stride.png: 6-frame stride from behind | Same character, steeper camera (closer to the game). Only the left leg pushes; the stick changed from wood to black. Frames need picking and aligning. |
+
+Verdict: generation can give the smooth 2D look. Consistency within one image is good; across
+separate images it drifts (stick colour, angle). Image-to-image with the first sprite as a
+reference would hold the character; Weave (in Figma) offers that but the user's Figma account is
+not linked to Weave yet.
