@@ -257,3 +257,19 @@ Useful for judging future suggestions.
 - Node.js v26 and npm 11 were installed with Homebrew on 2026-11-14 because npx was missing.
 - Playwright MCP was added with `claude mcp add playwright npx @playwright/mcp@latest` and showed Connected. It was added at local scope for the original session folder, so it must be added again in the project folder (or with `--scope user`).
 - Playwright's browser builds were not downloaded yet.
+
+### Reference video, frame by frame (2026-11-16)
+
+Stepped through the reference at its native 59.94 fps (ffmpeg), following one skater around 84.5 s
+(`assets/src/reference/t2t_turn_60fps.png`, `t2t_stride_60fps.png`).
+- **Turning is continuous.** Over about 8 frames the skater goes from side-on to straight away from
+  the camera, a little further each frame; the name and number on his back slide gradually around the
+  jersey. That is not 8 fixed drawings swapped at 45 degree steps. It behaves like a 3D model drawn
+  with ink outlines and flat cel shading (or a sprite set with dozens of angles).
+- **The stride is smooth.** The legs change pose every 2 to 3 video frames, so roughly 20 to 30
+  drawings per second, with a soft round shadow under the skates.
+- **Look:** dark ink outline, two flat tones per colour, big-headed cartoon proportions, names and
+  numbers on every jersey.
+- **What this means for us:** separately generated 2D images can't give continuous turning or a
+  20-30 fps stride with one consistent character. Our animated 3D skater drawn in the game with an
+  ink outline and cel shading can, and that is not converting 3D into sprites: it stays 3D.
