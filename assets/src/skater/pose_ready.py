@@ -3,7 +3,7 @@
 # Right-hand shot: blade on the right, left hand on top of the stick, right hand partway down.
 # The character faces -Y, so his LEFT side is +X and his right side is -X.
 import bpy, bmesh, math
-from mathutils import Vector, Matrix
+from mathutils import Vector, Matrix, Quaternion
 
 sc = bpy.context.scene; vl = bpy.context.view_layer
 arm = bpy.data.objects['Armature']; P = arm.pose.bones
@@ -29,7 +29,7 @@ for s, side in ((1, 'l'), (-1, 'r')):
     rot('thigh_' + side, 'Z', s * 12)       # toes out
 # torso: lean forward from the hips, chest up, eyes up the ice
 rot('pelvis', 'X', 8)
-rot('spine_01', 'X', 16); rot('spine_02', 'X', 6)
+rot('spine_01', 'X', 26); rot('spine_02', 'X', 10)
 rot('neck_01', 'X', -10); rot('Head', 'X', -16)
 vl.update()
 
@@ -48,19 +48,6 @@ for n in ('stick', 'grip_l', 'grip_r', 'pole_l', 'pole_r'):
     x = bpy.data.objects.get(n)
     if x: bpy.data.objects.remove(x)
 sh = HEEL - TOP; L = sh.length; d = sh.normalized()
-me = bpy.data.meshes.new('stick'); bm = bmesh.new()
-def box(center, size, rotm, mi):
-    r = bmesh.ops.create_cube(bm, size=1)
-    for v in r['verts']: v.co = center + rotm @ Vector((v.co.x * size[0], v.co.y * size[1], v.co.z * size[2]))
-    for f in {f for v in r['verts'] for f in v.link_faces}: f.material_index = mi
-zq = Vector((0, 0, 1)).rotation_difference(d).to_matrix()
-box((TOP + HEEL) / 2, (0.026, 0.018, L), zq, 0)
-box(TOP + d * 0.05, (0.032, 0.024, 0.09), zq, 1)
-bd = Vector((-0.35, -0.94, 0)).normalized(); bq = Vector((1, 0, 0)).rotation_difference(bd).to_matrix()
-box(HEEL + bd * 0.14 + Vector((0, 0, 0.03)), (0.30, 0.012, 0.065), bq, 1)
-bm.to_mesh(me); bm.free()
-me.materials.append(bpy.data.materials['stick_shaft']); me.materials.append(bpy.data.materials['stick_tape'])
-sc.collection.objects.link(bpy.data.objects.new('stick', me))
 
 # hands: top hand at the knob, bottom hand about a third of the way down; elbows out, not tucked in
 def empty(name, loc):
@@ -70,7 +57,62 @@ gr = empty('grip_r', TOP + d * (L * 0.46))
 pl = empty('pole_l', pelvis + Vector((0.6, 0.15, 0.45)))
 pr = empty('pole_r', pelvis + Vector((-0.6, 0.1, 0.25)))
 for side, g, pole in (('l', gl, pl), ('r', gr, pr)):
-    c = P['lowerarm_' + side].constraints.new('IK'); c.target = g; c.chain_count = 2
+    c = P['lowerarm_' + side].constraints.new('IK'); c.target = g; c.chain_count = 3 if side == 'r' else 2
     c.pole_target = pole; c.pole_angle = math.radians(-90)
 vl.update()
-print('pose set; pelvis', [round(v, 2) for v in pelvis], 'stick length', round(L, 2))
+
+# fingers wrap the shaft: every finger joint bends about its local X axis (same on both hands)
+def curl(name, deg):
+    pb = P[name]; pb.rotation_quaternion = Quaternion((1, 0, 0), math.radians(deg))
+for side in 'lr':
+    for f in ('index', 'middle', 'ring', 'pinky'):
+        curl(f'{f}_01_{side}', 55); curl(f'{f}_02_{side}', 75); curl(f'{f}_03_{side}', 45)
+    curl(f'thumb_01_{side}', 20); curl(f'thumb_02_{side}', 30)
+vl.update()
+
+# the stick runs from the top palm to the blade spot on the ice; the bottom hand takes the point on the
+# shaft nearest its shoulder that is within reach, so both hands really hold it
+def palm(side):
+    M = arm.matrix_world @ P['hand_' + side].matrix
+    return M.translation + M.to_3x3() @ Vector((0, 0.07, 0.035))   # along the hand, then into the palm
+pt = palm('l')
+HEEL = Vector((pelvis.x - 0.30, pelvis.y - 0.82, 0.035))
+d = (HEEL - pt).normalized(); Ls = (HEEL - pt).length
+S = arm.matrix_world @ P['upperarm_r'].matrix.translation
+reach = (arm.data.bones['upperarm_r'].length + arm.data.bones['lowerarm_r'].length) * 0.97 + 0.07 + 0.1  # the shoulder drops toward the stick
+best = 0.25
+for k in range(26, 75):
+    t = Ls * k / 100
+    if (pt + d * t - S).length <= reach: best = t
+goal = pt + d * best
+g = bpy.data.objects['grip_r']; g.location = goal
+for _ in range(6):   # the IK aims the wrist; walk it until the palm itself sits on the shaft
+    vl.update(); err = goal - palm('r'); g.location += err * 0.9
+vl.update()
+pb_ = palm('r')
+TOP = pt - d * 0.12
+L = (HEEL - TOP).length
+me = bpy.data.meshes.new('stick'); bm = bmesh.new()
+def box(center, size, rotm, mi):
+    r = bmesh.ops.create_cube(bm, size=1)
+    for v in r['verts']: v.co = center + rotm @ Vector((v.co.x * size[0], v.co.y * size[1], v.co.z * size[2]))
+    for f in {f for v in r['verts'] for f in v.link_faces}: f.material_index = mi
+zq = Vector((0, 0, 1)).rotation_difference(d).to_matrix()
+box((TOP + HEEL) / 2, (0.026, 0.018, L), zq, 0)
+box(TOP + d * 0.05, (0.032, 0.024, 0.09), zq, 1)
+flat = Vector((d.x, d.y, 0)).normalized()
+bd = Vector((flat.y, -flat.x, 0)) if flat.length > 0 else Vector((-1, 0, 0))   # blade turned across the shaft
+if bd.x > 0: bd = -bd                                                           # toward his right (-X)
+bd = (bd * 0.6 + flat * 0.8).normalized()
+bq = Vector((1, 0, 0)).rotation_difference(bd).to_matrix()
+box(HEEL + bd * 0.14 + Vector((0, 0, 0.03)), (0.30, 0.012, 0.065), bq, 1)
+bm.to_mesh(me); bm.free()
+me.materials.append(bpy.data.materials['stick_shaft']); me.materials.append(bpy.data.materials['stick_tape'])
+st = bpy.data.objects.new('stick', me); sc.collection.objects.link(st)
+# the stick rides on the bottom hand so any animation carries it
+Mh = arm.matrix_world @ P['hand_r'].matrix
+st.parent = arm; st.parent_type = 'BONE'; st.parent_bone = 'hand_r'
+st.matrix_world = Matrix.Identity(4)
+vl.update()
+off = ((pb_ - pt) - d * (pb_ - pt).dot(d)).length
+print('pose set; stick length', round(L, 2), 'bottom hand along shaft', round(best / Ls, 2), 'bottom palm off the shaft by', round(off, 3))

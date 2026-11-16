@@ -8,7 +8,7 @@ import bpy, bmesh, math
 from mathutils import Vector
 from collections import Counter
 
-HEM = 0.93; KNEE = 0.60; SKATE = 0.20; CUFF = 0.62; GLOVE = 0.665; COLLAR = 1.50; NECK_W = 0.085
+HEM = 0.93; KNEE = 0.60; SKATE = 0.20; CUFF = 0.62; GLOVE = 0.665; COLLAR = 1.49; NECK_W = 0.095
 E = 1e-4
 
 def sstep(a, b, x):
@@ -63,6 +63,8 @@ def build():
 
     for v in bm.verts:
         c = v.co.copy(); r = vregion[v.index]; ax = abs(c.x); sx = 1 if c.x >= 0 else -1
+        if r in ('jersey', 'stripe') and c.z > 1.46 and ax < 0.16:
+            continue   # collar ring stays on the body so the neckline is a clean edge
         if r in ('jersey', 'stripe') and c.z > HEM - E and (ax < 0.30 or c.z < 1.2):
             a, b = torso_ab(c.z); ang = math.atan2((c.y - 0.02) / b, c.x / a); px, py = superell(ang, a, b, 2.4)
             w = 1 - sstep(0.24, 0.33, ax) if c.z > 1.2 else 1
