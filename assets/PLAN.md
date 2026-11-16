@@ -181,3 +181,12 @@ Blender MCP add-on (mcp-for-blender, localhost:9876): asset search on for Poly H
 | `assets/src/quaternius/ual/` | Universal Animation Library (Standard) by Quaternius: 43 animations incl. crouch idle, hit reactions, falls, push | CC0 |
 
 Mixamo was searched for skating: only a skateboard push exists, so the stride, shot and check will be keyed in Blender.
+
+### 7f. Skater detail pass (reserved, requested 2026-11-16)
+
+The user asked for more complexity on the skater model. Parked until the animations are done, so the
+detail is added once on a model whose deformation is already proven. Candidates: visible seams and
+piping on the jersey, a number and crest (our own design), shoulder and elbow pad shapes under the
+cloth, segmented glove fingers and a cuff roll, helmet vents and ear guards, skate boot panels and
+laces, stick tape spiral and blade curve, a tie-down strap at the jersey hem. Also still open: the
+jersey rounds out over the back in side view, and the semi-realistic face behind the visor.

@@ -1,0 +1,32 @@
+{
+ "idle": {
+  "start": 1,
+  "end": 32,
+  "loop": true
+ },
+ "stride": {
+  "start": 39,
+  "end": 58,
+  "loop": true
+ },
+ "glide": {
+  "start": 65,
+  "end": 88,
+  "loop": true
+ },
+ "wrist_shot": {
+  "start": 95,
+  "end": 115,
+  "loop": false
+ },
+ "slapshot": {
+  "start": 121,
+  "end": 157,
+  "loop": false
+ },
+ "check": {
+  "start": 163,
+  "end": 183,
+  "loop": false
+ }
+}

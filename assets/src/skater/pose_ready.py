@@ -36,8 +36,8 @@ HINGE = 18
 rot('pelvis', 'X', HINGE)
 for side in 'lr': rot('thigh_' + side, 'X', -HINGE)
 for s, side in ((1, 'l'), (-1, 'r')):
-    rot('thigh_' + side, 'Y', -s * 16); rot('thigh_' + side, 'X', -48); rot('calf_' + side, 'X', 80)
-    rot('foot_' + side, 'Y', s * 14); rot('foot_' + side, 'X', -32); rot('thigh_' + side, 'Z', s * 12)
+    rot('thigh_' + side, 'Y', -s * 10); rot('thigh_' + side, 'X', -48); rot('calf_' + side, 'X', 80)
+    rot('foot_' + side, 'Y', s * 8); rot('foot_' + side, 'X', -32); rot('thigh_' + side, 'Z', s * 8)
 rot('pelvis', 'X', 8)
 rot('spine_01', 'X', 46 - HINGE); rot('spine_02', 'X', 4); rot('spine_03', 'X', -6)
 rot('spine_02', 'Z', -10); rot('clavicle_r', 'X', 12)
@@ -126,7 +126,7 @@ for tx, ty, tz in itertools.product(fr(0.0, 0.2, 5), fr(-0.25, -0.5, 6), fr(0.70
             if (G - SR).length <= reach150 and clear_of_body(T, d, s):
                 # prefer a wide grip, then a long stick, then the blade further out front
                 # wide grip, full-length stick, top hand down at the hips, blade out front
-                score = s * 100 - abs(Ls - 1.45) * 150 - abs(tz - 0.82) * 40 - hy * 5
+                score = s * 100 - abs(Ls - 1.45) * 150 - abs(tz - 0.82) * 40 - hy * 5 - abs(tx - 0.05) * 80   # top hand in front, not on the hip
                 cands.append((s, score, 0, T, H)); break
 cands.sort(key=lambda c: c[1], reverse=True)
 
