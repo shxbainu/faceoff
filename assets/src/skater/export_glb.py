@@ -168,7 +168,7 @@ def export(actions, mat):
     vl.active_layer_collection = vl.layer_collection.children[col.name]
     bpy.ops.export_scene.gltf(filepath=OUTF, use_selection=False, use_active_collection=True, use_active_scene=True, export_format='GLB', export_apply=True,
                               export_animations=True, export_animation_mode='NLA_TRACKS', export_skins=True,
-                              export_def_bones=True, export_image_format='WEBP', export_yup=True,
+                              export_def_bones=True, export_image_format='AUTO', export_yup=True,
                               export_extras=False, export_cameras=False, export_lights=False)
     for o in objs: col.objects.unlink(o)
     for t in list(arm.animation_data.nla_tracks): arm.animation_data.nla_tracks.remove(t)   # so re-posing starts clean
