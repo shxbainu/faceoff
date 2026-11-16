@@ -117,21 +117,12 @@ def build():
     cl = [v for v in bm.verts if vregion[v.index] in ('jersey', 'stripe', 'pants', 'pstripe', 'sock', 'cuff')]
     for _ in range(3): bmesh.ops.smooth_vert(bm, verts=cl, factor=0.4, use_axis_x=True, use_axis_y=True, use_axis_z=True)
     bm.normal_update()
-    from mathutils import noise
+    # Clean surfaces for the game's cartoon shading: fold, crumple and padding-ridge bumps made the two-tone
+    # shadows break into jagged patches and the contour ink drew lines along every ridge. Only the elbow pad
+    # stays, as a broad shape.
     for v in bm.verts:
         r = vregion[v.index]; c = v.co
-        if r in ('jersey', 'stripe') and c.z > HEM - E:
-            # soft vertical drape folds plus a little crumple, strongest low on the jersey where it hangs
-            hang = 1 - sstep(1.15, 1.42, c.z)
-            fold = 0.004 * math.sin(math.atan2(c.y - 0.02, c.x) * 9 + c.z * 3) * hang
-            v.co += v.normal * (fold + 0.0015 * noise.noise(c * 14))
-        elif r in ('pants', 'pstripe'):
-            # breezers: horizontal padding ridges and a little crumple
-            v.co += v.normal * (0.004 * max(0, math.sin(c.z * 70)) + 0.001 * noise.noise(c * 16))
-        elif r == 'sock' and c.z < KNEE - 0.06:
-            v.co += v.normal * 0.001 * noise.noise(c * 22)
         if r in ('jersey', 'stripe') and c.z > 1.2 and 0.38 < abs(c.x) < 0.48:
-            # elbow pad bump under the sleeve
             v.co += v.normal * 0.012 * max(0, 1 - abs(abs(c.x) - 0.43) / 0.05)
 
     names = ['team_body', 'team_trim', 'skate_boot', 'neck_guard', 'skin']

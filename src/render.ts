@@ -361,7 +361,7 @@ export class View {
   private static inkToon(params: THREE.MeshToonMaterialParameters): THREE.MeshToonNodeMaterial {
     const m = new THREE.MeshToonNodeMaterial(params);
     const facing = dot(normalView, positionViewDirection).abs();
-    const keep = smoothstep(0.1, 0.24, facing);
+    const keep = smoothstep(0.06, 0.16, facing);   // only real edges, not every gentle curve
     const ink = new THREE.Color(INK);
     m.colorNode = mix(vec3(ink.r, ink.g, ink.b), materialColor, keep);
     return m;
@@ -381,7 +381,7 @@ export class View {
     rc.drawImage(img, 0, 0);
     this.playerSrc = rc.getImageData(0, 0, read.width, read.height);
     // comic shading: one crisp shadow tone and one light tone
-    const ramp = new THREE.DataTexture(new Uint8Array([128, 132, 148, 255, 240, 241, 245, 255]), 2, 1);
+    const ramp = new THREE.DataTexture(new Uint8Array([172, 176, 190, 255, 244, 245, 248, 255]), 2, 1);
     ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
     const outfitMats = [0, 1].map(() => {
       const cv = document.createElement('canvas'); cv.width = read.width; cv.height = read.height;

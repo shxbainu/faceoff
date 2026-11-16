@@ -35,6 +35,9 @@ def game_uv():
     select_only([out], out)
     bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.002, area_weight=0.0, correct_aspect=True, scale_to_bounds=False)
+    bpy.ops.uv.select_all(action='SELECT')
+    try: bpy.ops.uv.pack_islands(rotate=True, margin=0.002, shape_method='CONCAVE')   # fills about 63% of the image
+    except TypeError: bpy.ops.uv.pack_islands(rotate=True, margin=0.002)
     bpy.ops.object.mode_set(mode='OBJECT')
 
 def subdivide():
