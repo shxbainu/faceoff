@@ -174,6 +174,21 @@ Plan agreed with the user: Phase 1 scale, camera, pace (+ goalies and shot place
 
 Open decision (2026-11-16): the user pointed out the reference is 2.5D, hand-drawn 2D sprites in a 3D rink with a north-to-south camera. Proposed for Phase 3: render our own skater model to sprite sheets in Blender (directions × poses) and draw them as camera-facing sprites in the 3D rink. That gives the 2.5D look from our own art.
 
+### Playtest of Phase 1, 2026-11-16 (user)
+
+- Biggest problem: the camera is straight overhead, a bird's-eye view, not 2.5D.
+- Rink no longer feels crowded, but bots still rush the puck with no strategy; three of them close on you every time; the players move as one pack straight up and down the middle.
+- You only ever see about half the rink, because the camera follows your one skater.
+- Skater models look bad and have no animation. Move to 2.5D soon with better assets.
+
+Measured from a full-resolution reference frame (video 80 s): the centre circle is about 527 px wide and 305 px tall, so the camera pitch is roughly 35 to 40 degrees above the ice, not the 66 degrees Faceoff uses. Skaters are seen at three-quarter view, which is what makes the sprites read.
+
+Plan (proposed 2026-11-16):
+1. **Camera:** pitch about 38 degrees, north to south, following the puck instead of your skater.
+2. **Control switching:** you control the puck carrier on offence and the skater nearest the puck on defence, plus a switch key.
+3. **Team AI with a shape**, from sports-game AI practice: each role has a home spot that shifts with the puck (a weighted mix of the formation spot and the puck position). Only one skater pressures the carrier (F1); F2 supports, F3 stays high; the two defenders keep a gap and never both pinch. Rotation rule from the 1-2-2 forecheck: when F1 forces play to a wall, the nearest middle forward takes that wall and the far one holds the middle. Bots on your team cover rather than press when you are nearest the puck.
+4. **2.5D skaters:** rig and animate a skater (stride, glide, wind-up, shot, check, fall, goalie stance), render it in Blender from 8 directions at the game's camera pitch into sprite sheets with a separate team-colour mask, and draw camera-facing sprites in the 3D rink.
+
 ### What gives shots their punch in the reference (studied 2026-11-16)
 
 One goal sequence studied frame by frame at 14 fps (video 17.6 s to 20.2 s). Seen: a short white streak behind the puck while it travels; on the goal a red light wash floods the end boards behind the net; a "GOAL" stamp in the scoreboard bar and a banner with the scorer's name. Not seen in this sequence: screen shake or slow motion. One shot is a small sample; more shots need checking before drawing firm conclusions.
