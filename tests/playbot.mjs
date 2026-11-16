@@ -92,7 +92,7 @@ while (Date.now() - start < 9 * 60000 && results.length < MATCHES + 0.5) {
   if (s.tier >= 2 && !seen.has('tier')) { seen.add('tier'); await shot('heat-tier' + s.tier); }
   if (now - lastPlayShot > 9000) { lastPlayShot = now; await shot('play'); }
   if (process.argv.includes('--idle')) { await page.waitForTimeout(40); continue; }
-  const me = s.skaters[0], p = s.puck, want = new Set();
+  const me = s.skaters.find(k => k.id === s.ctrl) || s.skaters[0], p = s.puck, want = new Set();
   const go = (x, y) => {
     const dx = x - me.x, dy = y - me.y;
     if (Math.abs(dx) > 0.6) want.add(dx > 0 ? 'KeyW' : 'KeyS');
@@ -101,7 +101,7 @@ while (Date.now() - start < 9 * 60000 && results.length < MATCHES + 0.5) {
   const opps = s.skaters.filter(k => k.team === 1 && k.ok);
   const near = opps.reduce((m, k) => Math.min(m, Math.hypot(k.x - me.x, k.y - me.y)), 99);
   const dGoal = Math.hypot(L - me.x, me.y);
-  if (p.owner === 0) {
+  if (p.owner === me.id) {
     if (held.has('KeyK') && !shootUntil) shootUntil = now + 420;
     if (shootUntil) {
       want.add('KeyK');
@@ -113,9 +113,9 @@ while (Date.now() - start < 9 * 60000 && results.length < MATCHES + 0.5) {
   } else {
     shootUntil = 0;
     const owner = s.skaters.find(k => k.id === p.owner);
-    if ((owner && owner.team === 0) || (p.kind === 'pass' && p.target === 0)) {
+    if ((owner && owner.team === 0) || (p.kind === 'pass' && p.target === me.id)) {
       const oy = owner ? owner.y : p.y;
-      if (p.target === 0) go(me.x + 0.01, me.y); else go(L - 7, oy > 0 ? -3.4 : 3.4);
+      if (p.target === me.id) go(me.x + 0.01, me.y); else go(L - 7, oy > 0 ? -3.4 : 3.4);
       if (dGoal < 12) { want.add('KeyK'); if (owner && now - lastCall > 700) { lastCall = now; await tap('KeyJ'); } }
     } else if (owner) {
       go(owner.x + owner.vx * 0.2, owner.y + owner.vy * 0.2);

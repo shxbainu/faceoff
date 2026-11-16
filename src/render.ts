@@ -30,7 +30,8 @@ function roundedOutline(off: number, seg = 10): [number, number][] {
 }
 
 // vertical camera: distance, elevation (rad) and how far ahead of the focus it looks
-const CAM_DIST = 37, CAM_EL = 1.15, CAM_LEAD = 5;
+// pitch measured from the reference: about 38 degrees above the ice, not overhead
+const CAM_DIST = 33, CAM_EL = 0.66, CAM_LEAD = 3;
 
 export class View {
   renderer!: THREE.WebGPURenderer;
@@ -44,7 +45,7 @@ export class View {
   private arrow!: THREE.Mesh; private disc!: THREE.Mesh; private discMat!: THREE.MeshBasicMaterial;
   private ring!: THREE.Mesh;
   private discInk!: THREE.Mesh; private beam!: THREE.Mesh; private toPuck!: THREE.Group;
-  private camZ = 0; private camD = 37;
+  private camZ = 0; private camD = 33;
   private gems: THREE.Mesh[] = [];
   private parts!: THREE.InstancedMesh;
   private pp = new Float32Array(400 * 8); // x y z vx vy vz life size
@@ -626,7 +627,7 @@ export class View {
       v.root.rotation.x = Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
     });
     // human markers
-    const h = g.skaters[0];
+    const h = g.ctrl;
     this.disc.position.x = h.x; this.disc.position.z = h.y; this.disc.visible = h.out <= 0;
     this.discMat.opacity = 0.6 + 0.4 * h.stamina;
     const ps = (h.frost ? 0.8 : 1) * (1 + Math.sin(this.t * 5) * 0.06);
@@ -755,13 +756,13 @@ export class View {
     const aspect = this.camera.aspect;
     const live = g.phase !== 'faceoff' && h.out <= 0;
     const sep = live ? Math.abs(p.x - h.x) : 0;
-    const want = (CAM_DIST + Math.max(0, Math.min(16, sep - 14)) * 0.4) * (aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
+    const want = (CAM_DIST + Math.max(0, Math.min(10, sep - 16)) * 0.3) * (aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
     this.camD += (want - this.camD) * Math.min(1, rdt * 2.5);
     const dist = this.camD;
-    const focus = live ? p.x * 0.55 + h.x * 0.45 : 0;
+    const focus = live ? p.x * 0.8 + h.x * 0.2 : 0;
     // low limit keeps our own net above the scorebug when defending
-    this.camX += (Math.max(-L + 11, Math.min(L - 13, focus + CAM_LEAD)) - this.camX) * Math.min(1, rdt * 3.5);
-    const fz = live ? Math.max(-4, Math.min(4, (p.y * 0.55 + h.y * 0.45) * 0.3)) : 0;
+    this.camX += (Math.max(-L + 9, Math.min(L - 12, focus + CAM_LEAD)) - this.camX) * Math.min(1, rdt * 3.5);
+    const fz = live ? Math.max(-6, Math.min(6, (p.y * 0.8 + h.y * 0.2) * 0.45)) : 0;
     this.camZ += (fz - this.camZ) * Math.min(1, rdt * 3);
     this.shake = Math.max(0, this.shake - rdt * 3);
     const sx = (Math.random() - 0.5) * this.shake * 1.3 + this.kickX, sz = (Math.random() - 0.5) * this.shake * 1.3 + this.kickZ;

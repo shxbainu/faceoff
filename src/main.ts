@@ -46,7 +46,7 @@ function ctl(): Ctl {
     // the camera looks up-ice (+x), so screen up is +x and screen right is +y
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
     my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-    pass: k('KeyJ'), shoot: k('KeyK'), check: k('KeyL'), burst: k('ShiftLeft', 'ShiftRight'),
+    pass: k('KeyJ'), shoot: k('KeyK'), check: k('KeyL'), burst: k('ShiftLeft', 'ShiftRight'), swap: k('Space'),
   };
 }
 
@@ -95,6 +95,7 @@ function showTitle() {
       <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it</span>
       <span><kbd>K</kbd></span><span>Hold and release to shoot · hold before a pass lands for a one-timer</span>
       <span><kbd>L</kbd></span><span>Check · hit with speed, tie up from a standstill, poke by reaching the puck</span>
+      <span><kbd>Space</kbd></span><span>Switch to the skater nearest the puck</span>
     </div>
     <div class="go">Press Enter to drop the puck</div></div>`);
 }
@@ -115,6 +116,7 @@ function startRound() {
   opp = OPPONENTS[ROUND_ORDER[round - 1]];
   const seed = parseInt(params.get('seed') || '0') || (Date.now() & 0x7fffffff);
   game = new Game(round, opp, powers, seed + round * 7919);
+  game.autoplay = params.has('autoplay');
   game.events.length = 0;
   const owned = POWERS.filter(p => powers[p.id] > 0);
   view.setTeams(HOME, opp, owned.map(p => parseInt(p.color.slice(1), 16)));
@@ -208,6 +210,7 @@ function handle(e: Ev) {
       break;
     }
     case 'pass': sfx.pass(); break;
+    case 'switch': sfx.recv(); break;
     case 'recv': case 'pickup': sfx.recv(); break;
     case 'shot': sfx.shot(!!e.big); break;
     case 'hit': sfx.hit(!!e.big); break;
@@ -245,7 +248,7 @@ function hud() {
   if (m !== lastMult) { lastMult = m; $('mult').textContent = game.fireT > 0 ? 'On fire x5' : 'x' + m; $('heat').classList.toggle('fire', game.fireT > 0); }
   const st = Math.round(game.style);
   if (st !== lastStyle) { lastStyle = st; $('style').textContent = 'Style ' + st; }
-  const h = game.skaters[0];
+  const h = game.ctrl;
   const you = $('you');
   if (mode === 'match' && h.out <= 0) {
     // name tag follows you; if you are ever off screen it pins to the nearest edge

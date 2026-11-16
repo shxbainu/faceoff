@@ -48,6 +48,7 @@ export const RUN_ROUNDS = 8;
 export interface Ctl {
   mx: number; my: number; pass: boolean; shoot: boolean; check: boolean; burst: boolean;
   passTo?: Skater | null;
+  swap?: boolean;
 }
 
 export interface Skater {
@@ -101,6 +102,11 @@ export class Game {
   events: Ev[] = [];
   winner = -1; time = 0; pendingOver = false;
   stats: Stats = { shots: [0, 0], hits: [0, 0], passes: [0, 0], saves: [0, 0], oneTimers: 0, attack: [0, 0] };
+  /** test hook: bots also play the player's skater */
+  autoplay = false;
+  /** the skater the player is steering; changes hands with the puck and on the switch key */
+  ctrl!: Skater;
+  private pSwap = false;
   goalies: Goalie[] = [0, 1].map(team => ({ team, x: (team === 0 ? -1 : 1) * (L - 0.9), y: 0, vy: 0, react: 0 }));
   // gimmick state
   gimT = 6;
@@ -126,6 +132,7 @@ export class Game {
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
       });
     }
+    this.ctrl = this.skaters[0];
     this.pucks.push(this.newPuck());
     if (opp.gimmick === 'zamboni') this.score[1] = 0;
     this.setupFaceoff();
@@ -191,6 +198,7 @@ export class Game {
       if (s.boxed > 0) s.boxed = 0;
     }
     for (const g of this.goalies) { g.y = 0; g.vy = 0; }
+    if (this.ctrl) this.setCtrl(this.skaters[0]);
     this.pucks.length = 1;
     const p = this.pucks[0];
     Object.assign(p, this.newPuck());
@@ -203,7 +211,9 @@ export class Game {
   step(dt: number, human: Ctl) {
     this.time += dt;
     if (this.phase === 'over') return;
-    const hs = this.skaters[0];
+    const hs = this.ctrl;
+    const swapEdge = !!human.swap && !this.pSwap; this.pSwap = !!human.swap;
+    if (swapEdge && this.phase === 'play') this.swapToPuck();
     this.lastHumanMy = human.my;
 
     if (this.phase === 'faceoff') {
@@ -263,7 +273,7 @@ export class Game {
     this.updateGimmick(dt);
     this.updateGoalies(dt);
     for (const s of this.skaters) {
-      const c = s.human ? human : this.ai(s, dt);
+      const c = s.human && !this.autoplay ? human : this.ai(s, dt);
       this.updateSkater(s, c, dt);
     }
     this.collide();
@@ -285,7 +295,7 @@ export class Game {
       if (this.heatIdle > 2.5) this.heat = Math.max(0, this.heat - 45 * dt);
     }
     const tr = this.tier(0);
-    if (tr !== this.lastTier) { this.ev({ t: 'tier', n: tr, big: tr > this.lastTier, x: this.skaters[0].x, y: this.skaters[0].y }); this.lastTier = tr; }
+    if (tr !== this.lastTier) { this.ev({ t: 'tier', n: tr, big: tr > this.lastTier, x: this.ctrl.x, y: this.ctrl.y }); this.lastTier = tr; }
   }
 
   private updateGimmick(dt: number) {
@@ -298,7 +308,7 @@ export class Game {
       else if (ln.t > 0) ln.t -= dt;
       else if (this.gimT <= 0) {
         this.gimT = 9.5;
-        ln.x = clamp(this.skaters[0].x + (this.rnd() - 0.3) * 8, -L + 5, L - 5);
+        ln.x = clamp(this.ctrl.x + (this.rnd() - 0.3) * 8, -L + 5, L - 5);
         ln.warn = 1.4;
         this.ev({ t: 'warn', x: ln.x });
       }
@@ -354,6 +364,25 @@ export class Game {
       g.vy = clamp((ty - g.y) * 10, -vmax, vmax);
       g.y += g.vy * dt;
     }
+  }
+
+  /** hand control to another home skater without firing any button on the way */
+  setCtrl(n: Skater) {
+    const o = this.ctrl;
+    if (n === o || n.team !== 0) return;
+    o.human = false; o.wind = -1; o.calling = 0;
+    n.human = true; n.pPass = true; n.pCheck = true; n.pShoot = false;
+    this.ctrl = n;
+    this.ev({ t: 'switch', x: n.x, y: n.y });
+  }
+
+  /** switch key: the home skater nearest the puck, or the next nearest if you already are */
+  private swapToPuck() {
+    const p = this.pucks[0];
+    const ours = this.skaters.filter(k => k.team === 0 && this.active(k))
+      .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
+    const pick = ours[0] === this.ctrl ? ours[1] : ours[0];
+    if (pick) this.setCtrl(pick);
   }
 
   deepest(team: number): Skater | null {
@@ -530,7 +559,20 @@ export class Game {
     p.owner = s; p.kind = 'loose'; p.target = null; p.from = null; p.cc = 0; p.oneTimer = false; p.fire = false;
     p.lastTeam = s.team; p.checked.clear();
     if (prevTeam !== s.team) this.chain = 0;
-    s.ai.hold = 0; s.ai.patience = 1.4 + this.rnd() * 1.4; s.settle = 0.45;
+    s.ai.hold = 0; s.ai.patience = 2.6 + this.rnd() * 1.6; s.settle = 0.45;
+    if (this.phase === 'play' || this.phase === 'faceoff') {
+      if (s.team === 0) this.setCtrl(s);
+      else if (prevTeam !== s.team || this.ctrl.team === 0) {
+        // they have it: take the home skater nearest the carrier, if clearly nearer than yours
+        let best = this.ctrl, bd = Math.hypot(this.ctrl.x - s.x, this.ctrl.y - s.y) - 2;
+        for (const k of this.skaters) {
+          if (k.team !== 0 || !this.active(k)) continue;
+          const d = Math.hypot(k.x - s.x, k.y - s.y);
+          if (d < bd) { bd = d; best = k; }
+        }
+        this.setCtrl(best);
+      }
+    }
     if (s.wind >= 0) s.wind = 0;
   }
 
@@ -599,6 +641,7 @@ export class Game {
       p.cpx = (-dy / d) * side; p.cpy = (dx / d) * side; p.cc = 5 + cl; p.cT = d / speed;
     }
     to.ai.oneT = this.rnd() < (s.team === 0 ? 0.75 : 0.4 + 0.4 * this.skillLevel);
+    if (s.human) this.setCtrl(to);
     this.ev({ t: 'pass', x: s.x, y: s.y });
   }
 
@@ -792,7 +835,7 @@ export class Game {
           if (d < (s === p.target ? reach + 0.25 : reach * 0.8)) { this.receive(p, s); return; }
         } else if (d < 1.15 && !p.checked.has(s.id)) {
           p.checked.add(s.id);
-          let ch = s.blockT > 0 ? 0.9 : 0.5;
+          let ch = s.blockT > 0 ? 0.8 : 0.35;
           ch *= Math.pow(0.5, this.pw(p.lastTeam, 'curve'));
           if (this.rnd() < ch) {
             this.gain(p, s);
@@ -893,94 +936,95 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- bots
+  /** which side of the ice a role plays: -1 left, 1 right, 0 middle (attack-relative) */
+  private laneOf(s: Skater): number {
+    if (TEAM === 3) return s.slot === 1 ? (this.pucks[0].y * (s.team === 0 ? 1 : -1) > 0 ? -1 : 1) : 0;
+    return s.slot === 1 || s.slot === 2 ? -1 : s.slot === 3 || s.slot === 4 ? 1 : 0;
+  }
+
+  /** the one skater on a team who goes after the carrier or the loose puck; everyone else keeps shape */
+  private presser(team: number, tx: number, ty: number): Skater | null {
+    let best: Skater | null = null, bd = 1e9;
+    const deep = (team === 0 ? tx < -0.3 * L : tx > 0.3 * L);
+    for (const k of this.skaters) {
+      if (k.team !== team || !this.active(k)) continue;
+      const isD = k.slot === 2 || k.slot === 4;
+      // defenders only press inside their own zone
+      const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1);
+      if (d < bd) { bd = d; best = k; }
+    }
+    return best;
+  }
+
+  /** formation spot for a skater, in world coordinates. Home spots shift with the puck */
+  private spot(s: Skater, attacking: boolean): [number, number] {
+    const p = this.pucks[0], dir = s.team === 0 ? 1 : -1;
+    const pu = p.x * dir, pv = p.y * dir; // attack-relative: +u toward the net we attack
+    const lane = this.laneOf(s), isD = s.slot === 2 || s.slot === 4;
+    const BL = 0.3 * L, ph = this.time * 1.3 + s.id * 1.7;
+    let u: number, v: number;
+    if (attacking) {
+      if (isD) {
+        // defenders trail the rush, then hold the blue line once the puck is in
+        u = pu > BL ? BL + 2.5 : clamp(pu - 11, -L + 7, BL + 2.5);
+        v = (TEAM === 3 ? pv * 0.3 : lane * 0.33 * W);
+      } else if (s.slot === 0) {
+        // centre: trail and support up ice, take the net front in their zone
+        if (pu > BL) { u = L - 6; v = Math.sin(ph) * 2; }
+        else { u = pu - 1.5; v = (pv > 0 ? -1 : 1) * 0.15 * W; }
+      } else {
+        // wingers stretch their own lane ahead of the puck, then work the half-wall
+        u = pu > BL ? L - 11 + Math.cos(ph) * 1.5 : clamp(pu + 6, -L + 8, L - 9);
+        v = lane * (0.55 * W + Math.sin(ph) * 1.5);
+      }
+    } else {
+      const dz = pu < -BL; // puck in our defensive zone
+      if (dz) {
+        // box in front of the net: defenders low, forwards cover the points
+        if (isD) { u = -L + 5.5; v = lane === 0 ? pv * 0.3 : lane * 2.6; }
+        else { u = -L + 12.5; v = (lane === 0 ? pv * 0.25 : lane * 0.38 * W); }
+      } else {
+        // 1-2-2 back-check: forwards a step behind the puck, defenders keep a gap
+        if (isD) { u = clamp(pu - 13, -L + 6, BL); v = lane === 0 ? pv * 0.3 : lane * 0.3 * W; }
+        else { u = clamp(pu - 5, -L + 10, L - 8); v = lane === 0 ? pv * 0.4 : lane * 0.35 * W; }
+      }
+      // pick up the nearest attacker to that spot and stay goal-side of him
+      let m: Skater | null = null, md = 6;
+      for (const o of this.skaters) {
+        if (o.team === s.team || !this.active(o) || o === p.owner) continue;
+        const d = Math.hypot(o.x * dir - u, o.y * dir - v);
+        if (d < md) { md = d; m = o; }
+      }
+      if (m) { u = u * 0.4 + (m.x * dir - 1.6) * 0.6; v = v * 0.4 + m.y * dir * 0.6; }
+    }
+    // a small pull toward the puck keeps the shape alive without collapsing it
+    u = u * 0.88 + pu * 0.12; v = v * 0.88 + pv * 0.12;
+    return [clamp(u * dir, -L + 2, L - 2), clamp(v * dir, -W + 1.5, W - 1.5)];
+  }
+
+  // ---------------------------------------------------------------- bots
   private ai(s: Skater, dt: number): Ctl {
     const c: Ctl = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
     const p = this.pucks[0], car = p.owner;
-    const dir = s.team === 0 ? 1 : -1, ogx = -dir * L, tgx = dir * L;
+    const dir = s.team === 0 ? 1 : -1, tgx = dir * L;
     const sk = s.team === 1 ? this.skillLevel : 0.7;
-    const anchor = s.slot === 2;
+    const isD = s.slot === 2 || s.slot === 4;
     let tx = s.x, ty = s.y;
 
-    const guard = () => {
-      const gx = p.x - ogx, gy = p.y, d = Math.hypot(gx, gy) || 1;
-      const r = clamp(d * 0.5, 3.4, 6); // stay out of the goalie's crease
-      tx = clamp(ogx + (gx / d) * r, -L + 0.9, L - 0.9); ty = (gy / d) * r;
-    };
-    const support = (holder: Skater) => {
-      const hu = holder.x * dir;
-      if (anchor) {
-        // trail the play, then step up to the point once the puck is in their end
-        const u = hu > 10 * KX ? 4 * KX : clamp(hu - 9 * KX, -L + 3.5 * KX, 0);
-        tx = u * dir; ty = hu > 10 * KX ? clamp(-holder.y * 0.5, -4 * KY, 4 * KY) : p.y * 0.3;
-        return;
-      }
-      // weave through the slot instead of parking: keeps a one-timer lane open
-      const ph = this.time * 1.5 + s.id * 2.1;
-      let u = Math.min(L - 5 * KX, Math.max(hu + 6 * KX, 5 * KX)) + Math.cos(ph) * 1.2;
-      if (hu > L - 9 * KX) u = L - 5.5 * KX + Math.cos(ph) * 1.5;
-      const far = holder.y > 0 ? -1 : 1;
-      if (s.slot === 4) {
-        // second defender: trails on the weak side, steps up to the point in their end
-        tx = (hu > 8 * KX ? 5.5 * KX : clamp(hu - 5 * KX, -L + 5 * KX, KX)) * dir; ty = far * (hu > 8 * KX ? 5 : 3) * KY;
-        return;
-      }
-      // each forward takes a different lane: weak side, strong side, then the middle
-      let idx = 0;
-      for (const k of [0, 1, 3]) { if (k === s.slot) break; if (k !== holder.slot && k < TEAM) idx++; }
-      const side = idx === 0 ? far : idx === 1 ? -far : far * 0.2;
-      tx = Math.min(L - 3 * KX, u) * dir; ty = side * (2.6 + 1.6 * Math.sin(ph)) * KY;
-      // slide off a defender sitting in the lane
-      if (this.laneGap(holder.x, holder.y, tx, ty, s.team) < 1.2) ty = -ty * 0.6;
-      c.burst = (tx - s.x) * dir > 6 * KX;
-    };
-    const defend = (carr: Skater) => {
-      const dS = Math.hypot(carr.x - s.x, carr.y - s.y);
-      if (anchor) {
-        guard();
-        if (dS < 2.1 && s.checkCd <= 0 && this.rnd() < dt * 5) c.check = true;
-        return;
-      }
-      // nearest free skater pressures the carrier; the rest each pick up a different attacker
-      let chaser = s, cd = dS;
-      for (let k = 0; k < TEAM; k++) {
-        const m = this.skaters[s.team * TEAM + k];
-        if (m === s || k === 2 || !this.active(m)) continue;
-        const dM = Math.hypot(carr.x - m.x, carr.y - m.y) * (m.human ? 1.4 : 1);
-        if (dM < cd) { cd = dM; chaser = m; }
-      }
-      if (chaser === s) {
-        tx = carr.x + carr.vx * 0.2; ty = carr.y + carr.vy * 0.2;
-        c.burst = dS > 5;
-        // only commit when close enough to poke, or with real closing speed for a hit
-        const closing = ((carr.x - s.x) * (s.vx - carr.vx) + (carr.y - s.y) * (s.vy - carr.vy)) / (dS || 1);
-        const dPk = Math.hypot(p.x - s.x, p.y - s.y);
-        if (((dS < 1.9 && dPk < 1.45 && dPk < dS + 0.1) || (dS < 3.4 && closing > 6)) && s.checkCd <= 0 && p.owner === carr) {
-          s.ai.react -= dt;
-          if (s.ai.react <= 0) { c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
-        }
-      } else {
-        let rank = 0;
-        for (let k = 0; k < s.slot; k++) {
-          const m = this.skaters[s.team * TEAM + k];
-          if (k !== 2 && m !== chaser && this.active(m)) rank++;
-        }
-        const opps = this.skaters.filter(o => o.team !== s.team && o !== carr && this.active(o))
-          .sort((a, b) => Math.hypot(a.x - ogx, a.y) - Math.hypot(b.x - ogx, b.y));
-        const m = opps.length ? opps[Math.min(rank, opps.length - 1)] : null;
-        if (m) { tx = m.x + (ogx - m.x) * 0.22 + (carr.x - m.x) * 0.15; ty = m.y - m.y * 0.22 + (carr.y - m.y) * 0.15; }
-        else guard();
-      }
-    };
+    // who has it: carrier, or the side a pass belongs to
+    const ownTeam = car ? car.team : p.kind === 'pass' ? p.lastTeam : -1;
 
     if (car === s) {
       s.ai.hold += dt;
       const dg = Math.hypot(tgx - s.x, s.y), ahead = (tgx - s.x) * dir;
       const [no, nd] = this.nearestOpp(s);
-      tx = tgx - dir * 5; ty = clamp(s.y * 0.45, -3, 3);
+      // carry up your own lane, cut toward the slot once in their zone
+      const inZone = s.x * dir > 0.3 * L;
+      tx = tgx - dir * 5; ty = inZone ? clamp(s.y * 0.5, -4, 4) : clamp(s.y, -0.6 * W, 0.6 * W);
       if (s.wind >= 0) c.shoot = s.wind < s.ai.windGoal;
       else {
-        const h = s.team === 0 ? this.skaters[0] : null;
-        if (h && this.active(h)) {
+        const h = s.team === 0 ? this.ctrl : null;
+        if (h && h !== s && this.active(h)) {
           const hOpen = this.nearestOpp(h)[1] > 1.7;
           const hAhead = (h.x - s.x) * dir > -3;
           const ln = this.laneGap(s.x, s.y, h.x, h.y, 0);
@@ -988,7 +1032,7 @@ export class Game {
             (hOpen && hAhead && s.ai.hold > 0.7 && Math.hypot(tgx - h.x, h.y) < 16 && ln > 1.0 && (h.wind >= 0 || s.ai.hold > 1.1)))
             c.passTo = h;
         }
-        if (!c.passTo && s.ai.hold > 0.3) {
+        if (!c.passTo && s.ai.hold > 0.6 && s.x * dir > 0.3 * L) {
           // look for a teammate set up in the slot for a one-timer
           for (const m of this.skaters) {
             if (m.team !== s.team || m === s || m.human || !this.active(m)) continue;
@@ -998,61 +1042,70 @@ export class Game {
           }
         }
         if (!c.passTo) {
-          const canShoot = ahead > 1.2 && dg < 14;
-          if (canShoot && s.ai.hold > 0.25 && (dg < 9.5 || nd < 3 || s.ai.hold > 0.8)) {
+          // shoot from the slot freely, from range when there is a lane or pressure coming
+          const canShoot = ahead > 1.2 && dg < 17 && Math.abs(s.y) < 0.55 * W;
+          const lane = this.laneGap(s.x, s.y, tgx, 0, s.team) > 1.2;
+          if (canShoot && s.ai.hold > 0.25 && (dg < 10.5 || (lane && s.ai.hold > 0.5) || nd < 2.5 || s.ai.hold > 1.2)) {
             s.ai.windGoal = 0.33 + this.rnd() * (0.55 - 0.3 * sk); c.shoot = true;
-          } else if ((nd < 2.3 && s.ai.hold > 0.4) || s.ai.hold > s.ai.patience || (anchor && s.ai.hold > 0.4)) {
+          } else if ((nd < 1.8 && s.ai.hold > 0.35 * s.ai.patience) || s.ai.hold > s.ai.patience || (isD && s.ai.hold > 1.1)) {
+            // move it to an open teammate further up the ice; with nobody ahead, keep carrying it
+            const pressured = nd < 1.8;
             let best: Skater | null = null, bs = 0.2;
             for (const m of this.skaters) {
               if (m.team !== s.team || m === s || !this.active(m)) continue;
+              if (!pressured && (m.x - s.x) * dir < 2) continue;
               const ln = this.laneGap(s.x, s.y, m.x, m.y, s.team);
-              if (ln < 0.7) continue;
-              const sc = (m.x - s.x) * dir * 0.08 + Math.min(ln, 2.5) + Math.min(this.nearestOpp(m)[1], 3) * 0.5 - (m.slot === 2 ? 1.6 : 0);
+              if (ln < 0.8) continue;
+              const sc = (m.x - s.x) * dir * 0.08 + Math.min(ln, 2.5) + Math.min(this.nearestOpp(m)[1], 3) * 0.5;
               if (sc > bs) { bs = sc; best = m; }
             }
             if (best) c.passTo = best;
-            else if (s.ai.hold > 3) { s.ai.windGoal = 0.4; c.shoot = true; }
+            else if (s.ai.hold > 3 && canShoot) { s.ai.windGoal = 0.4; c.shoot = true; }
           }
         }
         if (no && nd < 4.5 && (no.x - s.x) * dir > -0.5) ty = clamp(ty + (s.y >= no.y ? 1 : -1) * 3.5, -W + 2, W - 2);
-        if (anchor) tx = clamp(s.x + dir * 6, -L + 2, L - 2);
         c.burst = ahead > 10 && (nd > 3 || s.ai.hold < 1);
       }
-    } else if (car && car.team === s.team) {
-      support(car);
-    } else if (car) {
-      defend(car);
-    } else if (p.kind === 'pass' && p.target) {
-      if (p.target === s) {
-        tx = p.ax; ty = p.ay;
-        if (s.ai.oneT && Math.hypot(tgx - s.x, s.y) < 13) c.shoot = true;
-      } else if (p.target.team === s.team) support(p.target);
-      else defend(p.target);
-    } else if (p.kind === 'shot' && p.lastTeam !== s.team && anchor) {
-      guard();
+    } else if (p.kind === 'pass' && p.target === s) {
+      tx = p.ax; ty = p.ay;
+      if (s.ai.oneT && Math.hypot(tgx - s.x, s.y) < 13) c.shoot = true;
     } else {
-      // loose puck
-      const fx = p.x + p.vx * 0.3, fy = p.y + p.vy * 0.3;
-      const dMe = Math.hypot(fx - s.x, fy - s.y);
-      let nearest = true;
-      for (const m of this.skaters) {
-        if (m.team !== s.team || m === s || !this.active(m)) continue;
-        const d = Math.hypot(fx - m.x, fy - m.y) * (m.slot === 2 ? 1.5 : 1) * (m.human ? 1.25 : 1);
-        if (d < dMe * (anchor ? 1.5 : 1)) nearest = false;
+      // target to chase: the carrier, the pass receiver, or where the loose puck is going
+      const tgt = car ?? (p.kind === 'pass' && p.target ? p.target : null);
+      const fx = tgt ? tgt.x + tgt.vx * 0.2 : p.x + p.vx * 0.3, fy = tgt ? tgt.y + tgt.vy * 0.2 : p.y + p.vy * 0.3;
+      const attacking = ownTeam === s.team || (ownTeam < 0 && p.x * dir > 0);
+      const pr = ownTeam === s.team ? null : this.presser(s.team, fx, fy);
+      if (pr === s) {
+        tx = fx; ty = fy;
+        const dS = Math.hypot(fx - s.x, fy - s.y);
+        c.burst = dS > 5;
+        if (car && car.team !== s.team) {
+          // only commit when the stick can reach the puck, or with real closing speed for a hit
+          const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
+          const dPk = Math.hypot(p.x - s.x, p.y - s.y);
+          if (((dS < 1.9 && dPk < 1.45 && dPk < dS + 0.1) || (dS < 3.4 && closing > 6)) && s.checkCd <= 0) {
+            s.ai.react -= dt;
+            if (s.ai.react <= 0) { c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
+          }
+        }
+      } else {
+        [tx, ty] = this.spot(s, attacking);
+        // a carrier skating straight through your spot still gets hit
+        if (car && car.team !== s.team && s.checkCd <= 0) {
+          const dS = Math.hypot(car.x - s.x, car.y - s.y);
+          const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
+          if (dS < 2.2 && closing > 6 && this.rnd() < dt * 4) c.check = true;
+        }
+        c.burst = Math.hypot(tx - s.x, ty - s.y) > 9;
       }
-      const inOwnZone = (p.x - ogx) * dir < 9 * KX;
-      // only the nearest skater chases a loose puck; the rest keep their shape
-      if (nearest && (!anchor || inOwnZone)) { tx = fx; ty = fy; c.burst = dMe > 4; }
-      else if (anchor) guard();
-      else if (p.x * dir > -2 * KX) { tx = clamp(p.x + dir * 5 * KX, -L + 5 * KX, L - 5 * KX); ty = (p.y > 0 ? -1 : 1) * (s.slot === 4 ? 1.5 : 3.5) * KY; }
-      else { tx = p.x - dir * 4 * KX; ty = p.y * 0.3 + (s.slot === 1 ? -4 : s.slot === 3 ? 4 : 0) * KY; }
     }
 
     const dx = tx - s.x, dy = ty - s.y, d = Math.hypot(dx, dy);
-    if (anchor && d > 5 && !(car && car.team === s.team)) c.burst = true;
     if (d > 0.35) {
       const sp = Math.hypot(s.vx, s.vy);
+      // ease into a spot instead of overshooting it
       if (!(d < 1.6 && sp > d * 4.5)) { c.mx = dx / d; c.my = dy / d; }
+      if (d < 2.5 && !c.burst) { c.mx *= d / 2.5; c.my *= d / 2.5; }
     }
     return c;
   }
@@ -1060,6 +1113,7 @@ export class Game {
   snapshot() {
     const p = this.pucks[0];
     return {
+      ctrl: this.ctrl.id,
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },

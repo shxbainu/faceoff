@@ -170,3 +170,14 @@ Hunyuan net (generated on the user's account) finished and is in its Assets list
 - Hunyuan net: right shape, but the netting strands are broken in places. Frame shape reused as reference only.
 
 Blender MCP add-on (mcp-for-blender, localhost:9876): asset search on for Poly Haven, Sketchfab, Poly Pizza; generators (Tripo, Hunyuan3D, Hyper3D, Meshy) off until API keys are added in the add-on.
+
+### 7e. Skater rebuild (2026-11-16)
+
+| File | What | Licence |
+|---|---|---|
+| `assets/src/skater/hunyuan-v31-skater-tpose.glb` | Chunky cartoon skater, T-pose, no stick, 49,886 tris, 4096 textures. Generated on the user's Tencent HY 3D account | Tencent HY 3D terms (commercial use not yet checked) |
+| `assets/src/skater/skater_for_mixamo.fbx` | Same, 16,000 tris, 1024 textures, scaled to human size for Mixamo | as above |
+| `assets/src/quaternius/ubc/` | Universal Base Characters (Standard) by Quaternius: 2 rigged base bodies | CC0 |
+| `assets/src/quaternius/ual/` | Universal Animation Library (Standard) by Quaternius: 43 animations incl. crouch idle, hit reactions, falls, push | CC0 |
+
+Mixamo was searched for skating: only a skateboard push exists, so the stride, shot and check will be keyed in Blender.

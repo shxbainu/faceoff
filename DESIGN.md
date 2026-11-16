@@ -189,6 +189,18 @@ Plan (proposed 2026-11-16):
 3. **Team AI with a shape**, from sports-game AI practice: each role has a home spot that shifts with the puck (a weighted mix of the formation spot and the puck position). Only one skater pressures the carrier (F1); F2 supports, F3 stays high; the two defenders keep a gap and never both pinch. Rotation rule from the 1-2-2 forecheck: when F1 forces play to a wall, the nearest middle forward takes that wall and the far one holds the middle. Bots on your team cover rather than press when you are nearest the puck.
 4. **2.5D skaters:** rig and animate a skater (stride, glide, wind-up, shot, check, fall, goalie stance), render it in Blender from 8 directions at the game's camera pitch into sprite sheets with a separate team-colour mask, and draw camera-facing sprites in the 3D rink.
 
+### Built 2026-11-16: 2.5D camera, switching, team shape
+
+- **Camera** pitch 0.66 rad (about 38 degrees, measured from the reference) instead of 66 degrees; it follows the puck (80%) rather than your skater.
+- **Control switching:** passing hands control to the receiver as the pass leaves; a teammate picking up the puck gives you that skater; when the other team takes it you get the home skater nearest the carrier. **Space** switches to the skater nearest the puck.
+- **Team AI:** one presser per team (forwards first, defenders only in their own zone; on your team the presser is you when you are close). Everyone else takes a formation spot that shifts with the puck: wingers stretch their lanes and work the half-walls, the centre trails then takes the net front, defenders trail and hold the blue line; on defence a 1-2-2 back-check in the neutral zone and a box in front of the net in their own zone, marking the nearest attacker goal-side.
+- **Carriers** keep the puck about 1.2 s (median) instead of 0.4 s; they pass under pressure only after a while, otherwise only to a teammate further up the ice; they shoot from up to 17 units with a lane.
+- Test hook: `?autoplay` lets bots play your skater too. Headless check over three bot-vs-bot matches: puck owned 63% of the time, about 6 shots per match.
+
+### New skater (2026-11-16)
+
+The user rejected the first player model (too tall and squashed, stick fused and rigid). Free ready-made options were checked first: no free 3D skater beyond a crude Sketchfab one; free 2D hockey sprites are straight top-down with 2 to 4 frames (unusable at a 38-degree camera); Quaternius base characters (CC0) have realistic faces and no gear. So a chunky cartoon skater was generated on Hunyuan in a T-pose with no stick (`assets/src/skater/`), for Mixamo auto-rigging. Plan: rig, animate (stride, glide, wind-up, shot, check, fall, goalie crouch; hit and fall clips from Mixamo or the CC0 Quaternius Universal Animation Library), stick as a separate prop in the hand, then render 8-direction sprites at the game's camera pitch with a team-colour mask.
+
 ### What gives shots their punch in the reference (studied 2026-11-16)
 
 One goal sequence studied frame by frame at 14 fps (video 17.6 s to 20.2 s). Seen: a short white streak behind the puck while it travels; on the goal a red light wash floods the end boards behind the net; a "GOAL" stamp in the scoreboard bar and a banner with the scorer's name. Not seen in this sequence: screen shake or slow motion. One shot is a small sample; more shots need checking before drawing firm conclusions.
