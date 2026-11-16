@@ -416,6 +416,7 @@ export class View {
       model.traverse(o => { for (const h of (o.userData.hulls as THREE.Object3D[] | undefined) ?? []) o.add(h); });
       // the model faces +Z and is 1.8 m tall; the box skater faces +X and is about 2.25 units
       model.rotation.y = Math.PI / 2; model.scale.setScalar(SKATER_SCALE);
+      model.position.y = 0.02;   // blades sit exactly on the ice in Blender; a hair above stops them flickering into it
       for (const c of v.body.children) c.visible = false;
       v.body.add(model);
       const mixer = new THREE.AnimationMixer(model), acts: Record<string, THREE.AnimationAction> = {};
@@ -742,7 +743,8 @@ export class View {
       v.body.rotation.set(0, k.team === 0 ? 0 : -Math.PI, v.anim ? 0 : -0.3);
       if (v.anim) this.animate(v, null, false, false, dt);
       v.body.position.y = 0; v.root.scale.setScalar(1.12);
-      v.root.rotation.x = Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
+      // the box goalie leaned into the slide; tipping the real model would push a skate and the stick into the ice
+      v.root.rotation.x = v.anim ? 0 : Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
     });
     // human markers
     const h = g.ctrl;
