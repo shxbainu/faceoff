@@ -25,7 +25,9 @@ interface SkaterView {
   anim?: SkaterAnim;
 }
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
-const INK = 0x2a3140, INK_W = 0.03, SKATER_SCALE = 1.4;
+// debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?flat (no toon ramp)
+const DBG = new URLSearchParams(location.search);
+const INK = 0x2a3140, INK_W = 0.014, SKATER_SCALE = 1.4;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
   const pts: [number, number][] = [];
@@ -361,9 +363,9 @@ export class View {
   private static inkToon(params: THREE.MeshToonMaterialParameters): THREE.MeshToonNodeMaterial {
     const m = new THREE.MeshToonNodeMaterial(params);
     const facing = dot(normalView, positionViewDirection).abs();
-    const keep = smoothstep(0.06, 0.16, facing);   // only real edges, not every gentle curve
+    const keep = smoothstep(0.1, 0.24, facing);   // edge ink on the surface itself: outlines without poking through
     const ink = new THREE.Color(INK);
-    m.colorNode = mix(vec3(ink.r, ink.g, ink.b), materialColor, keep);
+    if (!DBG.has('noink')) m.colorNode = mix(vec3(ink.r, ink.g, ink.b), materialColor, keep);
     return m;
   }
 
@@ -418,7 +420,9 @@ export class View {
         else if (name.startsWith('helmet')) m.material = this.helmetMat[team];
         else m.material = toToon(m.material as THREE.Material);
         m.frustumCulled = false;
-        if (name.startsWith('visor')) return;   // the clear visor gets no outline
+        // no outline shell on the visor or the thin skate blades: there it pokes through as dark spikes
+        // (the stick is a plain box, so its shell is clean)
+        if (name.startsWith('visor') || name.startsWith('blade')) return;
         const sk = m as THREE.SkinnedMesh;
         let hull: THREE.Mesh;
         if (sk.isSkinnedMesh) { const h = new THREE.SkinnedMesh(sk.geometry, ink); h.bind(sk.skeleton, sk.bindMatrix); hull = h; }
@@ -427,7 +431,7 @@ export class View {
         hull.frustumCulled = false; hulls.push(hull); (m.parent as THREE.Object3D).userData.hulls ??= [];
         ((m.parent as THREE.Object3D).userData.hulls as THREE.Object3D[]).push(hull);
       });
-      model.traverse(o => { for (const h of (o.userData.hulls as THREE.Object3D[] | undefined) ?? []) o.add(h); });
+      if (!DBG.has('nohull')) model.traverse(o => { for (const h of (o.userData.hulls as THREE.Object3D[] | undefined) ?? []) o.add(h); });
       // the model faces +Z and is 1.8 m tall; the box skater faces +X and is about 2.25 units
       model.rotation.y = Math.PI / 2; model.scale.setScalar(SKATER_SCALE);
       model.position.y = 0.02;   // blades sit exactly on the ice in Blender; a hair above stops them flickering into it
