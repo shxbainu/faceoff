@@ -53,5 +53,30 @@
   "start": 291,
   "end": 314,
   "loop": true
+ },
+ "g_butterfly": {
+  "start": 321,
+  "end": 345,
+  "loop": false
+ },
+ "g_glove": {
+  "start": 351,
+  "end": 371,
+  "loop": false
+ },
+ "g_blocker": {
+  "start": 377,
+  "end": 397,
+  "loop": false
+ },
+ "g_pad_l": {
+  "start": 403,
+  "end": 423,
+  "loop": false
+ },
+ "g_pad_r": {
+  "start": 429,
+  "end": 449,
+  "loop": false
  }
 }

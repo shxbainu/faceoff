@@ -400,6 +400,7 @@ function perf() {
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
     cam: () => view.camState(),
+    gearCheck: () => view.gearCheck(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
     ground: (x: number, y: number) => view.project(x, 0.05, y),
     // test rink only: put the loose puck at a point (puck readability probes)

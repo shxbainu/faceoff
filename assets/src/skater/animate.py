@@ -15,15 +15,15 @@ ctl = bpy.data.objects['stick_ctl']; FT = {s: bpy.data.objects['foot_tgt_' + s] 
 HT = {s: bpy.data.objects['hand_tgt_' + s] for s in 'lr'}
 BODY = ['pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'Head', 'clavicle_l', 'clavicle_r']
 
-for o in (arm, ctl, *FT.values()):
+for o in (arm, ctl, *FT.values(), *HT.values()):
     if o.animation_data: o.animation_data_clear()
 vl.update()
 READY = {n: (P[n].location.copy(), P[n].rotation_quaternion.copy()) for n in BODY}
-READY_OBJ = {o.name: o.matrix_basis.copy() for o in (ctl, *FT.values())}
+READY_OBJ = {o.name: o.matrix_basis.copy() for o in (ctl, *FT.values(), *HT.values())}
 
 def reset():
     for n, (l, q) in READY.items(): P[n].location = l; P[n].rotation_quaternion = q
-    for o in (ctl, *FT.values()): o.matrix_basis = READY_OBJ[o.name]
+    for o in (ctl, *FT.values(), *HT.values()): o.matrix_basis = READY_OBJ[o.name]
     vl.update()
 def brot(name, axis, deg):
     pb = P[name]; M = pb.matrix.copy(); piv = M.translation.copy()
@@ -54,10 +54,10 @@ def key(f):
     blade_on_ice()
     for n in BODY:
         P[n].keyframe_insert('location', frame=f); P[n].keyframe_insert('rotation_quaternion', frame=f)
-    for o in (ctl, *FT.values()):
+    for o in (ctl, *FT.values(), *HT.values()):
         o.keyframe_insert('location', frame=f); o.keyframe_insert('rotation_euler', frame=f)
-for o in (ctl, *FT.values()): o.rotation_mode = 'XYZ'
-READY_OBJ = {o.name: o.matrix_basis.copy() for o in (ctl, *FT.values())}
+for o in (ctl, *FT.values(), *HT.values()): o.rotation_mode = 'XYZ'
+READY_OBJ = {o.name: o.matrix_basis.copy() for o in (ctl, *FT.values(), *HT.values())}
 
 CLIPS = {}
 def clip(name, start, length, loop, poser, keys):
@@ -244,12 +244,70 @@ def check(t):
 f = clip('check', f, 20, False, check, [0, 4, 7, 10, 12, 16, 20])
 
 # ---- goalie: wide, low stance, stick flat on the ice in front, a little side-to-side shuffle ----
+# ---- goalie. The blocker (right) hand holds the stick alone; the glove (left) hand is keyed on its own, off the
+# stick (its IK target is moved directly). Stance: wide, deep knee bend, chest up, glove open beside the hip,
+# stick blade flat on the ice in front of the five-hole. Saves start from the stance and return to it. ----
+def glove_at(p):
+    o = HT['l']; Mw = o.matrix_world.copy(); Mw.translation = Vector(p); o.matrix_world = Mw; vl.update()
+def smooth(u): u = min(1.0, max(0.0, u)); return u * u * (3 - 2 * u)
+def stance(shift=0.0, low=0.0):
+    foot('l', dx=0.11, yaw=10); foot('r', dx=-0.11, yaw=-10)
+    bmove('pelvis', (shift, 0.02, -0.16 - low)); brot('spine_01', 'X', 6); brot('Head', 'X', -8)
+GSTICK = ((-0.30, -0.30, 0.55), (0.06, -0.55, -0.83))
 def goalie(t):
     sw = S(TAU * t)
-    foot('l', dx=0.16, dy=0.02, yaw=-12); foot('r', dx=-0.16, dy=0.02, yaw=12)
-    bmove('pelvis', (0.02 * sw, 0, -0.07)); brot('spine_01', 'X', -10); brot('Head', 'X', -6)
-    stick_pose((-0.16, -0.38, 0.68), (-0.14, -0.84, -0.52), 0.0)
+    stance(0.015 * sw)
+    stick_pose(*GSTICK, 0.0)
+    glove_at((0.42, -0.30, 0.62 + 0.01 * sw))
 f = clip('goalie', f, 24, True, goalie, range(0, 25, 6))
+
+def env(t, a=0.22, b=0.65):   # 0 -> 1 fast, hold, back to 0 by the end
+    return smooth(t / a) if t < a else 1.0 if t < b else 1 - smooth((t - b) / (1 - b))
+
+# butterfly: knees drop together to the ice, pads flare out flat to the sides, glove up, stick seals the five-hole
+def butterfly(t):
+    k = env(t)
+    # feet go back and out behind the knees (shins flared), hips drop so the knees come down together in front
+    foot('l', dx=0.11 + 0.14 * k, dy=0.44 * k, yaw=10 + 30 * k); foot('r', dx=-0.11 - 0.14 * k, dy=0.44 * k, yaw=-10 - 30 * k)
+    bmove('pelvis', (0, 0.02 + 0.12 * k, -0.16 - 0.40 * k)); brot('spine_01', 'X', 6 - 8 * k); brot('Head', 'X', -8 - 4 * k)
+    G, d = GSTICK
+    stick_pose((G[0] + 0.08 * k, G[1] - 0.06 * k, G[2] - 0.2 * k), (d[0] + 0.3 * k, d[1], d[2]), 0.0)
+    glove_at((0.42 + 0.06 * k, -0.30 - 0.04 * k, 0.62 - 0.12 * k))
+f = clip('g_butterfly', f, 24, False, butterfly, range(0, 25, 2))
+
+# glove save: the glove snaps up and out to his left, weight goes onto the left skate
+def gsave(t):
+    k = env(t, 0.18, 0.6)
+    stance(0.12 * k)
+    foot('l', dx=0.12 * k)
+    brot('spine_02', 'Y', 10 * k)
+    stick_pose(*GSTICK, 0.0)
+    glove_at((0.42 + 0.28 * k, -0.30 - 0.12 * k, 0.62 + 0.42 * k))
+f = clip('g_glove', f, 20, False, gsave, range(0, 21, 2))
+
+# blocker save: the stick hand punches out to his right, blocker square to the shot
+def bsave(t):
+    k = env(t, 0.18, 0.6)
+    stance(-0.12 * k)
+    foot('r', dx=-0.12 * k)
+    brot('spine_02', 'Y', -10 * k)
+    G, d = GSTICK
+    stick_pose((G[0] - 0.28 * k, G[1] - 0.10 * k, G[2] + 0.25 * k), (d[0] - 0.35 * k, d[1], d[2] + 0.2 * k), 0.0)
+    glove_at((0.42, -0.30, 0.62))
+f = clip('g_blocker', f, 20, False, bsave, range(0, 21, 2))
+
+# pad saves: one leg kicks straight out along the ice (the pad flat to the shot), the other knee drops
+def padsave(t, sx):
+    k = env(t, 0.18, 0.6)
+    s_out, s_in = ('l', 'r') if sx > 0 else ('r', 'l')
+    foot(s_out, dx=sx * (0.11 + 0.42 * k), dy=-0.05 * k, yaw=sx * (10 + 40 * k))
+    foot(s_in, dx=-sx * 0.11, dy=0.12 * k, yaw=-sx * 10)
+    bmove('pelvis', (sx * 0.14 * k, 0.02, -0.16 - 0.22 * k)); brot('spine_01', 'X', 6); brot('Head', 'X', -8)
+    brot('spine_02', 'Y', sx * 8 * k)
+    stick_pose(*GSTICK, 0.0)
+    glove_at((0.42 + (0.1 * k if sx > 0 else 0), -0.30, 0.62 - 0.1 * k))
+f = clip('g_pad_l', f, 20, False, lambda t: padsave(t, 1), range(0, 21, 2))
+f = clip('g_pad_r', f, 20, False, lambda t: padsave(t, -1), range(0, 21, 2))
 
 reset()
 sc.frame_start = 1; sc.frame_end = f

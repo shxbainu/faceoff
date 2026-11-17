@@ -31,6 +31,9 @@ interface SkaterView {
   bones?: { sp2: THREE.Object3D; sp3: THREE.Object3D; head: THREE.Object3D };
   mb?: { twist: number; phase: number; posture: number; sway: number };
   stick?: THREE.Object3D; bladeDbg?: THREE.Mesh;
+  /** goalie gear pieces and the skater-only kit (helmet, visor, stick); which set is showing; a save clip playing */
+  gear?: THREE.Object3D[]; skaterKit?: THREE.Object3D[]; goalieLook?: boolean; outfit?: THREE.SkinnedMesh;
+  gsave?: { clip: string; t: number; len: number };
   /** hit impact: a quick squash and lurch along the hit, so the contact lands with weight */
   crunch?: { t: number; len: number; dx: number; dy: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
@@ -102,6 +105,8 @@ export class View {
   private playerTex: { cv: HTMLCanvasElement; tex: THREE.CanvasTexture }[] = [];
   private teamHex: [number, number][] = [[0xffffff, 0x222222], [0xffffff, 0x222222]];
   private helmetMat: THREE.MeshToonNodeMaterial[] = [];
+  private gearBodyMat: THREE.MeshToonNodeMaterial[] = [];
+  private outfitMats: THREE.MeshToonNodeMaterial[] = []; private goalieOutfit: THREE.MeshToonNodeMaterial[] = []; private goalieInk: THREE.MeshBasicNodeMaterial | null = null;
   assetsReady: Promise<void> = Promise.resolve();
   private hemi!: THREE.HemisphereLight; private sun!: THREE.DirectionalLight; private lightK = 1;
   private laneMesh!: THREE.Mesh; private laneMat!: THREE.MeshBasicMaterial;
@@ -391,6 +396,19 @@ export class View {
     return m;
   }
 
+  /** Per-vertex goalie bulk (0..1), stored as the 'bulk' attribute on the outfit: how much each vertex rides on the
+   *  torso and arm bones (chest protector and arm pads sit there), nothing on the legs (the pads cover them), hands
+   *  or head. Computed once per geometry from the skin weights. */
+  private static goalieBulk(m: THREE.SkinnedMesh) {
+    const g = m.geometry; if (g.getAttribute('bulk')) return;
+    const W: Record<string, number> = { spine_01: 0.45, spine_02: 1, spine_03: 1, clavicle_l: 0.9, clavicle_r: 0.9, upperarm_l: 0.8, upperarm_r: 0.8, lowerarm_l: 0.55, lowerarm_r: 0.55, neck_01: 0.25, pelvis: 0.35 };
+    const per = m.skeleton.bones.map(b => W[b.name] ?? 0);
+    const si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight'), n = g.getAttribute('position').count;
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let b = 0; for (let k = 0; k < 4; k++) b += per[si.getComponent(i, k)] * sw.getComponent(i, k); out[i] = Math.min(1, b); }
+    g.setAttribute('bulk', new THREE.BufferAttribute(out, 1));
+  }
+
   /** Per-vertex outline-shell thickness (0..1), stored as the 'outlineW' attribute. The inflated shell pokes
    *  through the body where two parts fold against each other, so it shrinks to near zero there:
    *  - skinned meshes: vertices shared between a tight pair of bones (torso/upper arm = shoulder and armpit,
@@ -450,12 +468,23 @@ export class View {
       return View.inkToon({ map: tex, gradientMap: ramp });
     });
     this.tintPlayers();
+    // Goalies wear the same jersey, filled out over chest protector and arm pads: the jersey itself is pushed out
+    // along its normals by the per-vertex 'bulk' attribute (torso and arms only, see goalieBulk), so he stays a
+    // human shape, just bigger up top, instead of having shapes stuck on.
+    const BULK = 0.05;
+    const bulkPos = positionLocal.add(normalLocal.mul(attribute('bulk', 'float').mul(BULK)));
+    this.outfitMats = outfitMats;
+    this.goalieOutfit = outfitMats.map(m => { const g = View.inkToon({ map: m.map, gradientMap: ramp }); g.positionNode = bulkPos; return g; });
     this.helmetMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
+    this.gearBodyMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][0]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
     // ?hulldbg paints the shell magenta so any poke-through is easy to spot in test frames
     const ink = new THREE.MeshBasicNodeMaterial({ color: DBG.has('hulldbg') ? 0xff00ff : INK, side: THREE.BackSide,
       // pushed slightly back in depth: a sliver of shell just in front of the body loses to the body
       polygonOffset: !DBG.has('nomask'), polygonOffsetFactor: 2, polygonOffsetUnits: 4 });
     ink.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W)));
+    // the goalie's outline shell follows the bulked jersey
+    this.goalieInk = ink.clone() as THREE.MeshBasicNodeMaterial;
+    this.goalieInk.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W).add(attribute('bulk', 'float').mul(BULK))));
     const toon = new Map<THREE.Material, THREE.Material>();
     const toToon = (m: THREE.Material) => {
       let t = toon.get(m);
@@ -475,20 +504,22 @@ export class View {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
         const name = (m.material as THREE.Material).name || '';
-        if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) m.material = outfitMats[team];
+        if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) { m.material = outfitMats[team]; v.outfit = m as THREE.SkinnedMesh; View.goalieBulk(m as THREE.SkinnedMesh); }
         else if (name.startsWith('helmet')) m.material = this.helmetMat[team];
+        else if (name === 'gear_body') m.material = this.gearBodyMat[team];   // goalie gear: white takes the team colour
+        else if (name === 'gear_trim') m.material = this.helmetMat[team];     // and red the trim, like the helmets
         else m.material = toToon(m.material as THREE.Material);
         m.frustumCulled = false;
-        // no outline shell on the visor or the thin skate blades: there it pokes through as dark spikes
-        // (the stick is a plain box, so its shell is clean)
-        if (name.startsWith('visor') || name.startsWith('blade')) return;
+        // no outline shell on the visor, the thin skate blades or the goalie's cage bars: there it pokes through
+        // as dark spikes (the stick is a plain box, so its shell is clean)
+        if (name.startsWith('visor') || name.startsWith('blade') || o.name.startsWith('g_cage')) return;
         const sk = m as THREE.SkinnedMesh;
         View.outlineWeights(m, sk.isSkinnedMesh && !name.startsWith('helmet') ? 'body' : name.startsWith('helmet') ? 'helmet' : 'rigid');
         let hull: THREE.Mesh;
         if (sk.isSkinnedMesh) { const h = new THREE.SkinnedMesh(sk.geometry, ink); h.bind(sk.skeleton, sk.bindMatrix); hull = h; }
         else hull = new THREE.Mesh(m.geometry, ink);
         hull.position.copy(m.position); hull.quaternion.copy(m.quaternion); hull.scale.copy(m.scale);
-        hull.frustumCulled = false; hulls.push(hull); (m.parent as THREE.Object3D).userData.hulls ??= [];
+        hull.frustumCulled = false; hulls.push(hull); m.userData.hull = hull; (m.parent as THREE.Object3D).userData.hulls ??= [];
         ((m.parent as THREE.Object3D).userData.hulls as THREE.Object3D[]).push(hull);
       });
       if (!DBG.has('nohull')) model.traverse(o => { for (const h of (o.userData.hulls as THREE.Object3D[] | undefined) ?? []) o.add(h); });
@@ -497,6 +528,13 @@ export class View {
       model.position.y = 0.02;   // blades sit exactly on the ice in Blender; a hair above stops them flickering into it
       for (const c of v.body.children) c.visible = false;
       v.body.add(model);
+      // goalie gear (g_* pieces) vs the skater's helmet, visor and stick: one or the other is shown
+      v.gear = []; v.skaterKit = [];
+      model.traverse(o => {
+        if ((o as THREE.Mesh).isMesh && o.name.startsWith('g_')) v.gear!.push(o);
+        else if (((o as THREE.Mesh).isMesh && /^(helmet|visor)/.test(o.name)) || (o.name === 'stick' && o.parent?.name === 'hand_r')) v.skaterKit!.push(o);
+      });
+      this.setGoalieLook(v, false);
       const sp2 = model.getObjectByName('spine_02'), sp3 = model.getObjectByName('spine_03'), head = model.getObjectByName('Head');
       if (sp2 && sp3 && head) v.bones = { sp2, sp3, head };
       v.mb = { twist: 0, phase: Math.random() * Math.PI * 2, posture: (Math.random() - 0.5) * 0.12, sway: 0.6 + Math.random() * 0.8 };
@@ -642,6 +680,11 @@ export class View {
     return { fwd: [e[0], e[2]], up: [e[4], e[5], e[6]], lean: v.feel?.lean ?? 0, rot: [v.body.rotation.x, v.body.rotation.y, v.body.rotation.z], order: v.body.rotation.order };
   }
 
+  /** test hook: for each view, whether its goalie gear is showing and whether its skater kit is (goalies: gear only) */
+  gearCheck() {
+    return this.skaters.map((v, i) => ({ i, gear: (v.gear ?? []).filter(o => o.visible).length, kit: (v.skaterKit ?? []).filter(o => o.visible).length, root: v.root.visible }));
+  }
+
   /** test hook: which clip each skater is playing and where it is */
   animStates() {
     return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2), rate: +v.anim.rate.toFixed(3), twist: +(v.mb?.twist ?? 0).toFixed(3) } : null);
@@ -679,6 +722,33 @@ export class View {
     v.body.rotation.z = -f.pitch;
   }
 
+  /** show the goalie gear (pads, blocker, glove, mask, chest, goalie stick) or the skater kit, with their outlines */
+  private setGoalieLook(v: SkaterView, on: boolean) {
+    if (v.goalieLook === on) return;
+    v.goalieLook = on;
+    const show = (o: THREE.Object3D, vis: boolean) => { o.visible = vis; const h = o.userData.hull as THREE.Object3D | undefined; if (h) h.visible = vis; };
+    for (const o of v.gear ?? []) show(o, on);
+    // the skater's helmet and stick give way only to a goalie mask and goalie stick that are actually there
+    const hasMask = (v.gear ?? []).some(o => o.name.startsWith('g_mask')), hasStick = (v.gear ?? []).some(o => o.name.startsWith('g_stick'));
+    for (const o of v.skaterKit ?? []) show(o, !on || (o.name === 'stick' ? !hasStick : !hasMask));
+    const team = v.outfit && this.skaters.indexOf(v) >= 0 ? View.teamOf(this.skaters.indexOf(v)) : 0;
+    if (v.outfit && this.goalieOutfit.length) {
+      v.outfit.material = on ? this.goalieOutfit[team] : this.outfitMats[team];
+      const h = v.outfit.userData.hull as THREE.Mesh | undefined;
+      if (h && this.goalieInk) { h.userData.ink ??= h.material; h.material = on ? this.goalieInk : h.userData.ink; }
+    }
+  }
+
+  /** a goalie's save: play the clip so its reach peaks when the puck arrives (`arrive` seconds from now) */
+  private goalieSave(team: number, kind: string, arrive: number) {
+    const v = this.skaters[(this.game?.skaters.length ?? 0) + team];
+    const clip = kind === 'butterfly' ? 'g_butterfly' : kind === 'glove' ? 'g_glove' : kind === 'blocker' ? 'g_blocker' : kind === 'pad_l' ? 'g_pad_l' : kind === 'pad_r' ? 'g_pad_r' : '';
+    if (!v || !v.anim || !clip || !v.anim.acts[clip]) return;
+    if (v.gsave && v.gsave.clip === clip && v.gsave.t < v.gsave.len * 0.5) return;   // already making this save
+    const len = 0.75, peak = len * 0.2;   // the clips reach full extension about a fifth of the way in
+    v.gsave = { clip, t: Math.max(0, Math.min(peak, peak - arrive)), len };
+  }
+
   /** choose and advance the skater's clip from what the sim says it is doing */
   private animate(v: SkaterView, s: Skater | null, has: boolean, shotByMe: boolean, dt: number) {
     const a = v.anim!;
@@ -701,7 +771,12 @@ export class View {
     };
     const forced = DBG.get('pose');   // ?pose=slapshot:0.45 holds every skater in that clip and moment (test frames)
     if (forced) { const [c, f] = forced.split(':'); if (a.acts[c]) { scrub(c, parseFloat(f || '0.5')); a.mixer.update(dt); return; } }
-    if (!s) { play(a.acts.goalie ? 'goalie' : 'glide'); a.mixer.update(dt); return; }   // goalie: wide, low stance
+    if (!s) {   // goalie: wide, low stance, or a save in progress (scrubbed so its reach meets the puck)
+      const gs = v.gsave;
+      if (gs && gs.t < gs.len && a.acts[gs.clip]) { gs.t += dt; scrub(gs.clip, gs.t / gs.len); }
+      else { v.gsave = undefined; play(a.acts.goalie ? 'goalie' : 'glide', 0.2); }
+      a.mixer.update(dt); return;
+    }
     const sp = Math.hypot(s.vx, s.vy);
     // knocked down: fall (Quaternius library clip, joined after its standing start), lie there, then
     // blend back to the stance when the sim lets him up
@@ -955,6 +1030,7 @@ export class View {
     this.teamHex = [[home.color, home.trim], [away.color, away.trim]];
     this.tintPlayers();
     this.helmetMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25));
+    this.gearBodyMat.forEach((m, t) => m.color.setHex(this.teamHex[t][0]).lerp(new THREE.Color(0x8a8f99), 0.25));
     this.gems.forEach((g, i) => {
       g.visible = i < gemColors.length;
       if (g.visible) (g.material as THREE.MeshBasicMaterial).color.setHex(gemColors[i]);
@@ -1010,11 +1086,13 @@ export class View {
         break;
       }
       case 'bump': this.burst(x, y, e.big ? 12 : 5, 0xffffff, e.big ? 6 : 3.5, 2, 0.1); break;
+      // goalie read the shot: start the save so its reach meets the puck; a save or catch without a read starts it now
+      case 'gread': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, e.n ?? 0); break;
       case 'slam': this.burst(x, y, 14, 0xffffff, 6, 5, 0.14); this.kickX += Math.sign(x) * 0.3; break;
       case 'shake': this.shake = Math.max(this.shake, e.n ?? 0.3); break;
       case 'shot': this.burst(x, y, e.big ? 12 : 6, 0xdff2ff, 5, 3, 0.1); break;
-      case 'save': this.burst(x, y, 14, 0x9fd0ff, 7, 4, 0.12); break;
-      case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); break;   // glove snaps shut
+      case 'save': this.burst(x, y, 14, 0x9fd0ff, 7, 4, 0.12); if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;
+      case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;   // glove snaps shut
       case 'post': this.burst(x, y, 10, 0xff5555, 6, 5, 0.1); break;
       case 'poke': case 'steal': this.burst(x, y, 9, 0xffffff, 5, 2.5, 0.08); this.burst(x, y, 4, 0xffe9a8, 3, 2, 0.06); break;   // stick on stick: a white crack and a few wood chips
       case 'stickDrop': this.burst(x, y, 10, 0xd9c9a3, 5, 4, 0.1); this.spray(x, y, e.dx ?? 0, e.dy ?? 0, 10, 0xe8f4ff, 6); break;
@@ -1101,6 +1179,7 @@ export class View {
       v.root.position.set(k.x, 0, k.y); v.shadow.position.x = k.x; v.shadow.position.z = k.y; v.shadow.rotation.z = -Math.PI / 2;
       // crouched, facing up the ice, leaning into the slide
       v.body.rotation.set(0, -k.face, v.anim ? 0 : -0.3);   // squared up to the puck
+      this.setGoalieLook(v, true);   // pads, blocker, glove, mask and goalie stick instead of the skater kit
       if (v.anim) this.animate(v, null, false, false, dt);
       v.body.position.y = 0; v.root.scale.setScalar(1.12);
       // the box goalie leaned into the slide; tipping the real model would push a skate and the stick into the ice
@@ -1152,6 +1231,7 @@ export class View {
       }
     }
     this.puck.position.set(pkx, 0.05 + dropH + lift, pkz);
+    this.puck.visible = !p.held;   // in the goalie's glove
     this.puckGlow.position.set(pkx, 0.03, pkz);
     this.puckRing.position.set(pkx, 0.025, pkz); this.puckRing.visible = dropH === 0;
     {

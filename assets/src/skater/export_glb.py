@@ -16,6 +16,8 @@ TEX = 4096
 sc = bpy.context.scene; vl = bpy.context.view_layer
 arm = bpy.data.objects['Armature']; out = bpy.data.objects['skater_outfit']
 PARTS = ['skater_outfit', 'helmet3', 'visor_half', 'blade_l', 'blade_r', 'stick']
+# goalie gear from build_goalie_gear.py (rigid pieces on bones; the game shows them only on goalies)
+PARTS += sorted(o.name for o in bpy.data.objects if o.name.startswith('g_') and o.type == 'MESH')
 
 def select_only(objs, active):
     for o in sc.objects: o.select_set(False)

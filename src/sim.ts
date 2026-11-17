@@ -130,7 +130,11 @@ export interface Skater {
 /** a stick knocked out of a skater's hands, sliding on the ice until he skates over it */
 export interface DroppedStick { owner: Skater; x: number; y: number; vx: number; vy: number; ang: number; spin: number }
 
-export interface Goalie { team: number; x: number; y: number; vx: number; vy: number; react: number; face: number }
+export interface Goalie {
+  team: number; x: number; y: number; vx: number; vy: number; react: number; face: number;
+  /** the shot he has read, and the save he chose for it (butterfly, glove, blocker, pad_l, pad_r) */
+  readShot?: Puck | null; saveKind?: string;
+}
 
 export interface Puck {
   x: number; y: number; vx: number; vy: number;
@@ -448,7 +452,14 @@ export class Game {
         // reads the shot after a short delay, then slides across to where it will cross
         g.react -= dt;
         const t = (g.x - shot.x) / (shot.vx || 1e-3);
-        if (g.react <= 0 && t > 0) { ty = shot.y + shot.vy * t; tx = g.x; }
+        if (g.react <= 0 && t > 0) {
+          ty = shot.y + shot.vy * t; tx = g.x;
+          if (g.readShot !== shot) {
+            // he has read it: pick the save that meets it (the renderer starts that clip now, timed to the contact)
+            g.readShot = shot; g.saveKind = this.saveKind(g, ty);
+            this.ev({ t: 'gread', team: g.team, text: g.saveKind, n: t });
+          }
+        }
         vmax = 6 + 3 * sk;
       } else g.react = 0.12 - 0.07 * sk;
       ty = clamp(ty, -(GOAL_HALF + 0.6), GOAL_HALF + 0.6);
@@ -461,6 +472,15 @@ export class Game {
       let fd = Math.atan2(p.y - g.y, p.x - g.x) - g.face; while (fd > Math.PI) fd -= 2 * Math.PI; while (fd < -Math.PI) fd += 2 * Math.PI;
       g.face += clamp(fd, -8 * dt, 8 * dt);
     }
+  }
+
+  /** Which save a goalie makes for a shot crossing at lateral position yc: the body / butterfly for anything in
+   *  tight, glove or blocker (his left / right, as he faces the puck) or a pad kick further out, high or low. */
+  private saveKind(g: Goalie, yc: number): string {
+    const lat = (yc - g.y) * Math.cos(g.face), off = Math.abs(lat);   // + = his right (blocker side)
+    if (off < 0.55) return 'butterfly';
+    const high = this.rnd() < 0.5;
+    return lat > 0 ? (high ? 'blocker' : 'pad_r') : (high ? 'glove' : 'pad_l');
   }
 
   /** hand control to another home skater without firing any button on the way */
@@ -1200,13 +1220,18 @@ export class Game {
         if (this.rnd() >= clamp(ps, 0.02, 0.97)) continue;
         if (p.ghost) { p.alive = false; this.ev({ t: 'poof', x: p.x, y: p.y }); return true; }
         this.stats.saves[g.team]++;
-        this.ev({ t: 'save', x: p.x, y: p.y });
+        // the save he plays: the one he read, or (no time to read it) the one this crossing calls for
+        let kind = g.readShot === p && g.saveKind ? g.saveKind : this.saveKind(g, yc);
+        const caught = off < body * 1.3 && this.rnd() < 0.75 - 0.25 * p.q;
+        if (caught) kind = (yc - g.y) * Math.cos(g.face) < 0 ? 'glove' : 'butterfly';   // snagged in the glove, or smothered
+        g.readShot = null;
+        this.ev({ t: 'save', x: p.x, y: p.y, team: g.team, text: kind });
         if (g.team === 0) this.addHeat(150, 'Save', g.x, g.y);
         p.kind = 'loose'; p.target = null; p.lastTeam = g.team; p.age = 0; p.cc = 0; p.fire = false;
         // into the body or glove: caught and held, then an outlet pass (play keeps flowing, no whistle)
-        if (off < body * 1.3 && this.rnd() < 0.75 - 0.25 * p.q) {
+        if (caught) {
           p.held = g; p.holdT = 0.7; p.vx = p.vy = 0; p.x = g.x + dir * 0.45; p.y = g.y;
-          this.ev({ t: 'catch', x: p.x, y: p.y });
+          this.ev({ t: 'catch', x: p.x, y: p.y, team: g.team, text: kind });
           this.chain = 0;
           return true;
         }
