@@ -10,8 +10,8 @@ export const GOAL_HALF = 2.1;
 export const NET_DEPTH = 1.5;
 /** goal line: nets stand out from the end boards so play can go behind them (NHL: 11 ft of a 200 ft rink) */
 export const GL = L - 4.4;
-export const SR = 0.7; // skater radius: check reach and boards
-const BODY = 0.5;      // body radius for skater-on-skater contact
+export const SR = 0.85; // skater radius: check reach and boards (grown with the bigger skaters)
+const BODY = 0.57;     // body radius for skater-on-skater contact (a little inside the drawn body so play is not crowded)
 export const PR = 0.22; // puck radius
 export const WIN_GOALS = 3;
 export const MATCH_SECONDS = 90;
