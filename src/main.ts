@@ -392,7 +392,11 @@ function perf() {
     perf, resetPerf: () => { frameMs.length = 0; simMs = 0; simN = 0; },
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
+    cam: () => view.camState(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
+    ground: (x: number, y: number) => view.project(x, 0.05, y),
+    // test rink only: put the loose puck at a point (puck readability probes)
+    puckTo: (x: number, y: number) => { if (game.sandbox) { const p = game.pucks[0]; p.owner = null; p.x = x; p.y = y; p.vx = p.vy = 0; } },
     body: (i: number) => view.bodyFrame(i),
   };
   requestAnimationFrame(tick);

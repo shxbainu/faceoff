@@ -19,29 +19,39 @@
   "end": 102,
   "loop": true
  },
- "glide": {
+ "back": {
   "start": 109,
-  "end": 132,
+  "end": 130,
+  "loop": true
+ },
+ "handle": {
+  "start": 137,
+  "end": 160,
+  "loop": true
+ },
+ "glide": {
+  "start": 167,
+  "end": 190,
   "loop": true
  },
  "wrist_shot": {
-  "start": 139,
-  "end": 159,
+  "start": 197,
+  "end": 217,
   "loop": false
  },
  "slapshot": {
-  "start": 165,
-  "end": 201,
+  "start": 223,
+  "end": 259,
   "loop": false
  },
  "check": {
-  "start": 207,
-  "end": 227,
+  "start": 265,
+  "end": 285,
   "loop": false
  },
  "goalie": {
-  "start": 233,
-  "end": 256,
+  "start": 291,
+  "end": 314,
   "loop": true
  }
 }

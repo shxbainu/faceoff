@@ -148,6 +148,36 @@ def crossover(t, sx):   # sx = +1: right turn (outside skate is the left one, on
 f = clip('cross_r', f, 16, True, lambda t: crossover(t, 1), range(0, 17, 2))
 f = clip('cross_l', f, 16, True, lambda t: crossover(t, -1), range(0, 17, 2))
 
+# ---- backward skating (C-cuts), for a defender facing the carrier: both blades stay on the ice; each one
+# carves a C, heel swinging out and forward then sweeping back in under the hips, pushing him backward.
+# Sitting low as if in a chair, chest more upright than going forward, head up, stick out front on the ice. ----
+BACK_FOOT = [   # u, dx (out), dy (- = toward his front), yaw (+ = toe in), roll
+    (0.00, -0.06,  0.02,  0, 0),
+    (0.20,  0.06, -0.08, 16, 8),
+    (0.42,  0.18, -0.18, 24, 12),    # heel out and forward: the push
+    (0.62,  0.12, -0.10, 12, 6),
+    (0.82,  0.00,  0.00,  2, 0),     # sweeps back in under the hips
+]
+def backskate(t):
+    for s, ph, sx in (('l', 0.0, 1), ('r', 0.5, -1)):
+        dx, dy, yaw, roll = loop_path(BACK_FOOT, t + ph)
+        foot(s, dx=sx * dx, dy=dy, yaw=-sx * yaw, roll=-sx * roll)
+    sway = S(TAU * (t - 0.2))
+    bmove('pelvis', (-0.04 * sway, 0.03, -0.085 - 0.012 * abs(C(TAU * t))))
+    brot('pelvis', 'Z', 5 * sway); brot('spine_02', 'Z', -6 * sway)
+    brot('spine_01', 'X', 3); brot('Head', 'X', -4)
+    stick(rot=[((0, 0, 1), 9 * S(TAU * t + 0.6))], move=(0, -0.05, 0))   # stick out front, sweeping the lane
+f = clip('back', f, 22, True, backskate, range(0, 23, 2))
+
+# ---- stickhandling: gliding with the puck, the blade working side to side over it ----
+def handle(t):
+    w = S(TAU * 2 * t)
+    for s, sx in (('l', 1), ('r', -1)): foot(s, dx=-sx * 0.04, yaw=-sx * 5)
+    bmove('pelvis', (0.02 * w, 0, -0.05))
+    brot('spine_01', 'X', 7); brot('spine_02', 'Z', 5 * w); brot('Head', 'X', -5)
+    stick(rot=[((0, 0, 1), 20 * w), ((0, 1, 0), 6 * w)], move=(0.05 * w, -0.04, 0))
+f = clip('handle', f, 24, True, handle, range(0, 25, 2))
+
 # ---- glide: both blades on the ice, low and quiet ----
 def glide(t):
     for s, sx in (('l', 1), ('r', -1)): foot(s, dx=-sx * 0.03, yaw=-sx * 4)

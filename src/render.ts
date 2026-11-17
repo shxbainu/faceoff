@@ -1,8 +1,9 @@
+import { FollowCam } from './camera';
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute } from 'three/tsl';
-import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
+import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater, PR } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
 // if a file is missing or broken the procedural model simply stays.
@@ -19,13 +20,21 @@ const BLUE = 0x1e90ff;
 interface SkaterAnim {
   mixer: THREE.AnimationMixer; acts: Record<string, THREE.AnimationAction>; cur: string;
   shotT: number; shotKind: 'wrist' | 'slap'; prevWind: number; checkLen: number;
+  rate: number;   // this skater's own rhythm (0.9 to 1.12), so the team doesn't stride in step
 }
 interface SkaterView {
   root: THREE.Group; body: THREE.Group; shadow: THREE.Mesh; fall: number; spin: number;
   anim?: SkaterAnim;
   /** skating feel (display only): smoothed heading, lean into turns, forward lean, hockey stop */
   feel?: { yaw: number; face: number; sp: number; lean: number; pitch: number; stopT: number; stopSide: number; effort: number; turn: number; hd: number };
+  /** upper-body layer over the clips: spine and head bones, and this skater's own posture and rhythm */
+  bones?: { sp2: THREE.Object3D; sp3: THREE.Object3D; head: THREE.Object3D };
+  mb?: { twist: number; phase: number; posture: number; sway: number };
 }
+/** locomotion loops and the phase (0..1) at which the left skate's push peaks in each, for phase-synced blends */
+const LOCO: Record<string, number> = { stride: 0, cross_r: 0, cross_l: 0.5, back: 0 };
+/** ground covered per clip cycle (sim units), for distance matching: play rate = speed x duration / distance */
+const CYCLE_DIST: Record<string, number> = { stride: 6.7, cross_r: 5.2, cross_l: 5.2, back: 4.2 };
 const wrapA = (a: number) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
@@ -56,12 +65,14 @@ export class View {
   backend = 'unknown';
   private skaters: SkaterView[] = [];
   private teamMat: { body: THREE.MeshStandardMaterial; trim: THREE.MeshStandardMaterial }[] = [];
-  private puck!: THREE.Mesh; private puckMat!: THREE.MeshStandardMaterial; private puckGlow!: THREE.Mesh; private puckStreak!: THREE.Mesh;
+  private puck!: THREE.Mesh; private puckMat!: THREE.MeshStandardMaterial; private puckGlow!: THREE.Mesh; private puckStreak!: THREE.Mesh; private puckRing!: THREE.Mesh;
   private ghosts: THREE.Mesh[] = [];
   private arrow!: THREE.Mesh; private disc!: THREE.Mesh; private discMat!: THREE.MeshBasicMaterial;
   private ring!: THREE.Mesh;
   private discInk!: THREE.Mesh; private beam!: THREE.Mesh; private toPuck!: THREE.Group;
-  private camZ = 0; private camD = CAM_DIST;
+  private camZ = 0; private camD = CAM_DIST; private cam = new FollowCam(CAM_DIST);
+  /** test hook: camera follow state (look-ahead and lag) */
+  camState() { return { ...this.cam.last, x: this.cam.x, z: this.cam.z, dist: this.cam.dist }; }
   private gems: THREE.Mesh[] = [];
   private parts!: THREE.InstancedMesh;
   private pp = new Float32Array(400 * 8); // x y z vx vy vz life size
@@ -474,14 +485,17 @@ export class View {
       model.position.y = 0.02;   // blades sit exactly on the ice in Blender; a hair above stops them flickering into it
       for (const c of v.body.children) c.visible = false;
       v.body.add(model);
+      const sp2 = model.getObjectByName('spine_02'), sp3 = model.getObjectByName('spine_03'), head = model.getObjectByName('Head');
+      if (sp2 && sp3 && head) v.bones = { sp2, sp3, head };
+      v.mb = { twist: 0, phase: Math.random() * Math.PI * 2, posture: (Math.random() - 0.5) * 0.12, sway: 0.6 + Math.random() * 0.8 };
       const mixer = new THREE.AnimationMixer(model), acts: Record<string, THREE.AnimationAction> = {};
       for (const clip of gltf.animations) {
         const a = mixer.clipAction(clip);
-        if (!['idle', 'stride', 'glide', 'goalie', 'cross_l', 'cross_r'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+        if (!['idle', 'stride', 'glide', 'goalie', 'cross_l', 'cross_r', 'back', 'handle'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
         acts[clip.name] = a;
       }
       acts.idle.play();
-      v.anim = { mixer, acts, cur: 'idle', shotT: 0, shotKind: 'wrist', prevWind: -1, checkLen: 0 };
+      v.anim = { mixer, acts, cur: 'idle', shotT: 0, shotKind: 'wrist', prevWind: -1, checkLen: 0, rate: 0.9 + Math.random() * 0.22 };
     });
   }
 
@@ -495,7 +509,7 @@ export class View {
 
   /** test hook: which clip each skater is playing and where it is */
   animStates() {
-    return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2) } : null);
+    return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2), rate: +v.anim.rate.toFixed(3), twist: +(v.mb?.twist ?? 0).toFixed(3) } : null);
   }
 
   /** Skating feel on top of the clips (display only, the sim is unchanged):
@@ -535,7 +549,14 @@ export class View {
     const a = v.anim!;
     const play = (name: string, fade = 0.15) => {
       if (a.cur === name) return a.acts[name];
-      const next = a.acts[name]; next.reset(); next.enabled = true; next.setEffectiveWeight(1); next.play();
+      const next = a.acts[name], prev = a.acts[a.cur]; next.reset(); next.enabled = true; next.setEffectiveWeight(1); next.play();
+      // foot-phase sync between locomotion loops (as in Gears of War 4's locomotion): the new clip starts with the
+      // same skate pushing as the old one, so a stride -> crossover -> backward change never double-steps.
+      // From anything else, loops start at a random point so nobody on the ice strides in lockstep.
+      if (name in LOCO && a.cur in LOCO) {
+        const u = prev.time / prev.getClip().duration - LOCO[a.cur] + LOCO[name];
+        next.time = (((u % 1) + 1) % 1) * next.getClip().duration;
+      } else if (next.loop === THREE.LoopRepeat) next.time = Math.random() * next.getClip().duration;
       a.acts[a.cur].crossFadeTo(next, fade, false); a.cur = name; return next;
     };
     // scrubbed clips: time follows game state, not the clock
@@ -564,6 +585,11 @@ export class View {
       } else if (s.checkT > 0) {
         if (a.cur !== 'check') a.checkLen = s.checkT;
         scrub('check', 0.3 + 0.7 * (1 - s.checkT / Math.max(0.05, a.checkLen)));
+      } else if (sp > 1.2 && (s.vx * Math.cos(s.face) + s.vy * Math.sin(s.face)) / sp < -0.3 && a.acts.back) {
+        // skating backward, facing the play: C-cuts, quicker as he works harder to hold the gap
+        const act = play('back', 0.15); act.timeScale = Math.max(0.6, Math.min(1.6, sp * act.getClip().duration / CYCLE_DIST.back)) * a.rate;
+      } else if (has && sp < 6.5 && s.wind < 0 && a.acts.handle) {
+        const act = play('handle', 0.15); act.timeScale = (1 + sp * 0.06) * a.rate;   // working the puck
       } else if (sp > 2.2 && s.drive) {
         // short, quick pushes while building speed; longer, slower strides once at speed.
         // a hard carve at speed switches to crossovers, stepping the outside skate over the inside one
@@ -571,12 +597,48 @@ export class View {
         const cx = tr > 0 ? 'cross_r' : 'cross_l';   // sim facing grows clockwise on screen: tr > 0 is a right turn
         const cross = !!a.acts[cx] && Math.abs(tr) > 1.6 && sp > 5;
         const act = play(cross ? cx : 'stride', 0.12);
-        act.timeScale = cross ? Math.min(1.9, 1.1 + Math.abs(tr) * 0.12) : Math.max(0.8, Math.min(1.25, sp / 8)) + e * 0.9;
+        // distance matching: cadence follows ground speed, so pushes look like they produce the speed; building speed
+        // (effort) means shorter, quicker pushes, as real skaters do out of a stop
+        act.timeScale = Math.max(0.7, Math.min(1.9, sp * act.getClip().duration / CYCLE_DIST[cross ? cx : 'stride'] * (1 + 0.7 * e))) * a.rate;
       }
       else if (sp > 0.6) play('glide');
       else play('idle');
     }
     a.mixer.update(dt);
+  }
+
+  /** Upper-body layer applied after the clip each frame (the mixer rewrites the bones every update, so these
+   *  offsets never accumulate). It decouples the chest and head from the legs, the way games layer an upper
+   *  body over locomotion:
+   *  - the chest and head turn toward the puck (split across two spine bones and the head), so a skater
+   *    gliding one way can watch play the other way, and a defender's shoulders track the carrier
+   *  - each skater carries his own posture (more or less hunched) and a slow weight shift with his own phase
+   *  Rotations are built about world axes converted into each bone's parent space, so they don't depend on
+   *  how the rig's bones happen to be oriented. */
+  private mbQ = new THREE.Quaternion(); private mbP = new THREE.Quaternion(); private mbA = new THREE.Vector3();
+  private microBlend(v: SkaterView, s: Skater, p: { x: number; y: number }, rdt: number) {
+    const b = v.bones, m = v.mb; if (!b || !m || !v.anim) return;
+    const busy = ['wrist_shot', 'slapshot', 'check', 'fall'].includes(v.anim.cur);
+    const dx = p.x - s.x, dy = p.y - s.y, d = Math.hypot(dx, dy);
+    // sim angles grow from +x toward +y, which is a negative turn about world +Y
+    const rel = d > 0.8 ? wrapA(Math.atan2(dy, dx) - s.face) : 0;
+    const want = busy ? 0 : Math.max(-0.75, Math.min(0.75, rel * 0.55)) * Math.min(1, d / 3) * (d < 22 ? 1 : 0);
+    m.twist += (want - m.twist) * Math.min(1, rdt * 6);
+    const t = this.t * m.sway + m.phase, shift = Math.sin(t) * 0.035, nod = Math.sin(t * 1.7 + 1) * 0.02;
+    v.root.updateMatrixWorld(true);
+    const fwd = this.mbA;
+    const rot = (bone: THREE.Object3D, axis: THREE.Vector3, ang: number) => {
+      if (Math.abs(ang) < 1e-4) return;
+      bone.parent!.getWorldQuaternion(this.mbP).invert();
+      const ax = axis.clone().applyQuaternion(this.mbP).normalize();
+      bone.quaternion.premultiply(this.mbQ.setFromAxisAngle(ax, ang));
+      bone.updateMatrixWorld(true);
+    };
+    const up = new THREE.Vector3(0, 1, 0);
+    fwd.set(Math.cos(s.face), 0, Math.sin(s.face));
+    const side = new THREE.Vector3().crossVectors(up, fwd).normalize();
+    rot(b.sp2, up, -m.twist * 0.4); rot(b.sp3, up, -m.twist * 0.35); rot(b.head, up, -m.twist * 0.25);
+    rot(b.sp2, side, m.posture + nod); rot(b.sp3, fwd, shift);
   }
 
   /** repaint both team textures: white cloth takes the team colour, red gear takes the trim colour */
@@ -710,9 +772,15 @@ export class View {
     // slimmer, smoother puck (about 3:1 like a real one, 48 sides); the top face is a touch lighter so it reads as a disc
     const puckTop = new THREE.MeshStandardMaterial({ color: 0x3a3846, roughness: 0.6 });
     // small, like the real thing next to a skater (about twice true scale so it still reads from the camera)
-    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.065, 40), [this.puckMat, puckTop, this.puckMat]);
+    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(PR, PR, 0.065, 40), [this.puckMat, puckTop, this.puckMat]);   // drawn exactly at its collision size
     this.puckGlow = new THREE.Mesh(new THREE.CircleGeometry(0.3, 40), new THREE.MeshBasicMaterial({ color: 0xe5482d, depthWrite: false }));
     this.puckGlow.rotation.x = -Math.PI / 2;
+    // outline halo on the ice: a thin white gap then a crisp dark ring, so the small puck has a hard edge against the
+    // bright ice (figure-ground contrast) and stays readable at shot speed; the ink colour matches the skater outlines
+    this.puckRing = new THREE.Mesh(new THREE.RingGeometry(PR + 0.06, PR + 0.13, 48), new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.9, depthWrite: false }));
+    const gapRing = new THREE.Mesh(new THREE.RingGeometry(PR, PR + 0.06, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false }));
+    this.puckRing.add(gapRing);
+    this.puckRing.rotation.x = -Math.PI / 2; this.scene.add(this.puckRing);
     // speed streak: a fast puck is a blur, so a hard shot reads as a line to the net rather than a dot crawling
     const stc = document.createElement('canvas'); stc.width = 128; stc.height = 8;
     const stg = stc.getContext('2d')!, gr = stg.createLinearGradient(0, 0, 128, 0);
@@ -851,6 +919,7 @@ export class View {
         v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
+        if (s.stun <= 0 && !s.air) this.microBlend(v, s, p, rdt);
         // sprinting: each hard push kicks a little ice back off the skates
         if (s.sprint && !s.air && dt > 0 && Math.random() < 0.35) { const sp = Math.hypot(s.vx, s.vy) || 1; this.spray(s.x, s.y, -s.vx / sp, -s.vy / sp, 2, 0xe8f4ff, 4); }
       } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
@@ -907,8 +976,10 @@ export class View {
     const lift = p.kind === 'pass' && p.lifted && p.liftT > 0 ? Math.sin(Math.PI * Math.min(1, p.age / p.liftT)) * 0.9 : 0;
     this.puck.position.set(p.x, 0.05 + dropH + lift, p.y);
     this.puckGlow.position.set(p.x, 0.03, p.y);
+    this.puckRing.position.set(p.x, 0.025, p.y); this.puckRing.visible = dropH === 0;
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
-    this.puckGlow.scale.setScalar(fire ? 1.5 + Math.sin(this.t * 20) * 0.2 : 1);
+    this.puckGlow.visible = fire;   // red glow only when on fire; normally the grey ring marks the puck
+    this.puckGlow.scale.setScalar(1.5 + Math.sin(this.t * 20) * 0.2);
     if (fire && dt > 0) this.burst(p.x, p.y, 2, Math.random() < 0.5 ? 0xe5482d : 0xf7eed8, 1.5, 3, 0.18, 0.15);
     const psp = Math.hypot(p.vx, p.vy);
     this.puckStreak.visible = !p.owner && !p.held && psp > 14 && dropH === 0;
@@ -1007,15 +1078,17 @@ export class View {
     const aspect = this.camera.aspect;
     const live = g.phase !== 'faceoff' && h.out <= 0;
     const sep = live ? Math.abs(p.x - h.x) : 0;
-    const want = (CAM_DIST + Math.max(0, Math.min(10, sep - 16)) * 0.3) * (aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
-    this.camD += (want - this.camD) * Math.min(1, rdt * 2.5);
+    // predictive follow (src/camera.ts): spring follow of the puck (pulled a little toward your skater) with a
+    // velocity look-ahead and speed zoom; the test rink follows your skater
+    const pv = p.owner ?? p;
+    const cam = this.cam.update(rdt, {
+      x: live ? (g.sandbox ? h.x : p.x * 0.85 + h.x * 0.15) + CAM_LEAD : CAM_LEAD, z: live ? (g.sandbox ? h.y : p.y * 0.85 + h.y * 0.15) * 0.5 : 0,
+      vx: live ? pv.vx * 0.85 : 0, vz: live ? pv.vy * 0.85 * 0.5 : 0,   // the target's own velocity (it is 85% puck, z at half scale)
+      extraDist: Math.max(0, Math.min(10, sep - 16)) * 0.3,
+      minX: -L + 9, maxX: L - 12, minZ: -7, maxZ: 7, lead: live && !g.sandbox,
+    }, aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
+    this.camX = cam.x; this.camZ = cam.z; this.camD = cam.dist;
     const dist = this.camD;
-    // follows the puck in a match; in the test rink (no play to follow) it follows your skater
-    const focus = live ? (g.sandbox ? h.x : p.x * 0.8 + h.x * 0.2) : 0;
-    // low limit keeps our own net above the scorebug when defending
-    this.camX += (Math.max(-L + 9, Math.min(L - 12, focus + CAM_LEAD)) - this.camX) * Math.min(1, rdt * 3.5);
-    const fz = live ? Math.max(-6, Math.min(6, (g.sandbox ? h.y : p.y * 0.8 + h.y * 0.2) * 0.45)) : 0;
-    this.camZ += (fz - this.camZ) * Math.min(1, rdt * 3);
     this.shake = Math.max(0, this.shake - rdt * 3);
     const sx = (Math.random() - 0.5) * this.shake * 1.3 + this.kickX, sz = (Math.random() - 0.5) * this.shake * 1.3 + this.kickZ;
     const pd = dist * (1 - 0.07 * this.punch);

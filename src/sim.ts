@@ -68,6 +68,18 @@ export interface Ctl {
  *  turnHigh   turn rate at top speed: wide carving arcs that keep their speed
  *  brake      deceleration when pushing against your own motion (skid to a hockey stop) */
 export interface SkateStats { accel: number; topSpeed: number; glide: number; turnLow: number; turnHigh: number; brake: number }
+/** Passing tuning, one object so roguelite perks can modify it (game.passMods.speed *= 1.15, and so on).
+ *  speed          multiplier on every pass's speed
+ *  homing         how fast (rad/s) a pass bends toward its moving receiver
+ *  oneTimerWindow seconds after a pass lands in which a shot press still counts as a one-timer
+ *  oneTouchHeat   Heat for a one-touch pass
+ *  giveGoTime     how long a passer bursts up the ice for the return pass
+ *  giveGoBoost    top-speed multiplier during that burst
+ *  saucerCurve    sideways bend on saucer passes, away from the nearest defender (0 = straight) */
+export interface PassMods { speed: number; homing: number; oneTimerWindow: number; oneTouchHeat: number; giveGoTime: number; giveGoBoost: number; saucerCurve: number }
+export const PASS_BASE: PassMods = { speed: 1, homing: 2.2, oneTimerWindow: 0.28, oneTouchHeat: 75, giveGoTime: 1.3, giveGoBoost: 1.12, saucerCurve: 0 };
+
+export const STICK_R = 1.05;   // blade distance from the body
 export const SPIN_T = 0.42;   // spin move length, seconds
 export const SPRINT = { tank: 2.4, refill: 3.2, delay: 0.45, relock: 0.35, speed: 1.3, accel: 1.4 };
 
@@ -88,9 +100,18 @@ export interface Skater {
   move: SkateStats;
   pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
-  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number; rvx?: number; rvy?: number };
+  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number; rvx?: number; rvy?: number;
+    /** defending: the point to face (the carrier) while moving any direction; smoothed contain target */
+    look?: [number, number] | null; sx?: number; sy?: number; dodge?: number; dodgeT?: number;
+    /** getting open: chosen offset from the formation spot and when to look again; give-and-go run time */
+    openU?: number; openV?: number; openT?: number; runT?: number };
   /** spin move with the puck: time left, cooldown, direction, facing at the start, the defender being spun past */
   spinT: number; spinCd: number; spinDir: number; spinFace: number; spinFoe: Skater | null;
+  /** one-touch pass queued while a pass is on its way to you (seconds left), and the direction held then */
+  oneTouch: number; otx: number; oty: number;
+  /** stick blade on the ice: angle off the facing (set by defending AI to seal a lane) and its world position */
+  stickAng: number; stickX: number; stickY: number;
+  recvT: number;   // time left in the one-timer window after a pass lands on your stick
 }
 
 /** goalies stay in their crease and slide along the goal line */
@@ -140,6 +161,7 @@ export class Game {
   autoplay = false;
   /** test rink (?test): your skater alone on empty ice, no AI, goalies, clock, faceoffs or goals */
   sandbox = false;
+  passMods: PassMods = { ...PASS_BASE };
   /** the skater the player is steering; changes hands with the puck and on the switch key */
   ctrl!: Skater;
   private pSwap = false;
@@ -162,7 +184,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -504,11 +526,16 @@ export class Game {
     let max = this.maxSpeed(s), acc = mv.accel;
     if (has) max *= 0.93;                       // carrying the puck costs a little speed (footwork and passing matter)
     if (s.wind >= 0 && has) max *= 0.6;
+    if (!s.human && (s.ai.runT ?? 0) > 0) { max *= this.passMods.giveGoBoost; acc *= 1.2; }   // give-and-go burst
+    {   // skating backward (C-cuts) is slower to build and tops out lower than going forward
+      const v0 = Math.hypot(s.vx, s.vy);
+      if (v0 > 1 && (s.vx * Math.cos(s.face) + s.vy * Math.sin(s.face)) / v0 < -0.3) { max *= 0.93; acc *= 0.85; }
+    }
     // Sprint bar: holding sprint while skating raises top speed and acceleration and drains the bar
     // (about 2.4 s from full). It refills after a short rest, quicker when not skating. Emptying it
     // leaves you winded: no sprint until it is back to SPRINT_RELOCK. Checks also draw from it.
     const tank = SPRINT.tank + 0.6 * this.pw(s.team, 'burner');
-    s.settle -= dt; s.slow -= dt; s.spinCd -= dt;
+    s.settle -= dt; s.slow -= dt; s.spinCd -= dt; s.oneTouch -= dt; s.recvT -= dt;
     if (s.slow > 0) { max *= 0.55; acc *= 0.6; } // a standing check landed: legs are tied up for a moment
     if (s.gassed && s.stamina >= SPRINT.relock) s.gassed = false;
     s.sprint = c.burst && ml > 0 && !s.gassed && s.stamina > 0 && s.stun <= 0;
@@ -566,6 +593,7 @@ export class Game {
     const sp = Math.hypot(s.vx, s.vy);
     let ta = s.face;
     if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
+    else if (!s.human && !has && s.ai.look && s.checkT <= 0) ta = Math.atan2(s.ai.look[1] - s.y, s.ai.look[0] - s.x);   // defending: square to the carrier, skate backward if need be
     else if (skid && ml > 0) ta = Math.atan2(my, mx);   // skidding to a stop: turn once, toward where you are heading next
     else if (sp > 2.5) ta = Math.atan2(s.vy, s.vx);   // face where you are actually skating (arcs)
     else if (ml > 0) ta = Math.atan2(my, mx);
@@ -577,6 +605,7 @@ export class Game {
       if (s.spinT <= 0) this.endSpin(s);
     }
     if (s.face > Math.PI) s.face -= 2 * Math.PI; else if (s.face < -Math.PI) s.face += 2 * Math.PI;
+    s.stickX = s.x + Math.cos(s.face + s.stickAng) * STICK_R; s.stickY = s.y + Math.sin(s.face + s.stickAng) * STICK_R;
 
     // buttons
     const passEdge = c.pass && (!s.pPass || !s.human);
@@ -586,8 +615,13 @@ export class Game {
     const pokeEdge = !!c.poke && (!s.pPoke || !s.human);
     if (has && (c.passTo || passEdge || saucerEdge)) this.doPass(s, c.passTo || null, mx, my, ml > 0, saucerEdge && !passEdge);
     else if (has && wristEdge && s.wind < 0) this.doShot(s, 0.5, false, my, true);
+    else if (passEdge && p.kind === 'pass' && p.target === s) { s.oneTouch = 0.8; s.otx = mx; s.oty = my; }   // one-touch: it goes straight on when it arrives
     else if (passEdge && s.human && p.owner && p.owner.team === s.team) { s.calling = 0.9; this.ev({ t: 'call' }); }
-    if (c.shoot) {
+    if (c.shoot && !s.pShoot && has && s.recvT > 0 && s.wind < 0) {
+      // late one-timer: the shot was pressed just after the pass landed, still within the window
+      s.recvT = 0; s.face = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
+      this.doShot(s, 0.5, true, my);
+    } else if (c.shoot) {
       s.wind = s.wind < 0 ? 0 : s.wind + dt;
       if (p.owner === s && s.wind > 1.5) { this.doShot(s, s.wind, false, my); s.wind = -1; }
     } else if (s.pShoot || s.wind >= 0) {
@@ -643,12 +677,13 @@ export class Game {
     const p = this.pucks[0], car = p.owner;
     const sp = Math.hypot(s.vx, s.vy);
     const dC = car ? Math.hypot(car.x - s.x, car.y - s.y) : 99;
-    if (mode === 'poke' && !(car && car.team !== s.team && dC < 1.9)) { s.checkCd = 0.45; this.ev({ t: 'poke', x: s.x + Math.cos(s.face), y: s.y + Math.sin(s.face) }); return; }
-    if (mode !== 'body' && car && car.team !== s.team && dC < 1.9 && (mode === 'poke' || sp < 4.5 || Math.hypot(s.vx - car.vx, s.vy - car.vy) < 4.5)) {
+    if (mode === 'poke' && !(car && car.team !== s.team && dC < 2.3)) { s.checkCd = 0.45; this.ev({ t: 'poke', x: s.x + Math.cos(s.face), y: s.y + Math.sin(s.face) }); return; }
+    if (mode !== 'body' && car && car.team !== s.team && dC < (mode === 'poke' ? 2.3 : 1.9) && (mode === 'poke' || sp < 4.5 || Math.hypot(s.vx - car.vx, s.vy - car.vy) < 4.5)) {
       s.checkCd = 0.9;
+      this.ev({ t: 'pokeTry', x: s.x, y: s.y });
       // a poke is aim and timing, not a dice roll: the stick has to reach the puck itself.
       // The puck rides in front of the carrier, so turning away puts their body in the way.
-      const reach = 1.5 * (1 - 0.12 * this.pw(car.team, 'magnet'));
+      const reach = 1.6 * (1 - 0.12 * this.pw(car.team, 'magnet'));
       const dP = Math.hypot(p.x - s.x, p.y - s.y);
       if (car.settle > 0 || car.spinT > 0 || dP > reach || dP > dC + 0.15) this.ev({ t: 'bump', x: p.x, y: p.y });
       else {
@@ -700,7 +735,7 @@ export class Game {
     p.owner = s; p.kind = 'loose'; p.target = null; p.from = null; p.cc = 0; p.oneTimer = false; p.fire = false;
     p.lastTeam = s.team; p.checked.clear();
     if (prevTeam !== s.team) this.chain = 0;
-    s.ai.hold = 0; s.ai.patience = 2.6 + this.rnd() * 1.6; s.settle = 0.45;
+    s.ai.hold = 0; s.ai.patience = 1.2 + this.rnd() * 1.0; s.settle = 0.45;
     if (this.phase === 'play' || this.phase === 'faceoff') {
       if (s.team === 0) this.setCtrl(s);
       else if (prevTeam !== s.team || this.ctrl.team === 0) {
@@ -753,7 +788,7 @@ export class Game {
     }
     // crisp passes: about 3x skating speed, harder over distance (was a flat 18, which drifted)
     const far = to ? Math.hypot(to.x - s.x, to.y - s.y) : 12;
-    const speed = clamp(22 + far * 0.6, 26, 36) * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
+    const speed = clamp(22 + far * 0.6, 26, 36) * this.passMods.speed * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
     p.lifted = lifted; p.liftT = 0;
     p.owner = null; p.age = 0; p.checked.clear(); p.from = s; p.lastTeam = s.team; p.shooter = null; p.cc = 0;
     p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6;
@@ -774,7 +809,8 @@ export class Game {
     if (lifted) p.liftT = Math.hypot(tx - p.x, ty - p.y) / speed;
     p.vx = (dx / d) * speed; p.vy = (dy / d) * speed;
     const cl = this.pw(s.team, 'curve');
-    if (cl > 0 && d > 4) {
+    const sc = lifted ? this.passMods.saucerCurve : 0;
+    if ((cl > 0 || sc > 0) && d > 4) {
       // bend away from the defender closest to the lane
       let side = 1, m = 9;
       for (const o of this.skaters) {
@@ -783,9 +819,10 @@ export class Game {
         const ex = o.x - (p.x + dx * t), ey = o.y - (p.y + dy * t), e = Math.hypot(ex, ey);
         if (e < m) { m = e; side = ex * -dy + ey * dx > 0 ? -1 : 1; }
       }
-      p.cpx = (-dy / d) * side; p.cpy = (dx / d) * side; p.cc = 5 + cl; p.cT = d / speed;
+      p.cpx = (-dy / d) * side; p.cpy = (dx / d) * side; p.cc = cl > 0 ? 5 + cl + sc : sc; p.cT = d / speed;
     }
     to.ai.oneT = this.rnd() < (s.team === 0 ? 0.75 : 0.4 + 0.4 * this.skillLevel);
+    if (!s.human) s.ai.runT = this.passMods.giveGoTime;   // give-and-go: jump into space for the return pass
     if (s.human) this.setCtrl(to);
     this.ev({ t: 'pass', x: s.x, y: s.y });
   }
@@ -1004,7 +1041,7 @@ export class Game {
       const cur = Math.atan2(p.vy, p.vx), want = Math.atan2(wy, wx);
       let da = want - cur; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
       if (Math.abs(da) < 1.1 && wl > 0.8) {
-        const turn = clamp(da, -2.2 * dt, 2.2 * dt), na = cur + turn;
+        const hm = this.passMods.homing, turn = clamp(da, -hm * dt, hm * dt), na = cur + turn;
         p.vx = Math.cos(na) * sp0; p.vy = Math.sin(na) * sp0;
       }
     }
@@ -1035,10 +1072,11 @@ export class Game {
         if (s.team === p.lastTeam) {
           if (s === p.from) continue;
           if (d < (s === p.target ? reach + 0.25 : reach * 0.8)) { this.receive(p, s); return; }
-        } else if (d < 1.15 && !p.checked.has(s.id)) {
+        } else if ((d < 1.15 || Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.8) && !p.checked.has(s.id)) {
           p.checked.add(s.id);
+          const onBlade = Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.8;
           if (p.lifted) { if (p.lastTeam === 0) this.addHeat(100, 'Saucer pass', s.x, s.y); continue; }
-          let ch = s.blockT > 0 ? 0.8 : 0.35;
+          let ch = s.blockT > 0 ? 0.8 : onBlade ? 0.5 : 0.35;   // a blade laid in the lane takes it more often than a body
           ch *= Math.pow(0.5, this.pw(p.lastTeam, 'curve'));
           if (this.rnd() < ch) {
             this.gain(p, s);
@@ -1149,12 +1187,52 @@ export class Game {
     const chain = this.chain;
     const oneT = s.wind >= 0;
     this.gain(p, s);
+    s.recvT = this.passMods.oneTimerWindow;
     this.chain = chain;
     this.ev({ t: 'recv', x: s.x, y: s.y });
     if (oneT && from !== s) {
       s.face = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
       this.doShot(s, 0.5, true, s.human ? this.lastHumanMy : 0);
+      return;
     }
+    // one-touch pass: queued by pressing pass before it arrived (bots do it when a defender is on them)
+    const press = this.nearestOpp(s)[1];
+    const botTouch = !s.human && press < 2.4 && this.rnd() < 0.4;
+    if ((s.oneTouch > 0 || botTouch) && from !== s) {
+      const hasDir = s.human && Math.hypot(s.otx, s.oty) > 0.3;
+      s.oneTouch = 0;
+      this.doPass(s, s.human ? null : this.openMate(s), s.otx, s.oty, hasDir);
+      if (s.team === 0) this.addHeat(this.passMods.oneTouchHeat, 'One-touch', s.x, s.y);
+      this.ev({ t: 'onetouch', x: s.x, y: s.y });
+    }
+  }
+
+  private optCache = { t: -1, car: null as Skater | null, mate: null as Skater | null };
+  /** the carrier's most dangerous pass option right now (cached per step) */
+  private bestOption(car: Skater): Skater | null {
+    if (this.optCache.t !== this.time || this.optCache.car !== car) this.optCache = { t: this.time, car, mate: this.openMate(car) };
+    return this.optCache.mate;
+  }
+
+  /** distance from a point to the nearest active skater not on this team */
+  private oppDist(x: number, y: number, team: number): number {
+    let d = 99;
+    for (const o of this.skaters) if (o.team !== team && this.active(o)) d = Math.min(d, Math.hypot(o.x - x, o.y - y));
+    return d;
+  }
+
+  /** the most open teammate with a clean lane, favouring ones further up the ice */
+  private openMate(s: Skater): Skater | null {
+    const dir = s.team === 0 ? 1 : -1;
+    let best: Skater | null = null, bs = 0.3;
+    for (const m of this.skaters) {
+      if (m.team !== s.team || m === s || !this.active(m)) continue;
+      const ln = this.laneGap(s.x, s.y, m.x, m.y, s.team);
+      if (ln < 0.8) continue;
+      const sc = (m.x - s.x) * dir * 0.06 + Math.min(ln, 2.5) + Math.min(this.nearestOpp(m)[1], 4) * 0.6;
+      if (sc > bs) { bs = sc; best = m; }
+    }
+    return best;
   }
   lastHumanMy = 0;
 
@@ -1182,6 +1260,7 @@ export class Game {
   }
 
   /** the one skater on a team who goes after the carrier or the loose puck; everyone else keeps shape */
+  private pressing: (Skater | null)[] = [null, null];
   private presser(team: number, tx: number, ty: number): Skater | null {
     let best: Skater | null = null, bd = 1e9;
     const deep = (team === 0 ? tx < -0.3 * L : tx > 0.3 * L);
@@ -1192,9 +1271,11 @@ export class Game {
       // defenders only press inside their own zone
       // a defender already goal-side of the puck should take it; one chasing from behind is a last resort
       const ngx = (team === 0 ? -GL : GL) - tx, behind = (k.x - tx) * ngx + (k.y - ty) * -ty < 0;
-      const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1) * (behind && !k.human ? 2.5 : 1);
+      const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1) * (behind && !k.human ? 2.5 : 1)
+        * (k === this.pressing[team] ? 0.7 : 1);   // the one already on him keeps the job: no hand-off yo-yo
       if (d < bd) { bd = d; best = k; }
     }
+    this.pressing[team] = best;
     return best;
   }
 
@@ -1252,6 +1333,7 @@ export class Game {
     const sk = s.team === 1 ? this.skillLevel : 0.7;
     const isD = s.slot === 2 || s.slot === 4;
     let tx = s.x, ty = s.y;
+    s.ai.look = null;
 
     // who has it: carrier, or the side a pass belongs to
     const ownTeam = car ? car.team : p.kind === 'pass' ? p.lastTeam : -1;
@@ -1289,7 +1371,7 @@ export class Game {
           const lane = this.laneGap(s.x, s.y, tgx, 0, s.team) > 1.2;
           if (canShoot && s.ai.hold > 0.25 && (dg < 10.5 || (lane && s.ai.hold > 0.5) || nd < 2.5 || s.ai.hold > 1.2)) {
             s.ai.windGoal = 0.33 + this.rnd() * (0.55 - 0.3 * sk); c.shoot = true;
-          } else if ((nd < 1.8 && s.ai.hold > 0.35 * s.ai.patience) || s.ai.hold > s.ai.patience || (isD && s.ai.hold > 1.1)) {
+          } else if ((nd < 2.6 && s.ai.hold > 0.3 * s.ai.patience) || s.ai.hold > s.ai.patience || (isD && s.ai.hold > 0.8)) {
             // move it to an open teammate further up the ice; with nobody ahead, keep carrying it
             const pressured = nd < 1.8;
             let best: Skater | null = null, bs = 0.2;
@@ -1305,7 +1387,12 @@ export class Game {
             else if (s.ai.hold > 3 && canShoot) { s.ai.windGoal = 0.4; c.shoot = true; }
           }
         }
-        if (no && nd < 4.5 && (no.x - s.x) * dir > -0.5) ty = clamp(ty + (s.y >= no.y ? 1 : -1) * 3.5, -W + 2, W - 2);
+        // slip a defender ahead by committing to one side (with the open ice) and holding it, not zigzagging
+        s.ai.dodgeT = (s.ai.dodgeT ?? 0) - dt;
+        if (no && nd < 4.5 && (no.x - s.x) * dir > -0.5) {
+          if (s.ai.dodgeT <= 0) { s.ai.dodge = Math.abs(s.y) > W - 5 ? -Math.sign(s.y) : (s.y >= no.y ? 1 : -1); s.ai.dodgeT = 0.9 + this.rnd() * 0.6; }
+          ty = clamp(ty + (s.ai.dodge ?? 1) * 3.5, -W + 2, W - 2);
+        }
         c.burst = ahead > 10 && (nd > 3 || s.ai.hold < 1);
         if (no && nd < 1.7 && s.spinCd <= 0 && (no.x - s.x) * dir > 0 && this.rnd() < dt * (0.6 + 1.2 * sk)) c.check = true;   // spin off the defender
       }
@@ -1328,36 +1415,60 @@ export class Game {
           // once he is pinned on the boards. Beaten from behind: come alongside for a poke, then give up.
           const ngx = -dir * GL;
           const dC = Math.hypot(car.x - s.x, car.y - s.y);
-          const lead = clamp(dC / 9, 0.1, 0.45);
+          const lead = clamp(dC / 9, 0.1, 0.45), csp0 = Math.hypot(car.vx, car.vy);
           // he reads the carrier a beat late (less late when skilled), so a hard cut or a spin buys space
           const rk = Math.min(1, dt * (2.5 + 4 * sk));
           s.ai.rvx = (s.ai.rvx ?? car.vx) + (car.vx - (s.ai.rvx ?? car.vx)) * rk;
           s.ai.rvy = (s.ai.rvy ?? car.vy) + (car.vy - (s.ai.rvy ?? car.vy)) * rk;
-          const px = car.x + s.ai.rvx * lead, py = car.y + s.ai.rvy * lead;
+          // ...and his chest: where his shoulders point is where he can cut or pass next, so the prediction
+          // leans that way (gap control off the body, not the puck)
+          const cf = Math.max(csp0, 4);
+          const px = car.x + (s.ai.rvx * 0.65 + Math.cos(car.face) * cf * 0.35) * lead;
+          const py = car.y + (s.ai.rvy * 0.65 + Math.sin(car.face) * cf * 0.35) * lead;
           const gx = ngx - px, gy = -py, gl = Math.hypot(gx, gy) || 1, ux = gx / gl, uy = gy / gl;
           const behind = (s.x - car.x) * (ngx - car.x) + (s.y - car.y) * -car.y < 0;   // carrier between me and my net
           s.beaten = behind ? s.beaten + dt : 0;
-          const pinned = Math.abs(py) > W - 4.5, danger = gl < 12, zone = gl < 22;
-          // Gap control like the reference: back off with room in the neutral zone (the carrier gets space to
-          // skate and pass), tighten through the zone, close to stick length only near the net or on the boards.
-          // A fast carrier gets a bigger cushion so he can't just blow past.
+          const pinned = Math.abs(py) > W - 4.5, danger = gl < 12;
+          // Gap control: a cushion with room in the neutral zone that closes smoothly toward our net (no steps,
+          // so no yo-yo), tight on the boards, a little more for a fast carrier so he can't just blow past.
           const csp = Math.hypot(car.vx, car.vy);
-          const gap = (pinned ? 1.3 : danger ? 1.7 : zone ? 2.6 : 3.8) + clamp((csp - 6) * 0.1, 0, 0.6);
+          const far = clamp((gl - 9) / 20, 0, 1);
+          // a carrier who just skates a straight line is easy to read: the gap tightens on him
+          const straight = s.ai.rvx !== undefined ? clamp(((car.vx * s.ai.rvx + car.vy * (s.ai.rvy ?? 0)) / ((csp || 1) * (Math.hypot(s.ai.rvx, s.ai.rvy ?? 0) || 1)) - 0.9) * 10, 0, 1) : 0;
+          const gap = pinned ? 1.3 : 1.45 + 1.5 * far + clamp((csp - 6) * 0.1, 0, 0.5) - 0.35 * straight;
           // inside = toward the middle of the ice, perpendicular to the line to our net
           let ix = -uy, iy = ux; if (iy * -Math.sign(py || 1) < 0) { ix = -ix; iy = -iy; }
-          const shade = pinned ? 0.2 : 0.9;
+          const shade = pinned ? 0.2 : 0.8;
           tx = px + ux * gap + ix * shade; ty = py + uy * gap + iy * shade;
+          // stand him up at our blue line: don't back into the zone while he is still outside it
+          const BLu = -0.3 * L, carU = car.x * dir;
+          const atLine = carU < BLu + 2 && tx * dir < BLu - 0.6;
+          if (atLine) tx = (BLu - 0.6) * dir;
+          // smooth the contain point so he glides with the carrier instead of twitching with every stick move
+          const kS = 1 - Math.exp(-dt * 7);
+          s.ai.sx = (s.ai.sx ?? tx) + (tx - (s.ai.sx ?? tx)) * kS; s.ai.sy = (s.ai.sy ?? ty) + (ty - (s.ai.sy ?? ty)) * kS;
+          tx = s.ai.sx; ty = s.ai.sy;
           if (behind) {   // beaten: come alongside for a poke instead of trailing in his skate marks
             const qx = -uy, qy = ux, side = Math.sign((s.x - car.x) * qx + (s.y - car.y) * qy) || 1;
             tx = car.x + ux * 0.6 + qx * 1.2 * side; ty = car.y + uy * 0.6 + qy * 1.2 * side;
+            s.ai.sx = tx; s.ai.sy = ty;
           }
           if (s.beaten > 0.55) { s.disengage = 1.2; s.beaten = 0; }   // stop riding him: backcheck to position
           s.ai.pinned = pinned;
-          // from a good gap, attack the puck in short bursts (stick first), then settle back
+          // square up to him (you can only poke what you face); once he is past or skating away faster than
+          // anyone can backpedal, pivot and skate with him instead
+          const away = (car.vx * ux + car.vy * uy) > 9.5;
+          s.ai.look = behind || away ? null : [car.x, car.y];
+          // Engage: when he comes into reach (he skates into the gap, gets held at the line, slows down, or is in
+          // tight), step up and go for the puck with the stick, then settle back into the gap.
           s.ai.stab = (s.ai.stab ?? 0) - dt;
-          // only step up to the puck where it matters (near the net, on the boards) or when he stops moving
-          if (!behind && car.spinT <= 0 && dC < gap + 0.9 && (danger || pinned || csp < 3) && s.ai.stab <= -0.4 && this.rnd() < dt * (1.2 + 1.4 * sk)) s.ai.stab = 0.3;
-          if (s.ai.stab > 0 && !behind) { tx = p.x; ty = p.y; }
+          const inReach = dC < gap + 0.7;
+          const invite = danger || pinned || atLine || csp < 3 || dC < 1.8;
+          if (!behind && car.spinT <= 0 && inReach && s.ai.stab <= -0.5 && (invite ? this.rnd() < dt * (4 + 3 * sk) : this.rnd() < dt * (1.6 + 1.6 * sk))) {
+            s.ai.stab = 0.4; s.ai.react = Math.min(s.ai.react, 0.08 + 0.12 * (1 - sk));
+          }
+          // the poke is a reach with the stick: feet hold the gap (a quarter step at most), the blade goes to the puck
+          if (s.ai.stab > 0 && !behind) { tx += (p.x - tx) * 0.25; ty += (p.y - ty) * 0.25; }
         }
         const dS = Math.hypot(fx - s.x, fy - s.y);
         c.burst = dS > 6;
@@ -1365,16 +1476,56 @@ export class Game {
           // only commit when the stick can reach the puck, or with real closing speed for a hit
           const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
           const dPk = Math.hypot(p.x - s.x, p.y - s.y);
-          const poke = dPk < 1.45 && dPk < dS + 0.1 && dS < 1.9;
+          const poke = dPk < 1.6 && dPk < dS + 0.15 && dS < 2.4 && (s.ai.stab ?? 0) > -0.25;
           const nearNet = Math.hypot(-dir * GL - car.x, car.y) < 26;
           const body = (s.ai.pinned && dS < 2.4 && closing > 2.5) || (nearNet && dS < 3.2 && closing > 5.5) || (dS < 2.6 && closing > 8);
           if ((poke || body) && s.checkCd <= 0) {
             s.ai.react -= dt;
-            if (s.ai.react <= 0) { c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
+            if (s.ai.react <= 0) { if (poke) c.poke = true; else c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
           }
         }
       } else {
         [tx, ty] = this.spot(s, attacking);
+        // defending without the puck: retreat facing the play (backward) when it is coming at you, and only pivot to
+        // skate forward when you have real ground to make up
+        if (car && car.team !== s.team) {
+          const dPk = Math.hypot(car.x - s.x, car.y - s.y), goalSide = (s.x - car.x) * -dir > -0.5;
+          if (goalSide && dPk < 15 && Math.hypot(tx - s.x, ty - s.y) < 6) s.ai.look = [car.x, car.y];
+        }
+        s.ai.runT = (s.ai.runT ?? 0) - dt; s.ai.openT = (s.ai.openT ?? 0) - dt;
+        if (car && car.team === s.team && car !== s) {
+          if (s.ai.runT > 0) {
+            // give-and-go: just passed it, so jump up the ice into the space for the return
+            tx = clamp(car.x + dir * 8, -GL + 3, GL - 4); ty = clamp(s.y * 0.6, -W + 2, W - 2);
+          } else {
+            // get open: every half second pick the nearby spot with the cleanest lane from the carrier and the most
+            // room from defenders, then go there (passing options instead of everyone skating the same line)
+            if (s.ai.openT <= 0) {
+              let bu = 0, bv = 0, bs = -1e9;
+              for (const du of [-3, 0, 3]) for (const dv of [-5, -2.5, 0, 2.5, 5]) {
+                const cx = clamp(tx + du * dir, -GL + 2, GL - 2), cy = clamp(ty + dv, -W + 1.5, W - 1.5);
+                const sc = Math.min(this.laneGap(car.x, car.y, cx, cy, s.team), 3) + Math.min(this.oppDist(cx, cy, s.team), 5) * 0.6
+                  - Math.hypot(du, dv) * 0.12 + du * 0.04 + (du === (s.ai.openU ?? 0) && dv === (s.ai.openV ?? 0) ? 0.3 : 0);
+                if (sc > bs) { bs = sc; bu = du; bv = dv; }
+              }
+              s.ai.openU = bu; s.ai.openV = bv; s.ai.openT = 0.45 + this.rnd() * 0.3;
+            }
+            tx = clamp(tx + (s.ai.openU ?? 0) * dir, -GL + 2, GL - 2); ty = clamp(ty + (s.ai.openV ?? 0), -W + 1.5, W - 1.5);
+          }
+        } else if (car && car.team !== s.team && Math.hypot(-dir * GL - car.x, car.y) < 20) {
+          // in our zone the next-closest defender collapses on the carrier from the slot side: time and space vanish
+          let second: Skater | null = null, sd = 8;
+          for (const m of this.skaters) {
+            if (m.team !== s.team || m === this.pressing[s.team] || !this.active(m) || m.human) continue;
+            const d = Math.hypot(m.x - car.x, m.y - car.y);
+            if (d < sd) { sd = d; second = m; }
+          }
+          if (second === s) {
+            const nx = -dir * GL - car.x, ny = -car.y, nl = Math.hypot(nx, ny) || 1;
+            tx = car.x + (nx / nl) * 2.8 + (-car.y > 0 ? 1 : -1) * 0.8 * Math.abs(ny / nl); ty = car.y + (ny / nl) * 2.8 + (car.y > 0 ? -1 : 1) * 1.2;
+            s.ai.look = [car.x, car.y];
+          }
+        }
         // a carrier skating straight through your spot still gets hit
         if (car && car.team !== s.team && s.checkCd <= 0) {
           const dS = Math.hypot(car.x - s.x, car.y - s.y);
@@ -1385,6 +1536,19 @@ export class Game {
       }
     }
 
+    // active stick: a defender squared to the carrier lays his blade across the passing lane to the carrier's most
+    // open teammate (within reach of where he faces); otherwise the stick sits straight in front
+    s.stickAng *= 0.9;
+    if (s.ai.look && car && car.team !== s.team) {
+      const mate = this.bestOption(car);
+      if (mate) {
+        const lx = mate.x - car.x, ly = mate.y - car.y, ll = lx * lx + ly * ly || 1;
+        const u = clamp(((s.x - car.x) * lx + (s.y - car.y) * ly) / ll, 0.1, 0.9);
+        const qa = Math.atan2(car.y + ly * u - s.y, car.x + lx * u - s.x);
+        let da = qa - s.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+        s.stickAng = clamp(da, -1.0, 1.0);
+      }
+    }
     const dx = tx - s.x, dy = ty - s.y, d = Math.hypot(dx, dy);
     if (d > 0.35) {
       const sp = Math.hypot(s.vx, s.vy);
