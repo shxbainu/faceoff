@@ -30,8 +30,14 @@ interface SkaterView {
   /** upper-body layer over the clips: spine and head bones, and this skater's own posture and rhythm */
   bones?: { sp2: THREE.Object3D; sp3: THREE.Object3D; head: THREE.Object3D };
   mb?: { twist: number; phase: number; posture: number; sway: number };
+  stick?: THREE.Object3D; bladeDbg?: THREE.Mesh;
+  /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
+  arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
+  ikW?: number; ikT?: THREE.Vector3;
 }
 /** locomotion loops and the phase (0..1) at which the left skate's push peaks in each, for phase-synced blends */
+/** height the IK aims the blade's lowest band at: just above the ice, so the blade sits on it rather than in it */
+const IK_Y = 0.12;
 const LOCO: Record<string, number> = { stride: 0, cross_r: 0, cross_l: 0.5, back: 0 };
 /** ground covered per clip cycle (sim units), for distance matching: play rate = speed x duration / distance */
 const CYCLE_DIST: Record<string, number> = { stride: 6.7, cross_r: 5.2, cross_l: 5.2, back: 4.2 };
@@ -499,6 +505,129 @@ export class View {
     });
   }
 
+  /** The stick's blade and the bottom hand's grip, in the stick mesh's own space. Found once from the geometry in
+   *  the first animated pose (lowest vertices = blade; the point on the shaft nearest the left hand = grip), so it
+   *  does not depend on how the exporter laid out the mesh. */
+  private stickGeo: { blade: THREE.Vector3; top: THREE.Vector3; gripT: number } | null = null;
+  private stickOf(v: SkaterView) {
+    // the stick node (a group of wood and tape meshes, parented to the top hand)
+    if (!v.stick) v.body.traverse(o => { if (!v.stick && o.name === 'stick' && o.parent?.name === 'hand_r') v.stick = o; });
+    const st = v.stick; if (!st) return null;
+    if (!this.stickGeo) {
+      // The stick mesh is stored in its ready pose with +Y up (Blender Z-up becomes glTF Y-up), so the blade is the
+      // lowest band of vertices in the stick's own space, and the knob is the vertex furthest from it.
+      v.root.updateMatrixWorld(true);
+      const all: THREE.Vector3[] = [];
+      st.traverse(o => {
+        const m = o as THREE.Mesh; if (!m.isMesh || (m.material as THREE.Material).side === THREE.BackSide) return;   // skip outline shells
+        const pos = m.geometry.attributes.position, toSt = new THREE.Matrix4().copy(st.matrixWorld).invert().multiply(m.matrixWorld);
+        for (let i = 0; i < pos.count; i++) all.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(toSt));
+      });
+      if (all.length < 8) return st;
+      all.sort((a, b) => a.y - b.y);
+      const n = Math.max(3, Math.floor(all.length * 0.08)), blade = new THREE.Vector3();
+      for (let i = 0; i < n; i++) blade.add(all[i]); blade.divideScalar(n);
+      const top = all.reduce((b, a) => a.distanceTo(blade) > b.distanceTo(blade) ? a : b, blade).clone();
+      this.stickGeo = { blade, top, gripT: -1 };
+    }
+    if (this.stickGeo.gripT < 0 && v.anim && v.anim.cur !== 'idle') {
+      // where the other (top) hand holds the shaft, read once from a real pose with the stick pointing down
+      v.root.updateMatrixWorld(true);
+      const g = this.stickGeo, wb = g.blade.clone().applyMatrix4(st.matrixWorld), wt = g.top.clone().applyMatrix4(st.matrixWorld);
+      const hl = v.body.getObjectByName('hand_l');
+      if (hl && wt.y > wb.y + 0.5) {
+        const hw = new THREE.Vector3(); hl.getWorldPosition(hw); const ax = g.top.clone().sub(g.blade);
+        g.gripT = Math.max(0.05, Math.min(1, st.worldToLocal(hw).sub(g.blade).dot(ax) / ax.lengthSq()));
+      }
+    }
+    return st;
+  }
+
+  /** test hook: the stick geometry found, and world heights of its two ends and the hands for skater i */
+  stickDebug(i: number) {
+    const v = this.skaters[i]; if (!v) return null; const st = this.stickOf(v); if (!st || !this.stickGeo) return { found: !!st };
+    v.root.updateMatrixWorld(true);
+    const wb = this.stickGeo.blade.clone().applyMatrix4(st.matrixWorld), wt = this.stickGeo.top.clone().applyMatrix4(st.matrixWorld);
+    const hl = new THREE.Vector3(), hr = new THREE.Vector3(); v.body.getObjectByName('hand_l')?.getWorldPosition(hl); v.body.getObjectByName('hand_r')?.getWorldPosition(hr);
+    const r = (q: THREE.Vector3) => [+q.x.toFixed(2), +q.y.toFixed(2), +q.z.toFixed(2)];
+    let meshes = 0; const lo = new THREE.Vector3(0, 1e9, 0), w = new THREE.Vector3(); const info: string[] = [];
+    st.traverse(o => { const m = o as THREE.Mesh; if (!m.isMesh) return; meshes++; info.push(`${m.type}:${m.name}:${(m.material as THREE.Material).side}:${(m as THREE.SkinnedMesh).isSkinnedMesh ? 'skinned' : ''}`);
+      if ((m.material as THREE.Material).side === THREE.BackSide) return;
+      const pos = m.geometry.attributes.position; for (let i = 0; i < pos.count; i++) { w.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld); if (w.y < lo.y) lo.copy(w); } });
+    return { meshes, info, lowestWorld: r(lo), gripT: +this.stickGeo.gripT.toFixed(2), bladeL: r(this.stickGeo.blade), topL: r(this.stickGeo.top), blade: r(wb), top: r(wt), handL: r(hl), handR: r(hr), root: r(v.root.position) };
+  }
+
+  /** Stick IK, applied after the clip and the upper-body layer each frame.
+   *  The stick is held by the right (bottom) hand. CCD (cyclic coordinate descent) turns hand_r, lowerarm_r and
+   *  upperarm_r, each a little per pass and within a limit from the animated pose, so the blade lands on its target;
+   *  then the left (top) arm is solved the same way so that hand stays on the shaft at its grip.
+   *  Targets: the puck while carrying it (the sim stickhandles it side to side, so the stick works with it), an
+   *  incoming pass or a loose puck close by (the blade reaches for it), and the puck during a poke (the stick
+   *  shoots out to it). Weight eases in and out so the clip and the IK blend instead of popping. */
+  private ikV = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Quaternion(), pq: new THREE.Quaternion(), bq: new THREE.Quaternion() };
+  private stickIK(v: SkaterView, s: Skater, p: { x: number; y: number; vx: number; vy: number; owner: Skater | null; kind: string; target: Skater | null }, rdt: number) {
+    const st = this.stickOf(v), g = this.stickGeo;
+    if (!st || !g || !v.anim) return;
+    if (!v.arms) {
+      const b = (n: string) => v.body.getObjectByName(n);
+      const ua_r = b('upperarm_r'), la_r = b('lowerarm_r'), h_r = b('hand_r'), ua_l = b('upperarm_l'), la_l = b('lowerarm_l'), h_l = b('hand_l');
+      if (!ua_r || !la_r || !h_r || !ua_l || !la_l || !h_l) return;
+      v.arms = { ua_r, la_r, h_r, ua_l, la_l, h_l };
+    }
+    const A = v.arms, T = (v.ikT ??= new THREE.Vector3());
+    const busy = ['wrist_shot', 'slapshot', 'fall', 'check'].includes(v.anim.cur) || s.wind >= 0 || s.stun > 0 || s.air;
+    const d = Math.hypot(p.x - s.x, p.y - s.y);
+    let want = 0;
+    if (!busy) {
+      if (s.pokeT > 0) { want = 1; T.set(s.pokeX, IK_Y, s.pokeY); }
+      else if (p.owner === s) { want = 1; T.set(p.x, IK_Y, p.y); }
+      else if (p.kind === 'pass' && p.target === s && d < 5) { want = 0.85; T.set(p.x + p.vx * 0.08, IK_Y, p.y + p.vy * 0.08); }
+      else if (!p.owner && d < 2.6) { want = 0.7; T.set(p.x, IK_Y, p.y); }
+    }
+    v.ikW = (v.ikW ?? 0) + (want - (v.ikW ?? 0)) * Math.min(1, rdt * (want > (v.ikW ?? 0) ? 14 : 6));
+    const w = v.ikW;
+    if (w < 0.02) return;
+    v.root.updateMatrixWorld(true);
+    const { a, b, c, q, pq, bq } = this.ikV;
+    const blade = () => c.copy(g.blade).applyMatrix4(st.matrixWorld);
+    // one CCD step on a bone: turn it so (effector - joint) points at (target - joint), by at most `step`,
+    // and never further than `limit` from where the clip put it
+    const turn = (bone: THREE.Object3D, eff: THREE.Vector3, tgt: THREE.Vector3, step: number, orig: THREE.Quaternion, limit: number) => {
+      bone.getWorldPosition(a);
+      const e = eff.clone().sub(a), t = tgt.clone().sub(a);
+      if (e.lengthSq() < 1e-6 || t.lengthSq() < 1e-6) return;
+      e.normalize(); t.normalize();
+      const ang = Math.min(step, e.angleTo(t)) * w; if (ang < 1e-4) return;
+      q.setFromAxisAngle(b.crossVectors(e, t).normalize(), ang);
+      bone.parent!.getWorldQuaternion(pq); bone.getWorldQuaternion(bq);
+      bone.quaternion.copy(pq.invert().multiply(q).multiply(bq));
+      if (bone.quaternion.angleTo(orig) > limit) bone.quaternion.copy(orig).rotateTowards(bone.quaternion, limit);
+      bone.updateMatrixWorld(true);
+    };
+    // bottom (right) arm drives the blade to the target
+    const R: [THREE.Object3D, number, number][] = [[A.h_r, 0.35, 0.9], [A.la_r, 0.3, 0.8], [A.ua_r, 0.25, 0.8]];
+    const origR = R.map(([bn]) => bn.quaternion.clone());
+    for (let it = 0; it < 6; it++) R.forEach(([bn, step, lim], i) => turn(bn, blade().clone(), T, step, origR[i], lim));
+    // top (left) hand back onto the shaft at its grip
+    if (g.gripT > 0) {
+      const grip = g.blade.clone().lerp(g.top, g.gripT).applyMatrix4(st.matrixWorld);
+      const Lc: [THREE.Object3D, number, number][] = [[A.la_l, 0.4, 1.1], [A.ua_l, 0.35, 1.0]];
+      const origL = Lc.map(([bn]) => bn.quaternion.clone());
+      const hand = new THREE.Vector3();
+      for (let it = 0; it < 6; it++) Lc.forEach(([bn, step, lim], i) => { A.h_l.getWorldPosition(hand); turn(bn, hand, grip, step, origL[i], lim); });
+    }
+  }
+
+  /** test hook: where skater i's blade is, in the sim frame of that skater: forward along his facing, lateral to his right */
+  bladeOffset(i: number, face: number, x: number, y: number) {
+    const v = this.skaters[i]; if (!v) return null;
+    const st = this.stickOf(v); if (!st || !this.stickGeo) return null;
+    v.root.updateMatrixWorld(true);
+    const w = this.stickGeo.blade.clone().applyMatrix4(st.matrixWorld);
+    const dx = w.x - x, dy = w.z - y;
+    return { fwd: +(dx * Math.cos(face) + dy * Math.sin(face)).toFixed(3), lat: +(-dx * Math.sin(face) + dy * Math.cos(face)).toFixed(3), h: +w.y.toFixed(3), clip: v.anim?.cur };
+  }
+
   /** test hook: the drawn body's forward and up directions in sim coordinates (x up-ice, y screen right) */
   bodyFrame(i: number) {
     const v = this.skaters[i]; if (!v) return null;
@@ -920,6 +1049,15 @@ export class View {
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
         if (s.stun <= 0 && !s.air) this.microBlend(v, s, p, rdt);
+        this.stickIK(v, s, p, rdt);
+        if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is
+          const st = this.stickOf(v);
+          if (st && this.stickGeo) {
+            v.root.updateMatrixWorld(true);
+            v.bladeDbg ??= (() => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false })); m.renderOrder = 999; this.scene.add(m); return m; })();
+            v.bladeDbg.position.copy(this.stickGeo.blade).applyMatrix4(st.matrixWorld);
+          }
+        }
         // sprinting: each hard push kicks a little ice back off the skates
         if (s.sprint && !s.air && dt > 0 && Math.random() < 0.35) { const sp = Math.hypot(s.vx, s.vy) || 1; this.spray(s.x, s.y, -s.vx / sp, -s.vy / sp, 2, 0xe8f4ff, 4); }
       } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
@@ -974,9 +1112,19 @@ export class View {
     // puck
     const dropH = g.phase === 'faceoff' && !g.foLive ? Math.min(3.5, g.foDrop * 5) : 0;
     const lift = p.kind === 'pass' && p.lifted && p.liftT > 0 ? Math.sin(Math.PI * Math.min(1, p.age / p.liftT)) * 0.9 : 0;
-    this.puck.position.set(p.x, 0.05 + dropH + lift, p.y);
-    this.puckGlow.position.set(p.x, 0.03, p.y);
-    this.puckRing.position.set(p.x, 0.025, p.y); this.puckRing.visible = dropH === 0;
+    // carried: draw it on the blade itself (the IK brings the blade to the sim's puck; this hides any last gap)
+    let pkx = p.x, pkz = p.y;
+    if (p.owner && !p.held) {
+      const oi = g.skaters.indexOf(p.owner), ov = oi >= 0 ? this.skaters[oi] : null, ost = ov ? ov.stick : null;
+      if (ov && ost && this.stickGeo && (ov.ikW ?? 0) > 0.5) {
+        const bw = this.stickGeo.blade.clone().applyMatrix4(ost.matrixWorld);
+        const gap = Math.hypot(bw.x - p.x, bw.z - p.y);
+        if (gap < 0.6) { const k = Math.min(1, (ov.ikW! - 0.5) * 2); pkx = p.x + (bw.x - p.x) * k; pkz = p.y + (bw.z - p.y) * k; }
+      }
+    }
+    this.puck.position.set(pkx, 0.05 + dropH + lift, pkz);
+    this.puckGlow.position.set(pkx, 0.03, pkz);
+    this.puckRing.position.set(pkx, 0.025, pkz); this.puckRing.visible = dropH === 0;
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
     this.puckGlow.visible = fire;   // red glow only when on fire; normally the grey ring marks the puck
     this.puckGlow.scale.setScalar(1.5 + Math.sin(this.t * 20) * 0.2);

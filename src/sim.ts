@@ -79,7 +79,11 @@ export interface SkateStats { accel: number; topSpeed: number; glide: number; tu
 export interface PassMods { speed: number; homing: number; oneTimerWindow: number; oneTouchHeat: number; giveGoTime: number; giveGoBoost: number; saucerCurve: number }
 export const PASS_BASE: PassMods = { speed: 1, homing: 2.2, oneTimerWindow: 0.28, oneTouchHeat: 75, giveGoTime: 1.3, giveGoBoost: 1.12, saucerCurve: 0 };
 
-export const STICK_R = 1.05;   // blade distance from the body
+export const STICK_R = 1.05;
+/** Where the puck rides on a carrier's blade (sim frame: forward along facing, lateral to his right, the forehand
+ *  side for these right-handed shooters). Measured from the animated blade with tests/blade_probe.mjs --live;
+ *  re-measure if the clips change (mocap), the renderer's arm IK handles the rest. */
+export const CARRY = { fwd: 1.15, lat: 0.7, dangleAmp: 0.32, dangleMin: 0.1, dangleRate: 7 };   // blade distance from the body
 export const SPIN_T = 0.42;   // spin move length, seconds
 export const SPRINT = { tank: 2.4, refill: 3.2, delay: 0.45, relock: 0.35, speed: 1.3, accel: 1.4 };
 
@@ -112,6 +116,8 @@ export interface Skater {
   /** stick blade on the ice: angle off the facing (set by defending AI to seal a lane) and its world position */
   stickAng: number; stickX: number; stickY: number;
   recvT: number;   // time left in the one-timer window after a pass lands on your stick
+  dangle: number;  // stickhandling phase: the puck is worked side to side on the blade
+  pokeT: number; pokeX: number; pokeY: number;   // a poke in progress: time left and where the stick is going
 }
 
 /** goalies stay in their crease and slide along the goal line */
@@ -184,7 +190,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -535,7 +541,7 @@ export class Game {
     // (about 2.4 s from full). It refills after a short rest, quicker when not skating. Emptying it
     // leaves you winded: no sprint until it is back to SPRINT_RELOCK. Checks also draw from it.
     const tank = SPRINT.tank + 0.6 * this.pw(s.team, 'burner');
-    s.settle -= dt; s.slow -= dt; s.spinCd -= dt; s.oneTouch -= dt; s.recvT -= dt;
+    s.settle -= dt; s.slow -= dt; s.spinCd -= dt; s.oneTouch -= dt; s.recvT -= dt; s.pokeT -= dt;
     if (s.slow > 0) { max *= 0.55; acc *= 0.6; } // a standing check landed: legs are tied up for a moment
     if (s.gassed && s.stamina >= SPRINT.relock) s.gassed = false;
     s.sprint = c.burst && ml > 0 && !s.gassed && s.stamina > 0 && s.stun <= 0;
@@ -677,10 +683,11 @@ export class Game {
     const p = this.pucks[0], car = p.owner;
     const sp = Math.hypot(s.vx, s.vy);
     const dC = car ? Math.hypot(car.x - s.x, car.y - s.y) : 99;
-    if (mode === 'poke' && !(car && car.team !== s.team && dC < 2.3)) { s.checkCd = 0.45; this.ev({ t: 'poke', x: s.x + Math.cos(s.face), y: s.y + Math.sin(s.face) }); return; }
+    if (mode === 'poke' && !(car && car.team !== s.team && dC < 2.3)) { s.checkCd = 0.45; s.pokeT = 0.26; s.pokeX = s.x + Math.cos(s.face) * 2; s.pokeY = s.y + Math.sin(s.face) * 2; this.ev({ t: 'poke', x: s.x + Math.cos(s.face), y: s.y + Math.sin(s.face) }); return; }
     if (mode !== 'body' && car && car.team !== s.team && dC < (mode === 'poke' ? 2.3 : 1.9) && (mode === 'poke' || sp < 4.5 || Math.hypot(s.vx - car.vx, s.vy - car.vy) < 4.5)) {
       s.checkCd = 0.9;
       this.ev({ t: 'pokeTry', x: s.x, y: s.y });
+      s.pokeT = 0.26; s.pokeX = p.x; s.pokeY = p.y;   // the stick goes for the puck itself
       // a poke is aim and timing, not a dice roll: the stick has to reach the puck itself.
       // The puck rides in front of the carrier, so turning away puts their body in the way.
       const reach = 1.6 * (1 - 0.12 * this.pw(car.team, 'magnet'));
@@ -791,7 +798,7 @@ export class Game {
     const speed = clamp(22 + far * 0.6, 26, 36) * this.passMods.speed * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
     p.lifted = lifted; p.liftT = 0;
     p.owner = null; p.age = 0; p.checked.clear(); p.from = s; p.lastTeam = s.team; p.shooter = null; p.cc = 0;
-    p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6;
+    if (p.owner !== s) { p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6; }   // otherwise it leaves from the blade
     s.pickupCd = 0.4; s.wind = -1;
     if (!to) { // nobody to pass to: dump it forward
       p.kind = 'loose'; p.target = null; p.vx = ax * 15; p.vy = ay * 15;
@@ -851,7 +858,7 @@ export class Game {
     const picked = s.human && Math.abs(my) > 0.3;
     if (picked) ty = Math.sign(my) * GOAL_HALF * 0.78;
     else ty = (gk.y > 0.15 ? -1 : gk.y < -0.15 ? 1 : this.rnd() < 0.5 ? -1 : 1) * GOAL_HALF * 0.7;
-    const sx = s.x + Math.cos(s.face) * 0.7, sy = s.y + Math.sin(s.face) * 0.7;
+    const sx = p.owner === s ? p.x : s.x + Math.cos(s.face) * 0.7, sy = p.owner === s ? p.y : s.y + Math.sin(s.face) * 0.7;   // off the blade
     const dist = Math.hypot(gx - sx, ty - sy);
     const sig = (s.human ? (picked ? 0.035 : 0.05) : s.team === 0 ? 0.06 : 0.1 - 0.04 * this.skillLevel) * (1 + dist / 22) * (sweet ? 1 : 1.5);
     const fireOne = (tY: number, spd: number, ghost: boolean) => {
@@ -1020,8 +1027,14 @@ export class Game {
     }
     if (p.owner) {
       const s = p.owner;
-      p.x = clamp(s.x + Math.cos(s.face) * 0.85, -L + 0.3, L - 0.3);
-      p.y = clamp(s.y + Math.sin(s.face) * 0.85, -W + 0.3, W - 0.3);
+      // on the blade, out front on the forehand side, worked side to side: wide and quick at low speed,
+      // tighter at full stride (the drawn stick follows it through arm IK)
+      const csp = Math.hypot(s.vx, s.vy), slow = 1 - Math.min(1, csp / 9);
+      s.dangle += dt * CARRY.dangleRate * (0.8 + 0.5 * slow);
+      const fw = CARRY.fwd + 0.08 * Math.cos(2 * s.dangle), la = CARRY.lat + (CARRY.dangleMin + CARRY.dangleAmp * slow) * Math.sin(s.dangle);
+      const cf = Math.cos(s.face), sf = Math.sin(s.face);
+      p.x = clamp(s.x + cf * fw - sf * la, -L + 0.3, L - 0.3);
+      p.y = clamp(s.y + sf * fw + cf * la, -W + 0.3, W - 0.3);
       p.vx = s.vx; p.vy = s.vy;
       return;
     }
@@ -1566,7 +1579,7 @@ export class Game {
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },
-      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, spin: s.spinT > 0, gassed: s.gassed, slow: s.slow })),
+      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, spin: s.spinT > 0, poke: s.pokeT > 0, gassed: s.gassed, slow: s.slow })),
       stats: this.stats,
       goalies: this.goalies.map(g => ({ team: g.team, x: g.x, y: g.y })),
     };

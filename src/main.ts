@@ -398,6 +398,8 @@ function perf() {
     // test rink only: put the loose puck at a point (puck readability probes)
     puckTo: (x: number, y: number) => { if (game.sandbox) { const p = game.pucks[0]; p.owner = null; p.x = x; p.y = y; p.vx = p.vy = 0; } },
     body: (i: number) => view.bodyFrame(i),
+    stickDebug: (i: number) => view.stickDebug(i),
+    blade: (i: number) => { const k = game.skaters[i]; return k ? view.bladeOffset(i, k.face, k.x, k.y) : null; },
   };
   requestAnimationFrame(tick);
 })();
