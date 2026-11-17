@@ -142,12 +142,12 @@ function controlsHelp() {
   const rows = scheme === 'simple' ? `
       <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Shoot · tap for a quick wrist shot, hold to wind up a slapshot</span>
-      <span><kbd>L</kbd></span><span>Check · pokes when the puck is in reach, body checks otherwise</span>` : `
+      <span><kbd>L</kbd></span><span>Check · pokes when the puck is in reach, body checks otherwise · with the puck: spin move</span>` : `
       <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Saucer pass · lifted over sticks</span>
       <span><kbd>L</kbd></span><span>Wrist shot · quick release</span>
       <span><kbd>I</kbd></span><span>Slapshot · hold to wind up, release · hold before a pass lands for a one-timer</span>
-      <span><kbd>H</kbd></span><span>Body check · needs speed</span>
+      <span><kbd>H</kbd></span><span>Body check · needs speed · with the puck: spin move</span>
       <span><kbd>U</kbd></span><span>Poke check · reach the puck with your stick</span>`;
   return `<div class="tag">Controls: ${scheme === 'simple' ? 'Simple' : 'Advanced'} · press <kbd>C</kbd> to switch</div>
     <div class="keys">${skate}${rows}${swap}</div>`;
@@ -265,6 +265,8 @@ function handle(e: Ev) {
       break;
     }
     case 'pass': sfx.pass(); break;
+    case 'spin': sfx.pass(); break;
+    case 'deke': sfx.recv(); break;
     case 'switch': sfx.recv(); break;
     case 'recv': case 'pickup': sfx.recv(); break;
     case 'shot': sfx.shot(!!e.big); break;

@@ -56,7 +56,7 @@ export class View {
   backend = 'unknown';
   private skaters: SkaterView[] = [];
   private teamMat: { body: THREE.MeshStandardMaterial; trim: THREE.MeshStandardMaterial }[] = [];
-  private puck!: THREE.Mesh; private puckMat!: THREE.MeshStandardMaterial; private puckGlow!: THREE.Mesh;
+  private puck!: THREE.Mesh; private puckMat!: THREE.MeshStandardMaterial; private puckGlow!: THREE.Mesh; private puckStreak!: THREE.Mesh;
   private ghosts: THREE.Mesh[] = [];
   private arrow!: THREE.Mesh; private disc!: THREE.Mesh; private discMat!: THREE.MeshBasicMaterial;
   private ring!: THREE.Mesh;
@@ -709,10 +709,19 @@ export class View {
     this.puckMat = new THREE.MeshStandardMaterial({ color: 0x1d1b26, roughness: 0.8 });
     // slimmer, smoother puck (about 3:1 like a real one, 48 sides); the top face is a touch lighter so it reads as a disc
     const puckTop = new THREE.MeshStandardMaterial({ color: 0x3a3846, roughness: 0.6 });
-    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.09, 48), [this.puckMat, puckTop, this.puckMat]);
-    this.puckGlow = new THREE.Mesh(new THREE.CircleGeometry(0.48, 40), new THREE.MeshBasicMaterial({ color: 0xe5482d, depthWrite: false }));
+    // small, like the real thing next to a skater (about twice true scale so it still reads from the camera)
+    this.puck = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.065, 40), [this.puckMat, puckTop, this.puckMat]);
+    this.puckGlow = new THREE.Mesh(new THREE.CircleGeometry(0.3, 40), new THREE.MeshBasicMaterial({ color: 0xe5482d, depthWrite: false }));
     this.puckGlow.rotation.x = -Math.PI / 2;
-    this.scene.add(this.puck, this.puckGlow);
+    // speed streak: a fast puck is a blur, so a hard shot reads as a line to the net rather than a dot crawling
+    const stc = document.createElement('canvas'); stc.width = 128; stc.height = 8;
+    const stg = stc.getContext('2d')!, gr = stg.createLinearGradient(0, 0, 128, 0);
+    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(0.75, 'rgba(235,245,255,0.55)'); gr.addColorStop(1, 'rgba(255,255,255,0.95)');
+    stg.fillStyle = gr; stg.fillRect(0, 0, 128, 8);
+    const sgeo = new THREE.PlaneGeometry(1, 1); sgeo.translate(-0.5, 0, 0); sgeo.rotateX(-Math.PI / 2);
+    this.puckStreak = new THREE.Mesh(sgeo, new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(stc), transparent: true, depthWrite: false }));
+    this.puckStreak.visible = false;
+    this.scene.add(this.puck, this.puckGlow, this.puckStreak);
     for (let i = 0; i < 4; i++) {
       const gp = new THREE.Mesh(this.puck.geometry, new THREE.MeshBasicMaterial({ color: 0x575266 }));
       gp.visible = false; this.scene.add(gp); this.ghosts.push(gp);
@@ -792,6 +801,8 @@ export class View {
       case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); break;   // glove snaps shut
       case 'post': this.burst(x, y, 10, 0xff5555, 6, 5, 0.1); break;
       case 'poke': this.burst(x, y, 6, 0xffffff, 4, 2, 0.09); break;
+      case 'spin': this.burst(x, y, 10, 0xe8f4ff, 4, 1.5, 0.1); break;
+      case 'deke': this.burst(x, y, 8, 0x7fd8ff, 5, 3, 0.12); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;
       case 'poof': this.burst(x, y, 8, 0x9a6dff, 4, 3, 0.1); break;
       case 'crowd': this.burst(x, y, 24, 0xffb400, 6, 8, 0.2, 2); this.cheer = Math.max(this.cheer, 0.8); break;
@@ -853,7 +864,7 @@ export class View {
       v.root.visible = v.shadow.visible = true;
       v.root.position.set(k.x, 0, k.y); v.shadow.position.x = k.x; v.shadow.position.z = k.y; v.shadow.rotation.z = -Math.PI / 2;
       // crouched, facing up the ice, leaning into the slide
-      v.body.rotation.set(0, k.team === 0 ? 0 : -Math.PI, v.anim ? 0 : -0.3);
+      v.body.rotation.set(0, -k.face, v.anim ? 0 : -0.3);   // squared up to the puck
       if (v.anim) this.animate(v, null, false, false, dt);
       v.body.position.y = 0; v.root.scale.setScalar(1.12);
       // the box goalie leaned into the slide; tipping the real model would push a skate and the stick into the ice
@@ -899,7 +910,14 @@ export class View {
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
     this.puckGlow.scale.setScalar(fire ? 1.5 + Math.sin(this.t * 20) * 0.2 : 1);
     if (fire && dt > 0) this.burst(p.x, p.y, 2, Math.random() < 0.5 ? 0xe5482d : 0xf7eed8, 1.5, 3, 0.18, 0.15);
-    else if (!p.owner && Math.hypot(p.vx, p.vy) > 18 && dt > 0) this.burst(p.x, p.y, 1, 0xcfe6ff, 0.6, 0.6, 0.09, 0.1);
+    const psp = Math.hypot(p.vx, p.vy);
+    this.puckStreak.visible = !p.owner && !p.held && psp > 14 && dropH === 0;
+    if (this.puckStreak.visible) {
+      // length about 1/25 s of travel: a slapshot draws a 1.8 unit line
+      this.puckStreak.position.set(p.x, 0.05 + lift, p.y);
+      this.puckStreak.rotation.y = -Math.atan2(p.vy, p.vx);
+      this.puckStreak.scale.set(Math.min(2.4, psp * 0.04), 1, 0.3);
+    }
     for (let i = 0; i < this.ghosts.length; i++) {
       const gp = g.pucks[i + 1], m = this.ghosts[i];
       m.visible = !!gp && gp.alive;

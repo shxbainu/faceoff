@@ -12,7 +12,7 @@ export const NET_DEPTH = 1.5;
 export const GL = L - 4.4;
 export const SR = 0.7; // skater radius: check reach and boards
 const BODY = 0.5;      // body radius for skater-on-skater contact
-export const PR = 0.22; // puck radius
+export const PR = 0.15; // puck radius (small and quick, like the real thing)
 export const WIN_GOALS = 3;
 export const MATCH_SECONDS = 90;
 /** skaters per side. 5 is the current prototype; ?team=3 brings back 3v3. Slots: 0 centre, 1 wing, 2 anchor defender, 3 wing, 4 second defender. */
@@ -68,6 +68,7 @@ export interface Ctl {
  *  turnHigh   turn rate at top speed: wide carving arcs that keep their speed
  *  brake      deceleration when pushing against your own motion (skid to a hockey stop) */
 export interface SkateStats { accel: number; topSpeed: number; glide: number; turnLow: number; turnHigh: number; brake: number }
+export const SPIN_T = 0.42;   // spin move length, seconds
 export const SPRINT = { tank: 2.4, refill: 3.2, delay: 0.45, relock: 0.35, speed: 1.3, accel: 1.4 };
 
 export const SKATE_BASE: SkateStats = { accel: 32, topSpeed: 10.5, glide: 0.28, turnLow: 14, turnHigh: 4.4, brake: 32 };
@@ -87,11 +88,13 @@ export interface Skater {
   move: SkateStats;
   pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
-  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number };
+  ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number; rvx?: number; rvy?: number };
+  /** spin move with the puck: time left, cooldown, direction, facing at the start, the defender being spun past */
+  spinT: number; spinCd: number; spinDir: number; spinFace: number; spinFoe: Skater | null;
 }
 
 /** goalies stay in their crease and slide along the goal line */
-export interface Goalie { team: number; x: number; y: number; vy: number; react: number }
+export interface Goalie { team: number; x: number; y: number; vx: number; vy: number; react: number; face: number }
 
 export interface Puck {
   x: number; y: number; vx: number; vy: number;
@@ -140,7 +143,7 @@ export class Game {
   /** the skater the player is steering; changes hands with the puck and on the switch key */
   ctrl!: Skater;
   private pSwap = false;
-  goalies: Goalie[] = [0, 1].map(team => ({ team, x: (team === 0 ? -1 : 1) * (L - 0.9), y: 0, vy: 0, react: 0 }));
+  goalies: Goalie[] = [0, 1].map(team => ({ team, x: (team === 0 ? -1 : 1) * (GL - 1.5), y: 0, vx: 0, vy: 0, react: 0, face: team === 0 ? 0 : Math.PI }));
   // gimmick state
   gimT = 6;
   lane = { x: 0, half: 2.6, warn: 0, t: 0 };
@@ -159,7 +162,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -231,7 +234,7 @@ export class Game {
       s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6); s.gassed = false; s.sprint = false;
       if (s.boxed > 0) s.boxed = 0;
     }
-    for (const g of this.goalies) { g.y = 0; g.vy = 0; }
+    for (const g of this.goalies) { g.x = (g.team === 0 ? -1 : 1) * (GL - 1.5); g.y = 0; g.vx = g.vy = 0; g.face = g.team === 0 ? 0 : Math.PI; }
     if (this.ctrl) this.setCtrl(this.skaters[0]);
     this.pucks.length = 1;
     const p = this.pucks[0];
@@ -387,25 +390,36 @@ export class Game {
     const p = this.pucks[0];
     for (const g of this.goalies) {
       const gx = g.team === 0 ? -GL : GL, dir = g.team === 0 ? 1 : -1;
-      g.x = gx + dir * 0.9;
       const sk = g.team === 1 ? 0.35 + 0.5 * this.skillLevel : 0.6;
-      let ty = g.y, vmax = 4.5;
+      // Angle play, like a real goalie: stand on the line from the middle of the net to the puck, out at
+      // the top of the crease when the puck is in front, further out to challenge a rush, back in on
+      // the posts when it is in tight or behind the net.
+      const ux = (p.x - gx) * dir, uy = p.y, dist = Math.hypot(ux, uy);
+      let tx: number, ty: number, vmax = 5.5;
+      if (ux < 0.6) {   // behind the net or on the goal line: hug the near post
+        tx = gx + dir * 0.55; ty = (uy >= 0 ? 1 : -1) * (GOAL_HALF - 0.45);
+      } else {
+        const a = clamp(Math.atan2(uy, ux), -1.2, 1.2);
+        const depth = dist < 4 ? 0.9 : dist < 9 ? 1.6 : clamp(1.6 + (dist - 9) * 0.06, 1.6, 2.4);
+        tx = gx + dir * Math.cos(a) * depth; ty = Math.sin(a) * depth;
+      }
       const shot = this.pucks.find(q => q.alive && q.kind === 'shot' && q.lastTeam !== g.team && q.vx * dir < 0);
       if (shot) {
-        // reads the shot after a short delay, then slides to where it will cross
+        // reads the shot after a short delay, then slides across to where it will cross
         g.react -= dt;
         const t = (g.x - shot.x) / (shot.vx || 1e-3);
-        if (g.react <= 0 && t > 0) ty = shot.y + shot.vy * t;
-        vmax = 5 + 3 * sk;
-      } else {
-        g.react = 0.2 - 0.1 * sk;
-        // cut the angle: drift toward the puck's side, more when it is close
-        const ax = Math.abs(p.x - gx);
-        ty = p.y * clamp(1.2 / (ax / 3 + 1), 0.15, 0.7);
-      }
-      ty = clamp(ty, -(GOAL_HALF - 0.45), GOAL_HALF - 0.45);
-      g.vy = clamp((ty - g.y) * 10, -vmax, vmax);
-      g.y += g.vy * dt;
+        if (g.react <= 0 && t > 0) { ty = shot.y + shot.vy * t; tx = g.x; }
+        vmax = 6 + 3 * sk;
+      } else g.react = 0.12 - 0.07 * sk;
+      ty = clamp(ty, -(GOAL_HALF + 0.6), GOAL_HALF + 0.6);
+      const dx = tx - g.x, dy = ty - g.y, dl = Math.hypot(dx, dy);
+      const want = Math.min(vmax, dl * 9);
+      const wx = dl > 1e-4 ? dx / dl * want : 0, wy = dl > 1e-4 ? dy / dl * want : 0;
+      const k = Math.min(1, dt * 18);   // quick, but shuffles rather than teleports
+      g.vx += (wx - g.vx) * k; g.vy += (wy - g.vy) * k;
+      g.x += g.vx * dt; g.y += g.vy * dt;
+      let fd = Math.atan2(p.y - g.y, p.x - g.x) - g.face; while (fd > Math.PI) fd -= 2 * Math.PI; while (fd < -Math.PI) fd += 2 * Math.PI;
+      g.face += clamp(fd, -8 * dt, 8 * dt);
     }
   }
 
@@ -494,7 +508,7 @@ export class Game {
     // (about 2.4 s from full). It refills after a short rest, quicker when not skating. Emptying it
     // leaves you winded: no sprint until it is back to SPRINT_RELOCK. Checks also draw from it.
     const tank = SPRINT.tank + 0.6 * this.pw(s.team, 'burner');
-    s.settle -= dt; s.slow -= dt;
+    s.settle -= dt; s.slow -= dt; s.spinCd -= dt;
     if (s.slow > 0) { max *= 0.55; acc *= 0.6; } // a standing check landed: legs are tied up for a moment
     if (s.gassed && s.stamina >= SPRINT.relock) s.gassed = false;
     s.sprint = c.burst && ml > 0 && !s.gassed && s.stamina > 0 && s.stun <= 0;
@@ -557,6 +571,11 @@ export class Game {
     else if (ml > 0) ta = Math.atan2(my, mx);
     let da = ta - s.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
     s.face += clamp(da, -14 * dt, 14 * dt);
+    if (s.spinT > 0) {   // spin move: one full turn, the puck carried round on the stick, body between it and the defender
+      s.spinT -= dt;
+      s.face = s.spinFace + s.spinDir * 2 * Math.PI * clamp(1 - s.spinT / SPIN_T, 0, 1);
+      if (s.spinT <= 0) this.endSpin(s);
+    }
     if (s.face > Math.PI) s.face -= 2 * Math.PI; else if (s.face < -Math.PI) s.face += 2 * Math.PI;
 
     // buttons
@@ -575,6 +594,7 @@ export class Game {
       if (p.owner === s && s.wind >= 0) this.doShot(s, s.wind, false, my);
       s.wind = -1;
     }
+    if (checkEdge && has && s.spinT <= 0 && s.spinCd <= 0 && s.wind < 0) this.startSpin(s, mx, my, ml);
     if (checkEdge && s.checkCd <= 0 && p.owner !== s) this.startCheck(s, s.human ? 'body' : 'auto');
     if (pokeEdge && s.checkCd <= 0 && p.owner !== s) this.startCheck(s, 'poke');
     s.pPass = c.pass; s.pShoot = c.shoot; s.pCheck = c.check; s.pSaucer = !!c.saucer; s.pWrist = !!c.wrist; s.pPoke = !!c.poke;
@@ -585,6 +605,40 @@ export class Game {
   }
 
   /** 'poke' = stick only, 'body' = shoulder check, 'auto' = bots pick by distance and speed */
+  /** Spin move (the check key while carrying the puck): a quick full turn that shields the puck, can't be
+   *  poked or checked while it lasts, and carries you a step sideways toward where you are steering.
+   *  A defender close in front who reacted to the old line is left reaching at air. */
+  private startSpin(s: Skater, mx: number, my: number, ml: number) {
+    const sp = Math.hypot(s.vx, s.vy), hd = sp > 0.5 ? Math.atan2(s.vy, s.vx) : s.face;
+    const want = ml > 0 ? Math.atan2(my, mx) : hd;
+    let da = want - hd; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+    s.spinDir = Math.abs(da) > 0.08 ? Math.sign(da) : (this.rnd() < 0.5 ? -1 : 1);
+    const nh = hd + clamp(da, -0.75, 0.75), ns = Math.max(sp, 6.5);   // a step to the side, no speed lost
+    s.vx = Math.cos(nh) * ns; s.vy = Math.sin(nh) * ns;
+    s.spinT = SPIN_T; s.spinCd = 1.2; s.spinFace = s.face; s.stamina = Math.max(0, s.stamina - 0.12);
+    let foe: Skater | null = null, fd = 2.8;
+    for (const o of this.skaters) {
+      if (o.team === s.team || !this.active(o)) continue;
+      const d = Math.hypot(o.x - s.x, o.y - s.y);
+      if (d < fd) { fd = d; foe = o; }
+    }
+    s.spinFoe = foe;
+    if (foe && !foe.human) { foe.ai.react += 0.35; foe.ai.stab = -0.7; }   // faked: he bit on the old line
+    this.ev({ t: 'spin', x: s.x, y: s.y });
+  }
+
+  private endSpin(s: Skater) {
+    const o = s.spinFoe; s.spinFoe = null; s.spinT = 0;
+    const sp = Math.hypot(s.vx, s.vy); if (sp > 0.5) s.face = Math.atan2(s.vy, s.vx);
+    if (!o || this.pucks[0].owner !== s) return;
+    // past him: he ends up behind you on the way to the net
+    const dir = s.team === 0 ? 1 : -1;
+    if ((o.x - s.x) * dir < 0.3 && Math.hypot(o.x - s.x, o.y - s.y) < 4) {
+      if (s.team === 0) this.addHeat(150, 'Spin-o-rama', s.x, s.y);
+      this.ev({ t: 'deke', x: s.x, y: s.y });
+    }
+  }
+
   private startCheck(s: Skater, mode: 'poke' | 'body' | 'auto' = 'auto') {
     const p = this.pucks[0], car = p.owner;
     const sp = Math.hypot(s.vx, s.vy);
@@ -596,7 +650,7 @@ export class Game {
       // The puck rides in front of the carrier, so turning away puts their body in the way.
       const reach = 1.5 * (1 - 0.12 * this.pw(car.team, 'magnet'));
       const dP = Math.hypot(p.x - s.x, p.y - s.y);
-      if (car.settle > 0 || dP > reach || dP > dC + 0.15) this.ev({ t: 'bump', x: p.x, y: p.y });
+      if (car.settle > 0 || car.spinT > 0 || dP > reach || dP > dC + 0.15) this.ev({ t: 'bump', x: p.x, y: p.y });
       else {
         s.checkCd = 0.5;
         const a = s.face + (this.rnd() - 0.5) * 1.6;
@@ -699,7 +753,7 @@ export class Game {
     }
     // crisp passes: about 3x skating speed, harder over distance (was a flat 18, which drifted)
     const far = to ? Math.hypot(to.x - s.x, to.y - s.y) : 12;
-    const speed = clamp(16 + far * 0.55, 20, 28) * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
+    const speed = clamp(22 + far * 0.6, 26, 36) * (lifted ? 0.8 : 1) + 2 * this.pw(s.team, 'curve');
     p.lifted = lifted; p.liftT = 0;
     p.owner = null; p.age = 0; p.checked.clear(); p.from = s; p.lastTeam = s.team; p.shooter = null; p.cc = 0;
     p.x = s.x + Math.cos(s.face) * 0.6; p.y = s.y + Math.sin(s.face) * 0.6;
@@ -745,8 +799,9 @@ export class Game {
     if (oneTimer) pw = 1;
     if (wrist) pw = 0.75; // quick release: accurate, not as hard
     const fire = s.team === 0 && this.fireT > 0;
-    let speed = 18 + 7 * pw + (sweet ? 4 : 0) + (oneTimer ? 7 : 0);
-    if (wrist) speed *= 0.86;
+    // real shots are a blur: a slapshot leaves at about 45, a one-timer near 55, a wrist shot about 34
+    let speed = 30 + 12 * pw + (sweet ? 5 : 0) + (oneTimer ? 8 : 0);
+    if (wrist) speed *= 0.82;
     speed *= 1 + 0.1 * this.pw(s.team, 'slapper') + 0.02 * this.tier(s.team);
     if (fire) speed *= 1.08;
     let q = 0.015 * this.tier(s.team) - (s.team === 1 ? 0.12 * (1 - this.skillLevel) : 0) + 0.25 + 0.25 * pw + (sweet ? 0.2 : 0) + (oneTimer ? 0.25 : 0) + (fire ? 0.08 : 0) + 0.05 * this.pw(s.team, 'slapper');
@@ -853,8 +908,8 @@ export class Game {
       const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
       if (d >= SR * 2 || d < 1e-4) continue;
       if (a.team !== b.team) {
-        if (a.checkT > 0 && !a.hits.has(b.id) && b.stun <= 0) { this.hit(a, b); continue; }
-        if (b.checkT > 0 && !b.hits.has(a.id) && a.stun <= 0) { this.hit(b, a); continue; }
+        if (a.checkT > 0 && !a.hits.has(b.id) && b.stun <= 0 && b.spinT <= 0) { this.hit(a, b); continue; }
+        if (b.checkT > 0 && !b.hits.has(a.id) && a.stun <= 0 && a.spinT <= 0) { this.hit(b, a); continue; }
       }
       // bodies are smaller than the check reach, so skaters brush past instead of locking together
       if (d >= BODY * 2) continue;
@@ -1176,13 +1231,13 @@ export class Game {
         else { u = clamp(pu - 5, -GL + 10, GL - 8); v = lane === 0 ? pv * 0.4 : lane * 0.35 * W; }
       }
       // pick up the nearest attacker to that spot and stay goal-side of him
-      let m: Skater | null = null, md = 6;
+      let m: Skater | null = null, md = 5;
       for (const o of this.skaters) {
         if (o.team === s.team || !this.active(o) || o === p.owner) continue;
         const d = Math.hypot(o.x * dir - u, o.y * dir - v);
         if (d < md) { md = d; m = o; }
       }
-      if (m) { u = u * 0.4 + (m.x * dir - 1.6) * 0.6; v = v * 0.4 + m.y * dir * 0.6; }
+      if (m) { u = u * 0.55 + (m.x * dir - 2.6) * 0.45; v = v * 0.55 + m.y * dir * 0.45; }   // goal-side with a cushion, not in his pocket
     }
     // a small pull toward the puck keeps the shape alive without collapsing it
     u = u * 0.88 + pu * 0.12; v = v * 0.88 + pv * 0.12;
@@ -1252,6 +1307,7 @@ export class Game {
         }
         if (no && nd < 4.5 && (no.x - s.x) * dir > -0.5) ty = clamp(ty + (s.y >= no.y ? 1 : -1) * 3.5, -W + 2, W - 2);
         c.burst = ahead > 10 && (nd > 3 || s.ai.hold < 1);
+        if (no && nd < 1.7 && s.spinCd <= 0 && (no.x - s.x) * dir > 0 && this.rnd() < dt * (0.6 + 1.2 * sk)) c.check = true;   // spin off the defender
       }
     } else if (p.kind === 'pass' && p.target === s) {
       tx = p.ax; ty = p.ay;
@@ -1273,15 +1329,23 @@ export class Game {
           const ngx = -dir * GL;
           const dC = Math.hypot(car.x - s.x, car.y - s.y);
           const lead = clamp(dC / 9, 0.1, 0.45);
-          const px = car.x + car.vx * lead, py = car.y + car.vy * lead;
+          // he reads the carrier a beat late (less late when skilled), so a hard cut or a spin buys space
+          const rk = Math.min(1, dt * (2.5 + 4 * sk));
+          s.ai.rvx = (s.ai.rvx ?? car.vx) + (car.vx - (s.ai.rvx ?? car.vx)) * rk;
+          s.ai.rvy = (s.ai.rvy ?? car.vy) + (car.vy - (s.ai.rvy ?? car.vy)) * rk;
+          const px = car.x + s.ai.rvx * lead, py = car.y + s.ai.rvy * lead;
           const gx = ngx - px, gy = -py, gl = Math.hypot(gx, gy) || 1, ux = gx / gl, uy = gy / gl;
           const behind = (s.x - car.x) * (ngx - car.x) + (s.y - car.y) * -car.y < 0;   // carrier between me and my net
           s.beaten = behind ? s.beaten + dt : 0;
-          const pinned = Math.abs(py) > W - 4.5, danger = gl < 12;
-          const gap = pinned ? 1.1 : danger ? 1.3 : 1.55;   // about one poke length: close enough to work the puck
+          const pinned = Math.abs(py) > W - 4.5, danger = gl < 12, zone = gl < 22;
+          // Gap control like the reference: back off with room in the neutral zone (the carrier gets space to
+          // skate and pass), tighten through the zone, close to stick length only near the net or on the boards.
+          // A fast carrier gets a bigger cushion so he can't just blow past.
+          const csp = Math.hypot(car.vx, car.vy);
+          const gap = (pinned ? 1.3 : danger ? 1.7 : zone ? 2.6 : 3.8) + clamp((csp - 6) * 0.1, 0, 0.6);
           // inside = toward the middle of the ice, perpendicular to the line to our net
           let ix = -uy, iy = ux; if (iy * -Math.sign(py || 1) < 0) { ix = -ix; iy = -iy; }
-          const shade = pinned ? 0.2 : 0.75;
+          const shade = pinned ? 0.2 : 0.9;
           tx = px + ux * gap + ix * shade; ty = py + uy * gap + iy * shade;
           if (behind) {   // beaten: come alongside for a poke instead of trailing in his skate marks
             const qx = -uy, qy = ux, side = Math.sign((s.x - car.x) * qx + (s.y - car.y) * qy) || 1;
@@ -1291,17 +1355,19 @@ export class Game {
           s.ai.pinned = pinned;
           // from a good gap, attack the puck in short bursts (stick first), then settle back
           s.ai.stab = (s.ai.stab ?? 0) - dt;
-          if (!behind && dC < 2.8 && s.ai.stab <= -0.4 && this.rnd() < dt * (1.4 + 1.6 * sk)) s.ai.stab = 0.3;
+          // only step up to the puck where it matters (near the net, on the boards) or when he stops moving
+          if (!behind && car.spinT <= 0 && dC < gap + 0.9 && (danger || pinned || csp < 3) && s.ai.stab <= -0.4 && this.rnd() < dt * (1.2 + 1.4 * sk)) s.ai.stab = 0.3;
           if (s.ai.stab > 0 && !behind) { tx = p.x; ty = p.y; }
         }
         const dS = Math.hypot(fx - s.x, fy - s.y);
-        c.burst = dS > 5;
-        if (car && car.team !== s.team) {
+        c.burst = dS > 6;
+        if (car && car.team !== s.team && car.spinT <= 0) {
           // only commit when the stick can reach the puck, or with real closing speed for a hit
           const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
           const dPk = Math.hypot(p.x - s.x, p.y - s.y);
           const poke = dPk < 1.45 && dPk < dS + 0.1 && dS < 1.9;
-          const body = (s.ai.pinned && dS < 2.2 && closing > 2.5) || (dS < 3.4 && closing > 6);
+          const nearNet = Math.hypot(-dir * GL - car.x, car.y) < 26;
+          const body = (s.ai.pinned && dS < 2.4 && closing > 2.5) || (nearNet && dS < 3.2 && closing > 5.5) || (dS < 2.6 && closing > 8);
           if ((poke || body) && s.checkCd <= 0) {
             s.ai.react -= dt;
             if (s.ai.react <= 0) { c.check = true; s.ai.react = (0.6 - 0.38 * sk) * (0.7 + this.rnd() * 0.6); }
@@ -1336,7 +1402,7 @@ export class Game {
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },
-      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, gassed: s.gassed, slow: s.slow })),
+      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, spin: s.spinT > 0, gassed: s.gassed, slow: s.slow })),
       stats: this.stats,
       goalies: this.goalies.map(g => ({ team: g.team, x: g.x, y: g.y })),
     };

@@ -22,7 +22,7 @@ for (let m = 0; m < MATCHES; m++) {
   const dt = 1 / 120;
   for (let k = 0; k < 120 * 200 && g.phase !== 'over'; k++) {
     g.step(dt, noInput);
-    for (const e of g.events) { if (e.t === 'catch') tot.catches++; if (e.t === 'save') tot.saveEv++; }
+    for (const e of g.events) { if (e.t === 'catch') tot.catches++; if (e.t === 'save') tot.saveEv++; if (e.t === 'spin') tot.spins = (tot.spins || 0) + 1; if (e.t === 'deke') tot.dekes = (tot.dekes || 0) + 1; }
     g.events.length = 0;
     if (g.phase !== 'play') continue;
     tot.t += dt;
@@ -55,5 +55,5 @@ console.log(JSON.stringify({
   src, matches: MATCHES, playSec: per(tot.t),
   contactShare: +(tot.contact / tot.t * 100).toFixed(1) + '%', longestContactSec: +tot.longest.toFixed(2),
   rideShare: +(tot.ride / tot.t * 100).toFixed(1) + '%', longestRideSec: +tot.rideLongest.toFixed(2),
-  turnoversPerMatch: per(tot.swaps), passes: per(tot.passes), shots: per(tot.shots), goals: per(tot.goals), hits: per(tot.hits), goalieSaves: per(tot.saveEv), catches: per(tot.catches),
+  turnoversPerMatch: per(tot.swaps), passes: per(tot.passes), shots: per(tot.shots), goals: per(tot.goals), hits: per(tot.hits), goalieSaves: per(tot.saveEv), catches: per(tot.catches), spins: per(tot.spins || 0), spinsPast: per(tot.dekes || 0),
 }));

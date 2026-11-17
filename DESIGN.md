@@ -105,6 +105,7 @@ Changed 2026-11-16 at the user's request to follow the reference game's key layo
 - **K**: saucer pass, lifted over sticks so it cannot be picked off; a little slower.
 - **L**: wrist shot, instant release, accurate, not as hard.
 - **I**: slapshot, hold to wind up and release; the sweet spot in the wind-up hits hardest. Hold it before a pass lands for a one-timer.
+- **Spin move**: the check key (H, or L in Simple) while you carry the puck. A quick full turn that shields the puck: no pokes or checks land during it, it steps you sideways toward where you steer, and a defender close in front bites on the old line. 1.2 s cooldown, costs a little sprint bar.
 - **H**: body check (needs speed; from a standstill it only ties the player up).
 - **U**: poke check (only works if your stick reaches the puck).
 - **Q**: switch to the skater nearest the puck (control also follows passes and possession automatically).
