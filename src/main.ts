@@ -370,7 +370,8 @@ function perf() {
   game = new Game(1, opp, powers, 1);
   game.events.length = 0;
   view.setTeams(HOME, opp, []);
-  showTitle();
+  if (params.has('test') || params.has('sandbox')) { startRun(); beginMatch(); }   // test rink: straight onto the ice
+  else showTitle();
   (window as any).__faceoff = {
     snap: () => ({ mode, round, cards, powers, ...game.snapshot() }),
     perf, resetPerf: () => { frameMs.length = 0; simMs = 0; simN = 0; },

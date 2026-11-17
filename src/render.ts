@@ -830,6 +830,8 @@ export class View {
       } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
       v.root.scale.setScalar(boxed ? 0.6 : 1);
     }
+    // goalie views with no goalie behind them (test rink) stay hidden
+    for (let i = g.skaters.length + g.goalies.length; i < this.skaters.length; i++) this.skaters[i].root.visible = this.skaters[i].shadow.visible = false;
     g.goalies.forEach((k, gi) => {
       const v = this.skaters[g.skaters.length + gi];
       if (!v) return;
@@ -976,10 +978,11 @@ export class View {
     const want = (CAM_DIST + Math.max(0, Math.min(10, sep - 16)) * 0.3) * (aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
     this.camD += (want - this.camD) * Math.min(1, rdt * 2.5);
     const dist = this.camD;
-    const focus = live ? p.x * 0.8 + h.x * 0.2 : 0;
+    // follows the puck in a match; in the test rink (no play to follow) it follows your skater
+    const focus = live ? (g.sandbox ? h.x : p.x * 0.8 + h.x * 0.2) : 0;
     // low limit keeps our own net above the scorebug when defending
     this.camX += (Math.max(-L + 9, Math.min(L - 12, focus + CAM_LEAD)) - this.camX) * Math.min(1, rdt * 3.5);
-    const fz = live ? Math.max(-6, Math.min(6, (p.y * 0.8 + h.y * 0.2) * 0.45)) : 0;
+    const fz = live ? Math.max(-6, Math.min(6, (g.sandbox ? h.y : p.y * 0.8 + h.y * 0.2) * 0.45)) : 0;
     this.camZ += (fz - this.camZ) * Math.min(1, rdt * 3);
     this.shake = Math.max(0, this.shake - rdt * 3);
     const sx = (Math.random() - 0.5) * this.shake * 1.3 + this.kickX, sz = (Math.random() - 0.5) * this.shake * 1.3 + this.kickZ;
