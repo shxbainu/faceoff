@@ -28,7 +28,7 @@ function emptyPowers(): Record<PowerId, number> {
 
 // ---------------------------------------------------------------- input
 const keys = new Set<string>();
-const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyK', 'KeyL', 'KeyI', 'KeyU', 'KeyO', 'KeyQ',
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyJ', 'KeyK', 'KeyL', 'KeyI', 'KeyU', 'KeyO', 'KeyQ', 'KeyH',
   'ShiftLeft', 'ShiftRight', 'Space', 'Enter', 'Digit1', 'Digit2', 'Digit3', 'KeyR', 'KeyC']);
 
 // Two control schemes. Advanced: one key per move (pass, saucer, wrist, slapshot, body check, poke).
@@ -72,17 +72,17 @@ function ctl(): Ctl {
     return {
       mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
       my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-      pass: k('KeyJ'), saucer: false, wrist, shoot: held >= TAP,
+      pass: k('KeyJ', 'Space'), saucer: false, wrist, shoot: held >= TAP,
       check: k('KeyL') && !near, poke: k('KeyL') && near,
-      burst: k('Space'), swap: k('KeyQ'),
+      burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'),
     };
   }
   return {
     // the camera looks up-ice (+x), so screen up is +x and screen right is +y
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
     my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-    pass: k('KeyJ'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('ShiftLeft', 'ShiftRight'), poke: k('KeyU'),
-    burst: k('Space'), swap: k('KeyQ'),
+    pass: k('KeyJ', 'Space'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('KeyH'), poke: k('KeyU'),
+    burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'),
   };
 }
 
@@ -137,17 +137,17 @@ function showTitle() {
 
 function controlsHelp() {
   const skate = '<span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>'
-    + '<span><kbd>Space</kbd></span><span>Sprint (hold) · drains the sprint bar under you; empty it and you are winded until it refills</span>';
+    + '<span><kbd>Shift</kbd></span><span>Sprint (hold) · drains the sprint bar under you; empty it and you are winded until it refills</span>';
   const swap = '<span><kbd>Q</kbd></span><span>Switch to the skater nearest the puck</span>';
   const rows = scheme === 'simple' ? `
-      <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Shoot · tap for a quick wrist shot, hold to wind up a slapshot</span>
       <span><kbd>L</kbd></span><span>Check · pokes when the puck is in reach, body checks otherwise</span>` : `
-      <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Saucer pass · lifted over sticks</span>
       <span><kbd>L</kbd></span><span>Wrist shot · quick release</span>
       <span><kbd>I</kbd></span><span>Slapshot · hold to wind up, release · hold before a pass lands for a one-timer</span>
-      <span><kbd>Shift</kbd></span><span>Body check · needs speed</span>
+      <span><kbd>H</kbd></span><span>Body check · needs speed</span>
       <span><kbd>U</kbd></span><span>Poke check · reach the puck with your stick</span>`;
   return `<div class="tag">Controls: ${scheme === 'simple' ? 'Simple' : 'Advanced'} · press <kbd>C</kbd> to switch</div>
     <div class="keys">${skate}${rows}${swap}</div>`;

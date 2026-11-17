@@ -119,7 +119,7 @@ while (Date.now() - start < 9 * 60000 && results.length < MATCHES + 0.5) {
     } else if (owner) {
       go(owner.x + owner.vx * 0.2, owner.y + owner.vy * 0.2);
       const d = Math.hypot(owner.x - me.x, owner.y - me.y);
-      if (d < 3.2 && now - lastCheck > 600) { lastCheck = now; await tap('ShiftLeft'); }
+      if (d < 3.2 && now - lastCheck > 600) { lastCheck = now; await tap('KeyH'); }
     } else go(p.x + p.vx * 0.25, p.y + p.vy * 0.25);
   }
   await hold(want);

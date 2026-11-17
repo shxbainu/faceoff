@@ -100,12 +100,12 @@ The cartoon pass (cream paper boxes, comic starburst, blob skaters, tilted panel
 Changed 2026-11-16 at the user's request to follow the reference game's key layout, kept simple:
 
 - **W A S D** or arrows: skate.
-- **Space** (hold): sprint. Drains the sprint bar under your skater (about 2.4 s from full, refills in about 3 s after a short rest). Empty it and you are winded: no sprint until it is back past the tick at 35%. Checks also draw from it. Bots use the same bar.
-- **J**: pass (auto-targets the best open teammate in the direction you face). Without the puck it calls for a pass. Tap on the faceoff drop.
+- **Shift** (hold): sprint. Drains the sprint bar under your skater (about 2.4 s from full, refills in about 3 s after a short rest). Empty it and you are winded: no sprint until it is back past the tick at 35%. Checks also draw from it. Bots use the same bar.
+- **J** or **Space**: pass (auto-targets the best open teammate in the direction you face). Without the puck it calls for a pass. Tap on the faceoff drop.
 - **K**: saucer pass, lifted over sticks so it cannot be picked off; a little slower.
 - **L**: wrist shot, instant release, accurate, not as hard.
 - **I**: slapshot, hold to wind up and release; the sweet spot in the wind-up hits hardest. Hold it before a pass lands for a one-timer.
-- **Shift**: body check (needs speed; from a standstill it only ties the player up).
+- **H**: body check (needs speed; from a standstill it only ties the player up).
 - **U**: poke check (only works if your stick reaches the puck).
 - **Q**: switch to the skater nearest the puck (control also follows passes and possession automatically).
 - **O**: special ability (reserved; no active abilities yet).
