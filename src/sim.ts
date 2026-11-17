@@ -68,7 +68,7 @@ export interface Ctl {
  *  turnHigh   turn rate at top speed: wide carving arcs that keep their speed
  *  brake      deceleration when pushing against your own motion (skid to a hockey stop) */
 export interface SkateStats { accel: number; topSpeed: number; glide: number; turnLow: number; turnHigh: number; brake: number }
-export const SKATE_BASE: SkateStats = { accel: 19, topSpeed: 10.5, glide: 0.28, turnLow: 12, turnHigh: 2.2, brake: 30 };
+export const SKATE_BASE: SkateStats = { accel: 32, topSpeed: 10.5, glide: 0.28, turnLow: 14, turnHigh: 4.4, brake: 32 };
 
 export interface Skater {
   id: number; team: number; slot: number; human: boolean;
@@ -77,6 +77,7 @@ export interface Skater {
   wind: number; checkT: number; checkCd: number; blockT: number; pickupCd: number;
   stamina: number; calling: number; frost: boolean;
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
+  drive: number;               // display: 1 while pushing to skate (input held, not skidding), 0 coasting or stopping
   /** time spent in contact with an opponent; when beaten from behind; stay off the carrier for a moment */
   tangle: number; beaten: number; disengage: number;
   /** skating stats (upgradable): see SKATE_BASE */
@@ -155,7 +156,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -482,6 +483,7 @@ export class Game {
     const ml = Math.hypot(mx, my);
     if (ml > 1e-3) { mx /= ml; my /= ml; }
     const mv = s.move;
+    let skid = false;
     let max = this.maxSpeed(s), acc = mv.accel;
     if (has) max *= 0.93;                       // carrying the puck costs a little speed (footwork and passing matter)
     if (s.wind >= 0 && has) max *= 0.6;
@@ -511,17 +513,24 @@ export class Game {
         let da = want - hd; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
         if (Math.abs(da) > 2.35 && sp > 2.5) {
           sp = Math.max(0, sp - mv.brake * dt);   // skid: shed speed before turning around
+          skid = true;
+        } else if (Math.abs(da) > 2.35) {
+          hd = want;                               // slow: pivot straight around and push off the other way
+          sp += acc * dt;
         } else {
           const f = Math.min(1, sp / Math.max(1, max));
-          const rate = sp < 1 ? 40 : mv.turnLow + (mv.turnHigh - mv.turnLow) * Math.pow(f, 1.2);
+          let rate = sp < 1 ? 40 : mv.turnLow + (mv.turnHigh - mv.turnLow) * Math.pow(f, 1.2);
+          const cut = Math.abs(da) > 0.9 && f > 0.45;   // a sharp change at speed: dig the edges in and cut
+          if (cut) rate *= 1.7;
           const step = clamp(da, -rate * dt, rate * dt);
           hd += step;
-          sp *= 1 - 0.05 * Math.abs(step) * f;   // a hard carve bleeds a little speed, gentle arcs keep it
+          sp *= 1 - (cut ? 0.14 : 0.05) * Math.abs(step) * f;   // cuts cost some speed, gentle arcs keep it
           // push: near-constant acceleration, easing in over the last unit before the cap
           if (Math.abs(da) < 1.3) sp = Math.min(Math.max(sp, max), sp + acc * dt * clamp(max - sp, 0, 1));
           else sp += acc * 0.35 * dt * clamp(max - sp, 0, 1);   // pushing sideways while turning: some drive
         }
       } else sp *= Math.exp(-(mv.glide + 2.2 * clamp(1 - sp / 2.5, 0, 1)) * dt);   // glide; dig in and settle once slow
+      s.drive = ml > 0 && !skid ? 1 : 0;
       if (sp > max) sp = max + (sp - max) * Math.exp(-3 * dt);   // over the cap (knockback, boost): bleed back down
       s.vx = Math.cos(hd) * sp; s.vy = Math.sin(hd) * sp;
     }
@@ -529,7 +538,8 @@ export class Game {
     const sp = Math.hypot(s.vx, s.vy);
     let ta = s.face;
     if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
-    else if (sp > 2.5) ta = Math.atan2(s.vy, s.vx);   // face where you are actually skating (arcs, skids)
+    else if (skid && ml > 0) ta = Math.atan2(my, mx);   // skidding to a stop: turn once, toward where you are heading next
+    else if (sp > 2.5) ta = Math.atan2(s.vy, s.vx);   // face where you are actually skating (arcs)
     else if (ml > 0) ta = Math.atan2(my, mx);
     let da = ta - s.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
     s.face += clamp(da, -14 * dt, 14 * dt);

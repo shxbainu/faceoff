@@ -97,5 +97,14 @@ tr = await hold(['KeyS'], 1.5);
 const stopAt = tr.find(s => s.vx <= 0.3);
 report.brake = { fromSpeed: +tr[0].sp.toFixed(2), secToStop: stopAt ? +(stopAt.t - tr[0].t).toFixed(2) : '>1.5' };
 
+// G. reversal: full speed up-ice, then hold the opposite key; track facing and drawn body heading
+await recenter(); await hold(['KeyS'], 1.0); await stopHere(); await hold(['KeyW'], 2.0);
+tr = await hold(['KeyS'], 1.4);
+const unwrap = a => { const out = [a[0]]; for (let i = 1; i < a.length; i++) { let d = a[i] - a[i - 1]; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; out.push(out[i - 1] + d); } return out; };
+const bodyH = unwrap(tr.map(s => Math.atan2(s.body.fwd[1], s.body.fwd[0]))), faceH = unwrap(tr.map(s => s.face));
+const travel = a => { let t = 0; for (let i = 1; i < a.length; i++) t += Math.abs(a[i] - a[i - 1]); return t; };
+const tTurn = tr.find((s, i) => Math.abs(bodyH[i] - bodyH[0]) > Math.PI * 0.9);
+report.reverse180 = { bodyTurnedDeg: deg(bodyH.at(-1) - bodyH[0]), bodyRotationTravelDeg: deg(travel(bodyH)), faceTravelDeg: deg(travel(faceH)),
+  secToFaceBack: tTurn ? +(tTurn.t - tr[0].t).toFixed(2) : '>1.4', endSpeed: +tr.at(-1).sp.toFixed(2), endVelDeg: deg(Math.atan2(tr.at(-1).vy, tr.at(-1).vx)) };
 console.log(JSON.stringify(report, null, 1));
 await browser.close(); process.kill(-server.pid);

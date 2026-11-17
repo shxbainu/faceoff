@@ -24,7 +24,7 @@ interface SkaterView {
   root: THREE.Group; body: THREE.Group; shadow: THREE.Mesh; fall: number; spin: number;
   anim?: SkaterAnim;
   /** skating feel (display only): smoothed heading, lean into turns, forward lean, hockey stop */
-  feel?: { yaw: number; face: number; sp: number; lean: number; pitch: number; stopT: number; stopSide: number };
+  feel?: { yaw: number; face: number; sp: number; lean: number; pitch: number; stopT: number; stopSide: number; effort: number; turn: number; hd: number };
 }
 const wrapA = (a: number) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
@@ -477,7 +477,7 @@ export class View {
       const mixer = new THREE.AnimationMixer(model), acts: Record<string, THREE.AnimationAction> = {};
       for (const clip of gltf.animations) {
         const a = mixer.clipAction(clip);
-        if (!['idle', 'stride', 'glide', 'goalie'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+        if (!['idle', 'stride', 'glide', 'goalie', 'cross_l', 'cross_r'].includes(clip.name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
         acts[clip.name] = a;
       }
       acts.idle.play();
@@ -505,13 +505,17 @@ export class View {
    *  - a hard stop at speed turns the body side-on for a moment and throws an ice spray */
   private skateFeel(v: SkaterView, s: Skater, dt: number, rdt: number) {
     const sp = Math.hypot(s.vx, s.vy);
-    const f = v.feel ??= { yaw: -s.face, face: s.face, sp, lean: 0, pitch: 0, stopT: 0, stopSide: 1 };
+    const f = v.feel ??= { yaw: -s.face, face: s.face, sp, lean: 0, pitch: 0, stopT: 0, stopSide: 1, effort: 0, turn: 0, hd: Math.atan2(s.vy, s.vx) };
     if (dt > 0) {
       const turn = wrapA(s.face - f.face) / dt, acc = (sp - f.sp) / dt;
       f.face = s.face; f.sp = sp;
       const k = Math.min(1, rdt * 7);
       f.lean += (Math.max(-0.38, Math.min(0.38, turn * sp * 0.02)) - f.lean) * k;   // into the turn (physics_probe: up vector toward the turn centre)
       f.pitch += (Math.max(-0.1, Math.min(0.14, acc * 0.01)) - f.pitch) * k;
+      f.effort += (Math.max(0, Math.min(1, acc / 18)) - f.effort) * Math.min(1, rdt * 10);   // 1 = digging hard to build speed
+      const hd = Math.atan2(s.vy, s.vx), pathTurn = sp > 3 ? wrapA(hd - f.hd) / dt : 0;   // how fast the path itself bends
+      f.hd = hd;
+      f.turn += (Math.max(-8, Math.min(8, pathTurn)) - f.turn) * Math.min(1, rdt * 10);
       if (acc < -20 && sp > 1.5 && f.stopT <= 0 && s.stun <= 0 && s.checkT <= 0) {
         f.stopT = 0.45; f.stopSide = turn >= 0 ? 1 : -1;
         this.spray(s.x, s.y, s.vx / (sp || 1), s.vy / (sp || 1), 16, 0xe8f4ff, 8);
@@ -521,8 +525,8 @@ export class View {
     f.yaw = wrapA(f.yaw + wrapA(-s.face - f.yaw) * Math.min(1, rdt * 14));
     const st = f.stopT > 0 ? Math.sin(Math.PI * Math.min(1, (0.45 - f.stopT) / 0.45)) : 0;
     v.body.rotation.order = 'YXZ';
-    v.body.rotation.y = f.yaw + f.stopSide * st * 1.1;
-    v.body.rotation.x = f.lean - f.stopSide * st * 0.25;   // dig the edges in, leaning back from the stop
+    v.body.rotation.y = f.yaw;   // the facing itself turns through the stop: no extra spin on top
+    v.body.rotation.x = f.lean - f.stopSide * st * 0.2;   // dig the edges in, leaning back from the stop
     v.body.rotation.z = -f.pitch;
   }
 
@@ -560,7 +564,15 @@ export class View {
       } else if (s.checkT > 0) {
         if (a.cur !== 'check') a.checkLen = s.checkT;
         scrub('check', 0.3 + 0.7 * (1 - s.checkT / Math.max(0.05, a.checkLen)));
-      } else if (sp > 2.2) { const act = play('stride'); act.timeScale = Math.max(0.6, Math.min(1.5, sp / 6)); }
+      } else if (sp > 2.2 && s.drive) {
+        // short, quick pushes while building speed; longer, slower strides once at speed.
+        // a hard carve at speed switches to crossovers, stepping the outside skate over the inside one
+        const e = v.feel?.effort ?? 0, tr = v.feel?.turn ?? 0;
+        const cx = tr > 0 ? 'cross_r' : 'cross_l';   // sim facing grows clockwise on screen: tr > 0 is a right turn
+        const cross = !!a.acts[cx] && Math.abs(tr) > 1.6 && sp > 5;
+        const act = play(cross ? cx : 'stride', 0.12);
+        act.timeScale = cross ? Math.min(1.9, 1.1 + Math.abs(tr) * 0.12) : Math.max(0.8, Math.min(1.25, sp / 8)) + e * 0.9;
+      }
       else if (sp > 0.6) play('glide');
       else play('idle');
     }

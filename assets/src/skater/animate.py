@@ -76,24 +76,77 @@ def idle(t):
     stick(rot=[((1, 0, 0), 1.5 * max(0, S(TAU * t)))])
 f = clip('idle', 1, 32, True, idle, range(0, 33, 4))
 
-# ---- stride: alternating side push, recovery under the body, weight over the gliding skate ----
+def loop_path(pts, u):
+    """periodic Catmull-Rom through (u, values...) keys on a 0..1 loop"""
+    n = len(pts); u %= 1.0
+    i = max(k for k in range(n) if pts[k][0] <= u)
+    p0, p1, p2, p3 = (pts[(i + d) % n] for d in (-1, 0, 1, 2))
+    u1 = p1[0]; u2 = p2[0] + (1.0 if i + 1 >= n else 0.0)
+    x = (u - u1) / (u2 - u1)
+    return [0.5 * ((2 * b) + (-a + c) * x + (2 * a - 5 * b + 4 * c - d) * x * x + (-a + 3 * b - 3 * c + d) * x ** 3)
+            for a, b, c, d in zip(p0[1:], p1[1:], p2[1:], p3[1:])]
+
+# ---- stride: a real hockey stride. Each skate sets down under the hips, rides a moment while the
+# weight loads, then drives out to the side and back at about 45 degrees on its inside edge, the push
+# speeding up to full extension; then it lifts just off the ice and comes back in low and tight under
+# the body, toe forward, to set down again. The hips ride over the gliding skate, lowest as each push
+# extends; the chest stays low and forward and the shoulders stay fairly square (no flailing). ----
+# u, dx (out, x side sign), dy (+ = back), dz (lift), yaw (toe out), roll (inside edge)
+STRIDE_FOOT = [   # the ready stance is wide (about 54 cm), so a recovered skate comes in well inside it
+    (0.00, -0.13, -0.09, 0.000,  6,  0),    # set down under the hips, a little ahead
+    (0.12, -0.10, -0.04, 0.000, 10,  4),    # ride it while the weight comes over it
+    (0.30,  0.00,  0.06, 0.000, 22, 10),    # push: out and back on the inside edge
+    (0.46,  0.18,  0.20, 0.000, 34, 15),
+    (0.56,  0.28,  0.29, 0.012, 38, 12),    # full extension, toe flicks off the ice
+    (0.68,  0.18,  0.23, 0.055, 24,  2),    # recovery: lift, pull in tight
+    (0.84, -0.06,  0.04, 0.050, 10,  0),    # under the hips, low
+    (0.94, -0.12, -0.07, 0.015,  6,  0),    # reach forward to set down
+]
 def stride(t):
     for s, ph, sx in (('l', 0.0, 1), ('r', 0.5, -1)):
-        u = (t + ph) % 1.0
-        if u < 0.55:          # push: blade turned out, drives out to the side and back
-            p = u / 0.55; e = 0.5 - 0.5 * C(math.pi * p)
-            foot(s, dx=sx * (0.36 * e - 0.03), dy=0.22 * e - 0.05, yaw=sx * (10 + 25 * e), roll=-sx * 12 * e)
-        else:                 # recovery: lift, swing back under the hips, set down pointing ahead
-            p = (u - 0.55) / 0.45; e = 0.5 + 0.5 * C(math.pi * p)
-            foot(s, dx=sx * (0.36 * e - 0.03), dy=0.22 * e - 0.05 - 0.04 * S(math.pi * p), dz=0.07 * S(math.pi * p), yaw=sx * 10 * (1 - p) + sx * 25 * e * (1 - p))
-    sway = S(TAU * t)                    # weight over the gliding (non-pushing) leg
-    bob = abs(C(TAU * t))                # lowest as each push finishes
-    bmove('pelvis', (-0.09 * sway, 0, -0.025 - 0.03 * bob))
-    brot('pelvis', 'Z', 9 * sway); brot('spine_02', 'Z', -13 * sway); brot('spine_01', 'X', 4 + 4 * bob)
-    brot('spine_03', 'Y', 5 * sway)      # shoulders roll with each push
-    brot('Head', 'Z', 6 * sway)
-    stick(rot=[((0, 0, 1), -14 * sway), ((1, 0, 0), 3 * bob)], move=(-0.08 * sway, 0, 0))
+        dx, dy, dz, yaw, roll = loop_path(STRIDE_FOOT, t + ph)
+        foot(s, dx=sx * dx, dy=dy, dz=max(0.0, dz), yaw=sx * yaw, roll=-sx * roll)
+    sway = S(TAU * (t - 0.12))                       # + while the left skate pushes: hips over the right skate
+    low = 0.5 + 0.5 * C(2 * TAU * (t - 0.52))        # lowest as each push reaches full extension
+    bmove('pelvis', (-0.075 * sway, 0, -0.045 - 0.035 * low))
+    brot('pelvis', 'Z', 7 * sway); brot('spine_02', 'Z', -9 * sway)
+    brot('spine_01', 'X', 9 + 3 * low)               # chest low and forward, driving
+    brot('spine_03', 'Y', 4 * sway)                  # shoulders roll a little with each push
+    brot('Head', 'X', -6 - 2 * low); brot('Head', 'Z', 5 * sway)   # eyes stay up the ice
+    stick(rot=[((0, 0, 1), -10 * sway), ((1, 0, 0), 2 * low)], move=(-0.06 * sway, 0, 0))
 f = clip('stride', f, 20, True, stride, range(0, 21, 2))
+
+# ---- crossovers: hard turn at speed. The outside skate pushes out, lifts and steps over in front of
+# the inside skate; the inside skate pushes under the body toward the outside ("crossunder"), lifts out
+# from behind and comes back. Hips low and shifted into the turn, chest and stick facing into it.
+# cross_r turns right (outside = left skate, +x); cross_l is its mirror. ----
+# u, dx, dy, dz, yaw  - as written for cross_r (+x is the outside); cross_l flips x and yaw with sx
+NARROW = 0.12            # both skates come in this far from the wide ready stance through a crossover
+CROSS_OUT = [            # outside skate
+    (0.00, -0.45, -0.12, 0.000, -10),    # just landed, crossed over in front of the inside skate
+    (0.22, -0.22,  0.00, 0.000,  -2),    # rides it as the body passes over
+    (0.45,  0.12,  0.14, 0.000,  16),    # pushes out to the outside on its inside edge
+    (0.58,  0.08,  0.08, 0.060,   6),    # lifts
+    (0.78, -0.30, -0.14, 0.090, -10),    # steps over, in front of the inside toe
+]
+CROSS_IN = [             # inside skate
+    (0.00,  0.30,  0.14, 0.000, -14),    # end of the crossunder: under the body, out past the outside skate
+    (0.14,  0.22,  0.10, 0.060,  -6),    # lifts out from behind
+    (0.34, -0.02, -0.06, 0.050,   0),    # swings back to its own side, ahead
+    (0.50, -0.04, -0.05, 0.000,   0),    # sets down, glides
+    (0.76,  0.10,  0.08, 0.000,  -8),    # starts the crossunder push
+]
+def crossover(t, sx):   # sx = +1: right turn (outside skate is the left one, on +x)
+    o, i = ('l', 'r') if sx > 0 else ('r', 'l')
+    dx, dy, dz, yaw = loop_path(CROSS_OUT, t); foot(o, dx=sx * (dx - NARROW), dy=dy, dz=max(0.0, dz), yaw=sx * yaw, roll=-sx * 8)
+    dx, dy, dz, yaw = loop_path(CROSS_IN, t); foot(i, dx=sx * (dx + NARROW), dy=dy, dz=max(0.0, dz), yaw=sx * yaw, roll=-sx * 8)
+    w = S(TAU * t)
+    bmove('pelvis', (-sx * 0.07, 0, -0.07 - 0.02 * (0.5 + 0.5 * w)))   # low, hips into the turn
+    brot('pelvis', 'Z', -sx * 10); brot('spine_02', 'Z', -sx * 12 + 3 * w)   # chest turns into the turn
+    brot('spine_01', 'X', 10); brot('Head', 'X', -7); brot('Head', 'Z', -sx * 8)
+    stick(rot=[((0, 0, 1), -sx * 16)], move=(-sx * 0.08, 0, 0))
+f = clip('cross_r', f, 16, True, lambda t: crossover(t, 1), range(0, 17, 2))
+f = clip('cross_l', f, 16, True, lambda t: crossover(t, -1), range(0, 17, 2))
 
 # ---- glide: both blades on the ice, low and quiet ----
 def glide(t):
