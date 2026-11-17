@@ -31,7 +31,7 @@ const wrapA = (a: number) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < 
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
 // ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
 const DBG = new URLSearchParams(location.search);
-const INK = 0x2a3140, INK_W = 0.014, SKATER_SCALE = 2.0;   // skater height vs rink width matches the reference (about 0.075 on screen)
+const INK = 0x2a3140, INK_W = 0.014, SKATER_SCALE = 1.4;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
   const pts: [number, number][] = [];
@@ -485,6 +485,14 @@ export class View {
     });
   }
 
+  /** test hook: the drawn body's forward and up directions in sim coordinates (x up-ice, y screen right) */
+  bodyFrame(i: number) {
+    const v = this.skaters[i]; if (!v) return null;
+    v.body.updateWorldMatrix(true, false);
+    const e = v.body.matrixWorld.elements;   // columns: local X (the body faces local +X), local Y (up)
+    return { fwd: [e[0], e[2]], up: [e[4], e[5], e[6]], lean: v.feel?.lean ?? 0, rot: [v.body.rotation.x, v.body.rotation.y, v.body.rotation.z], order: v.body.rotation.order };
+  }
+
   /** test hook: which clip each skater is playing and where it is */
   animStates() {
     return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2) } : null);
@@ -502,7 +510,7 @@ export class View {
       const turn = wrapA(s.face - f.face) / dt, acc = (sp - f.sp) / dt;
       f.face = s.face; f.sp = sp;
       const k = Math.min(1, rdt * 7);
-      f.lean += (Math.max(-0.38, Math.min(0.38, turn * sp * 0.02)) - f.lean) * k;
+      f.lean += (Math.max(-0.38, Math.min(0.38, turn * sp * 0.02)) - f.lean) * k;   // into the turn (physics_probe: up vector toward the turn centre)
       f.pitch += (Math.max(-0.1, Math.min(0.14, acc * 0.01)) - f.pitch) * k;
       if (acc < -20 && sp > 1.5 && f.stopT <= 0 && s.stun <= 0 && s.checkT <= 0) {
         f.stopT = 0.45; f.stopSide = turn >= 0 ? 1 : -1;
@@ -510,7 +518,7 @@ export class View {
       }
       f.stopT -= dt;
     }
-    f.yaw += wrapA(-s.face - f.yaw) * Math.min(1, rdt * 14);
+    f.yaw = wrapA(f.yaw + wrapA(-s.face - f.yaw) * Math.min(1, rdt * 14));
     const st = f.stopT > 0 ? Math.sin(Math.PI * Math.min(1, (0.45 - f.stopT) / 0.45)) : 0;
     v.body.rotation.order = 'YXZ';
     v.body.rotation.y = f.yaw + f.stopSide * st * 1.1;
@@ -638,7 +646,7 @@ export class View {
     grad.addColorStop(0, 'rgba(40,46,62,0.55)'); grad.addColorStop(0.55, 'rgba(40,46,62,0.32)'); grad.addColorStop(1, 'rgba(40,46,62,0)');
     sg.fillStyle = grad; sg.fillRect(0, 0, 128, 128);
     const shadowTex = new THREE.CanvasTexture(sc); shadowTex.colorSpace = THREE.SRGBColorSpace;
-    const shadowG = new THREE.PlaneGeometry(2.6, 1.85);
+    const shadowG = new THREE.PlaneGeometry(1.9, 1.35);
     const shadowM = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false });
     for (let t = 0; t < 2; t++) this.teamMat.push({ body: this.std(0xffffff), trim: this.std(0x222222) });
     for (let i = 0; i < TEAM * 2 + 2; i++) {

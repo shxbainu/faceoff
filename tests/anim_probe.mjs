@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i < 0 ? d : process.argv[i + 1]; };
 const OUT = 'tests/out'; mkdirSync(OUT, { recursive: true });
-const server = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: 'pipe' });
+const server = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: 'pipe', detached: true });   // own process group, so the whole preview server can be stopped
 await new Promise(r => server.stdout.on('data', d => { if (String(d).includes('4173')) r(); }));
 const browser = await chromium.launch({ headless: true, channel: 'chromium',
   args: ['--enable-gpu', '--use-angle=metal', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist'] });
@@ -37,4 +37,4 @@ for (let f = 0; f < 10; f++) {
   log.push({ f, x: Math.round(st.p[0]), y: Math.round(st.p[1]), clip: st.a.clip, t: st.a.t });
 }
 console.log('skater', pick, JSON.stringify(log));
-await browser.close(); server.kill();
+await browser.close(); process.kill(-server.pid);

@@ -169,6 +169,8 @@ function startRound() {
   const seed = parseInt(params.get('seed') || '0') || (Date.now() & 0x7fffffff);
   game = new Game(round, opp, powers, seed + round * 7919);
   game.autoplay = params.has('autoplay');
+  game.sandbox = params.has('test') || params.has('sandbox');
+  if (game.sandbox) { game.goalies.length = 0; game.pucks[0].x = 30; game.pucks[0].y = 15; }   // empty ice; puck parked in a corner
   game.events.length = 0;
   const owned = POWERS.filter(p => powers[p.id] > 0);
   view.setTeams(HOME, opp, owned.map(p => parseInt(p.color.slice(1), 16)));
@@ -375,6 +377,7 @@ function perf() {
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
+    body: (i: number) => view.bodyFrame(i),
   };
   requestAnimationFrame(tick);
 })();

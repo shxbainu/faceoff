@@ -10,8 +10,8 @@ export const GOAL_HALF = 2.1;
 export const NET_DEPTH = 1.5;
 /** goal line: nets stand out from the end boards so play can go behind them (NHL: 11 ft of a 200 ft rink) */
 export const GL = L - 4.4;
-export const SR = 0.85; // skater radius: check reach and boards (grown with the bigger skaters)
-const BODY = 0.57;     // body radius for skater-on-skater contact (a little inside the drawn body so play is not crowded)
+export const SR = 0.7; // skater radius: check reach and boards
+const BODY = 0.5;      // body radius for skater-on-skater contact
 export const PR = 0.22; // puck radius
 export const WIN_GOALS = 3;
 export const MATCH_SECONDS = 90;
@@ -60,6 +60,16 @@ export interface Ctl {
   poke?: boolean;
 }
 
+/** Skating model, per skater so roguelite upgrades can raise any of it:
+ *  accel      speed gained per second while pushing (near-constant, arcade style)
+ *  topSpeed   firm cap while pushing (knockback and boosts can exceed it briefly)
+ *  glide      coasting friction per second when no direction is held (low = long glides)
+ *  turnLow    turn rate (rad/s) of the skating direction near standstill: sharp pivots
+ *  turnHigh   turn rate at top speed: wide carving arcs that keep their speed
+ *  brake      deceleration when pushing against your own motion (skid to a hockey stop) */
+export interface SkateStats { accel: number; topSpeed: number; glide: number; turnLow: number; turnHigh: number; brake: number }
+export const SKATE_BASE: SkateStats = { accel: 19, topSpeed: 10.5, glide: 0.28, turnLow: 12, turnHigh: 2.2, brake: 30 };
+
 export interface Skater {
   id: number; team: number; slot: number; human: boolean;
   x: number; y: number; vx: number; vy: number; face: number;
@@ -69,6 +79,8 @@ export interface Skater {
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
   /** time spent in contact with an opponent; when beaten from behind; stay off the carrier for a moment */
   tangle: number; beaten: number; disengage: number;
+  /** skating stats (upgradable): see SKATE_BASE */
+  move: SkateStats;
   pPass: boolean; pShoot: boolean; pCheck: boolean; pSaucer: boolean; pWrist: boolean; pPoke: boolean;
   hits: Set<number>; lungeAt: Skater | null;
   ai: { hold: number; patience: number; windGoal: number; react: number; oneT: boolean; pinned?: boolean; stab?: number };
@@ -117,6 +129,8 @@ export class Game {
   stats: Stats = { shots: [0, 0], hits: [0, 0], passes: [0, 0], saves: [0, 0], oneTimers: 0, attack: [0, 0] };
   /** test hook: bots also play the player's skater */
   autoplay = false;
+  /** test rink (?test): your skater alone on empty ice, no AI, goalies, clock, faceoffs or goals */
+  sandbox = false;
   /** the skater the player is steering; changes hands with the puck and on the switch key */
   ctrl!: Skater;
   private pSwap = false;
@@ -139,7 +153,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, tangle: 0, beaten: 0, disengage: 0,
+        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -229,6 +243,15 @@ export class Game {
     const swapEdge = !!human.swap && !this.pSwap; this.pSwap = !!human.swap;
     if (swapEdge && this.phase === 'play') this.swapToPuck();
     this.lastHumanMy = human.my;
+
+    if (this.sandbox) {
+      this.phase = 'play';
+      const me = this.ctrl;
+      for (const k of this.skaters) if (k !== me) { k.out = 1e9; k.x = k.y = 0; k.vx = k.vy = 0; }
+      this.updateSkater(me, human, dt);
+      collideNet(me, BODY, 0.2);
+      return;
+    }
 
     if (this.phase === 'faceoff') {
       const press = (human.pass && !hs.pPass) || (human.shoot && !hs.pShoot) || (human.check && !hs.pCheck);
@@ -412,7 +435,7 @@ export class Game {
 
   // ---------------------------------------------------------------- skaters
   private maxSpeed(s: Skater): number {
-    let m = 8.6;
+    let m = s.move.topSpeed;
     if (s.team === 1) m *= 0.9 + 0.14 * this.skillLevel;
     else m *= 1 + 0.06 * this.pw(0, 'burner') + 0.01 * this.tier(0);
     if (s.frost) m *= 0.5;
@@ -456,8 +479,9 @@ export class Game {
     let mx = c.mx, my = c.my;
     const ml = Math.hypot(mx, my);
     if (ml > 1e-3) { mx /= ml; my /= ml; }
-    let max = this.maxSpeed(s), acc = 34;
-    if (has) max *= 0.93;
+    const mv = s.move;
+    let max = this.maxSpeed(s), acc = mv.accel;
+    if (has) max *= 0.93;                       // carrying the puck costs a little speed (footwork and passing matter)
     if (s.wind >= 0 && has) max *= 0.6;
     const tank = 1.8 + 0.5 * this.pw(s.team, 'burner');
     s.settle -= dt; s.slow -= dt;
@@ -476,24 +500,38 @@ export class Game {
           this.addHeat(150, 'Deke', o.x, o.y);
       }
     } else {
+      // Skating on edges: the skating direction turns toward the input at a rate that falls with speed
+      // (sharp pivots when slow, wide carves that keep speed when fast); pushing against your own motion
+      // skids to a stop first (NHL '94 style); letting go glides with very little friction.
+      let sp = Math.hypot(s.vx, s.vy), hd = sp > 1e-4 ? Math.atan2(s.vy, s.vx) : Math.atan2(my, mx);
       if (ml > 0) {
-        s.vx += mx * acc * dt; s.vy += my * acc * dt;
-        const along = s.vx * mx + s.vy * my;
-        let px = s.vx - along * mx, py = s.vy - along * my;
-        const f = Math.exp(-5 * dt); px *= f; py *= f;
-        s.vx = along * mx + px; s.vy = along * my + py;
-      } else { const f = Math.exp(-1.5 * dt); s.vx *= f; s.vy *= f; }
-      const sp = Math.hypot(s.vx, s.vy);
-      if (sp > max) { const k = (max + (sp - max) * Math.exp(-6 * dt)) / sp; s.vx *= k; s.vy *= k; }
+        const want = Math.atan2(my, mx);
+        let da = want - hd; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+        if (Math.abs(da) > 2.35 && sp > 2.5) {
+          sp = Math.max(0, sp - mv.brake * dt);   // skid: shed speed before turning around
+        } else {
+          const f = Math.min(1, sp / Math.max(1, max));
+          const rate = sp < 1 ? 40 : mv.turnLow + (mv.turnHigh - mv.turnLow) * Math.pow(f, 1.2);
+          const step = clamp(da, -rate * dt, rate * dt);
+          hd += step;
+          sp *= 1 - 0.05 * Math.abs(step) * f;   // a hard carve bleeds a little speed, gentle arcs keep it
+          // push: near-constant acceleration, easing in over the last unit before the cap
+          if (Math.abs(da) < 1.3) sp = Math.min(Math.max(sp, max), sp + acc * dt * clamp(max - sp, 0, 1));
+          else sp += acc * 0.35 * dt * clamp(max - sp, 0, 1);   // pushing sideways while turning: some drive
+        }
+      } else sp *= Math.exp(-(mv.glide + 2.2 * clamp(1 - sp / 2.5, 0, 1)) * dt);   // glide; dig in and settle once slow
+      if (sp > max) sp = max + (sp - max) * Math.exp(-3 * dt);   // over the cap (knockback, boost): bleed back down
+      s.vx = Math.cos(hd) * sp; s.vy = Math.sin(hd) * sp;
     }
     // facing
     const sp = Math.hypot(s.vx, s.vy);
     let ta = s.face;
     if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
+    else if (sp > 2.5) ta = Math.atan2(s.vy, s.vx);   // face where you are actually skating (arcs, skids)
     else if (ml > 0) ta = Math.atan2(my, mx);
-    else if (sp > 1.5) ta = Math.atan2(s.vy, s.vx);
     let da = ta - s.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
     s.face += clamp(da, -14 * dt, 14 * dt);
+    if (s.face > Math.PI) s.face -= 2 * Math.PI; else if (s.face < -Math.PI) s.face += 2 * Math.PI;
 
     // buttons
     const passEdge = c.pass && (!s.pPass || !s.human);
@@ -802,8 +840,18 @@ export class Game {
       a.x -= nx * ov * wa; a.y -= ny * ov * wa; b.x += nx * ov * wb; b.y += ny * ov * wb;
       const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
       if (rv < 0) {
+        const pa = Math.hypot(a.vx, a.vy), pb = Math.hypot(b.vx, b.vy);
+        const ca = pa > 0 ? Math.abs(a.vx * nx + a.vy * ny) / pa : 1, cb = pb > 0 ? Math.abs(b.vx * nx + b.vy * ny) / pb : 1;
         const jn = (-(1 + 0.15) * rv) / (ia + ib);
         a.vx -= nx * jn * ia; a.vy -= ny * jn * ia; b.vx += nx * jn * ib; b.vy += ny * jn * ib;
+        // glancing contact: deflect off the shoulder and keep most of your speed instead of stopping dead
+        for (const [k, pre, cs, sgn] of [[a, pa, ca, -1], [b, pb, cb, 1]] as [Skater, number, number, number][]) {
+          if (pre < 3 || cs > 0.75 || k.checkT > 0) continue;
+          const now = Math.hypot(k.vx, k.vy), keep = 0.88 * pre;
+          if (now >= keep) continue;
+          if (now > 0.5) { k.vx *= keep / now; k.vy *= keep / now; }
+          else { const tx = -ny * sgn, ty = nx * sgn; k.vx = tx * keep; k.vy = ty * keep; }
+        }
       }
       if (a.team === b.team) continue;
       // the carrier peels off around the defender, sliding the way he is already leaning
@@ -1219,7 +1267,7 @@ export class Game {
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },
-      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, slow: s.slow })),
+      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, slow: s.slow })),
       stats: this.stats,
       goalies: this.goalies.map(g => ({ team: g.team, x: g.x, y: g.y })),
     };

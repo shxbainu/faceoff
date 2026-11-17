@@ -4,7 +4,7 @@
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 const variants = process.argv.slice(2).length ? process.argv.slice(2) : ['normal', 'nohull', 'noink'];
-const server = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: 'pipe' });
+const server = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: 'pipe', detached: true });   // own process group, so the whole preview server can be stopped
 await new Promise(r => { server.stdout.on('data', d => String(d).includes('4173') && r()); setTimeout(r, 4000); });
 const browser = await chromium.launch({ headless: true, channel: 'chromium',
   args: ['--enable-gpu', '--use-angle=metal', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist'] });
@@ -22,5 +22,5 @@ for (const v of variants) {
   await page.screenshot({ path: `tests/out/look-${v.replace(/[^a-z0-9_.-]+/gi, "_")}.png` });
   await page.close();
 }
-await browser.close(); server.kill();
+await browser.close(); process.kill(-server.pid);
 console.log("saved", variants.map(v => `tests/out/look-${v.replace(/[^a-z0-9_.-]+/gi, "_")}.png`).join(" "));
