@@ -98,6 +98,8 @@ export interface Puck {
   /** saucer pass in the air: cannot be picked off; liftT is its flight time */
   lifted: boolean; liftT: number;
   cpx: number; cpy: number; cc: number; cT: number;
+  /** caught by a goalie: he holds it for holdT seconds, then makes an outlet pass */
+  held: Goalie | null; holdT: number;
 }
 
 export interface Ev { t: string; x?: number; y?: number; text?: string; n?: number; big?: boolean; team?: number; dx?: number; dy?: number }
@@ -176,7 +178,7 @@ export class Game {
     return {
       x: 0, y: 0, vx: 0, vy: 0, owner: null, lastTeam: -1, shooter: null, kind: 'loose', target: null, from: null,
       ax: 0, ay: 0, q: 0, oneTimer: false, fire: false, ghost: false, alive: true, checked: new Set(), age: 0, lifted: false, liftT: 0,
-      cpx: 0, cpy: 0, cc: 0, cT: 0,
+      cpx: 0, cpy: 0, cc: 0, cT: 0, held: null, holdT: 0,
     };
   }
 
@@ -893,6 +895,13 @@ export class Game {
   }
 
   private updatePuck(p: Puck, dt: number) {
+    if (p.held) {
+      const g = p.held, dir = g.team === 0 ? 1 : -1;
+      p.x = g.x + dir * 0.45; p.y = g.y; p.vx = p.vy = 0;
+      p.holdT -= dt;
+      if (p.holdT <= 0) this.goalieOutlet(p, g);
+      return;
+    }
     if (p.owner) {
       const s = p.owner;
       p.x = clamp(s.x + Math.cos(s.face) * 0.85, -L + 0.3, L - 0.3);
@@ -979,6 +988,32 @@ export class Game {
   }
 
   /** returns true if a goalie saved or cleared the puck this step */
+  /** the goalie starts the breakout: a pass to the most open teammate, or a clear up the boards */
+  private goalieOutlet(p: Puck, g: Goalie) {
+    const dir = g.team === 0 ? 1 : -1;
+    p.held = null; p.age = 0; p.checked.clear(); p.lifted = false; p.cc = 0; p.lastTeam = g.team; p.shooter = null;
+    let best: Skater | null = null, bs = -1e9;
+    for (const m of this.skaters) {
+      if (m.team !== g.team || !this.active(m)) continue;
+      const open = Math.min(this.nearestOpp(m)[1], 6), lane = this.laneGap(p.x, p.y, m.x, m.y, g.team);
+      const d = Math.hypot(m.x - p.x, m.y - p.y);
+      if (lane < 0.9 || d < 3 || d > 26) continue;
+      const sc = open * 1.2 + Math.min(lane, 3) + (m.x - p.x) * dir * 0.08 + (m.human ? 1 : 0);
+      if (sc > bs) { bs = sc; best = m; }
+    }
+    if (best) {
+      const t = Math.min(0.8, Math.hypot(best.x - p.x, best.y - p.y) / 22);
+      const tx = clamp(best.x + best.vx * t, -L + 1, L - 1), ty = clamp(best.y + best.vy * t, -W + 1, W - 1);
+      const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1;
+      p.kind = 'pass'; p.target = best; p.from = null; p.ax = tx; p.ay = ty;
+      p.vx = (dx / d) * 22; p.vy = (dy / d) * 22;
+      this.ev({ t: 'pass', x: p.x, y: p.y });
+    } else {   // nobody open: clear it hard up the near boards
+      const side = p.y >= 0 ? 1 : -1;
+      p.kind = 'loose'; p.target = null; p.vx = dir * 14; p.vy = side * 9;
+    }
+  }
+
   private goalieTouch(p: Puck, x0: number, y0: number): boolean {
     const sp = Math.hypot(p.vx, p.vy);
     for (const g of this.goalies) {
@@ -999,9 +1034,19 @@ export class Game {
         this.stats.saves[g.team]++;
         this.ev({ t: 'save', x: p.x, y: p.y });
         if (g.team === 0) this.addHeat(150, 'Save', g.x, g.y);
-        p.x = g.x + dir * 0.4; p.y = yc;
-        p.vx = dir * sp * 0.3; p.vy = (this.rnd() - 0.5) * sp * 0.6;
         p.kind = 'loose'; p.target = null; p.lastTeam = g.team; p.age = 0; p.cc = 0; p.fire = false;
+        // into the body or glove: caught and held, then an outlet pass (play keeps flowing, no whistle)
+        if (off < body * 1.3 && this.rnd() < 0.75 - 0.25 * p.q) {
+          p.held = g; p.holdT = 0.7; p.vx = p.vy = 0; p.x = g.x + dir * 0.45; p.y = g.y;
+          this.ev({ t: 'catch', x: p.x, y: p.y });
+          this.chain = 0;
+          return true;
+        }
+        // otherwise steer the rebound away from the slot, toward the near corner, with real speed
+        const side = Math.abs(yc - g.y) > 0.15 ? Math.sign(yc - g.y) : this.rnd() < 0.5 ? -1 : 1;
+        const ds = Math.max(7, sp * 0.45);
+        p.x = g.x + dir * 0.5; p.y = yc;
+        p.vx = dir * ds * 0.35; p.vy = side * ds * 0.94;
         this.chain = 0;
         return true;
       }
@@ -1192,7 +1237,7 @@ export class Game {
       const tgt = car ?? (p.kind === 'pass' && p.target ? p.target : null);
       const fx = tgt ? tgt.x + tgt.vx * 0.2 : p.x + p.vx * 0.3, fy = tgt ? tgt.y + tgt.vy * 0.2 : p.y + p.vy * 0.3;
       const attacking = ownTeam === s.team || (ownTeam < 0 && p.x * dir > 0);
-      const pr = ownTeam === s.team ? null : this.presser(s.team, fx, fy);
+      const pr = ownTeam === s.team || p.held ? null : this.presser(s.team, fx, fy);   // nobody charges a goalie holding it
       if (pr === s) {
         tx = fx; ty = fy;
         if (car && car.team !== s.team) {

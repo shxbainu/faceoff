@@ -777,6 +777,7 @@ export class View {
       case 'shake': this.shake = Math.max(this.shake, e.n ?? 0.3); break;
       case 'shot': this.burst(x, y, e.big ? 12 : 6, 0xdff2ff, 5, 3, 0.1); break;
       case 'save': this.burst(x, y, 14, 0x9fd0ff, 7, 4, 0.12); break;
+      case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); break;   // glove snaps shut
       case 'post': this.burst(x, y, 10, 0xff5555, 6, 5, 0.1); break;
       case 'poke': this.burst(x, y, 6, 0xffffff, 4, 2, 0.09); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;

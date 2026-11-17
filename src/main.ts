@@ -270,7 +270,7 @@ function handle(e: Ev) {
     case 'hit': sfx.hit(!!e.big); break;
     case 'slam': sfx.slam(); break;
     case 'bump': sfx.board(e.big ? 22 : 10); break;
-    case 'save': sfx.save(); break;
+    case 'save': case 'catch': sfx.save(); break;
     case 'post': sfx.post(); break;
     case 'board': sfx.board(e.n || 10); break;
     case 'slowmo': slowT = Math.max(slowT, e.n || 0.3); break;
