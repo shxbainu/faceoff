@@ -8,6 +8,8 @@ export const CR = 8.5; // corner radius
 const KX = L / 22, KY = W / 11;
 export const GOAL_HALF = 2.1;
 export const NET_DEPTH = 1.5;
+/** goal line: nets stand out from the end boards so play can go behind them (NHL: 11 ft of a 200 ft rink) */
+export const GL = L - 4.4;
 export const SR = 0.7; // skater radius: check reach and boards
 const BODY = 0.5;      // body radius for skater-on-skater contact
 export const PR = 0.22; // puck radius
@@ -355,7 +357,7 @@ export class Game {
   private updateGoalies(dt: number) {
     const p = this.pucks[0];
     for (const g of this.goalies) {
-      const gx = g.team === 0 ? -L : L, dir = g.team === 0 ? 1 : -1;
+      const gx = g.team === 0 ? -GL : GL, dir = g.team === 0 ? 1 : -1;
       g.x = gx + dir * 0.9;
       const sk = g.team === 1 ? 0.35 + 0.5 * this.skillLevel : 0.6;
       let ty = g.y, vmax = 4.5;
@@ -398,7 +400,7 @@ export class Game {
   }
 
   deepest(team: number): Skater | null {
-    const gx = team === 0 ? -L : L;
+    const gx = team === 0 ? -GL : GL;
     let best: Skater | null = null, bd = 12;
     for (const s of this.skaters) {
       if (s.team !== team || !this.active(s)) continue;
@@ -487,7 +489,7 @@ export class Game {
     // facing
     const sp = Math.hypot(s.vx, s.vy);
     let ta = s.face;
-    if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? L : -L) - s.x);
+    if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
     else if (ml > 0) ta = Math.atan2(my, mx);
     else if (sp > 1.5) ta = Math.atan2(s.vy, s.vx);
     let da = ta - s.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
@@ -515,6 +517,7 @@ export class Game {
 
     s.x += s.vx * dt; s.y += s.vy * dt;
     collideBoards(s, SR, 0.2, false);
+    collideNet(s, BODY, 0.2);
   }
 
   /** 'poke' = stick only, 'body' = shoulder check, 'auto' = bots pick by distance and speed */
@@ -671,7 +674,7 @@ export class Game {
 
   private doShot(s: Skater, wind: number, oneTimer: boolean, my: number, wrist = false) {
     const p = this.pucks[0];
-    const dir = s.team === 0 ? 1 : -1, gx = dir * L;
+    const dir = s.team === 0 ? 1 : -1, gx = dir * GL;
     const sweet = oneTimer || (wind >= 0.32 && wind <= 0.82);
     let pw = clamp(wind / 0.32, 0.3, 1);
     if (wind > 0.82) pw = Math.max(0.55, 1 - (wind - 0.82) * 0.8);
@@ -832,7 +835,7 @@ export class Game {
   private deflect(p: Puck, s: Skater, keep: number) {
     if (p.ghost) { p.alive = false; this.ev({ t: 'poof', x: p.x, y: p.y }); return; }
     const sp = Math.hypot(p.vx, p.vy);
-    const gx = s.team === 0 ? -L : L;
+    const gx = s.team === 0 ? -GL : GL;
     let ox = p.x - gx, oy = p.y + (this.rnd() - 0.5) * 8;
     const d = Math.hypot(ox, oy) || 1; ox /= d; oy /= d;
     p.vx = ox * sp * keep; p.vy = oy * sp * keep;
@@ -870,14 +873,15 @@ export class Game {
       }
     }
     if (this.goalieTouch(p, x0, y0)) return;
-    // goal?
-    if (Math.abs(p.x) > L + 0.25 && Math.abs(p.y) < GOAL_HALF) { this.goal(p); return; }
-    const bounced = collideBoards(p, PR, 0.55, true);
+    // goal: the puck crosses the goal line between the posts, coming from the front
+    const gs = p.x >= 0 ? 1 : -1;
+    if (Math.abs(p.x) >= GL && Math.abs(x0) < GL && x0 * gs > 0 && Math.abs(p.y) < GOAL_HALF - PR * 0.5) { this.goal(p); return; }
+    let bounced = collideBoards(p, PR, 0.55, true);
+    if (collideNet(p, PR, 0.4, true)) { bounced = true; if (Math.abs(p.y) > GOAL_HALF - 0.3 && Math.abs(p.y) < GOAL_HALF + 0.4) this.ev({ t: 'post', x: p.x, y: p.y }); }
     if (bounced) {
       if (p.ghost) { p.alive = false; return; }
       this.ev({ t: 'board', x: p.x, y: p.y, n: Math.hypot(p.vx, p.vy) });
       if (p.kind === 'shot') {
-        if (Math.abs(p.x) > L - 1 && Math.abs(p.y) < GOAL_HALF + 0.6) this.ev({ t: 'post', x: p.x, y: p.y });
         p.kind = 'loose'; p.fire = false;
       }
       p.cc = 0;
@@ -976,7 +980,7 @@ export class Game {
     this.chain = chain;
     this.ev({ t: 'recv', x: s.x, y: s.y });
     if (oneT && from !== s) {
-      s.face = Math.atan2(-s.y, (s.team === 0 ? L : -L) - s.x);
+      s.face = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
       this.doShot(s, 0.5, true, s.human ? this.lastHumanMy : 0);
     }
   }
@@ -1015,7 +1019,7 @@ export class Game {
       const isD = k.slot === 2 || k.slot === 4;
       // defenders only press inside their own zone
       // a defender already goal-side of the puck should take it; one chasing from behind is a last resort
-      const ngx = (team === 0 ? -L : L) - tx, behind = (k.x - tx) * ngx + (k.y - ty) * -ty < 0;
+      const ngx = (team === 0 ? -GL : GL) - tx, behind = (k.x - tx) * ngx + (k.y - ty) * -ty < 0;
       const d = Math.hypot(k.x - tx, k.y - ty) * (isD && !deep ? 2.2 : 1) * (k.human ? 0.75 : 1) * (behind && !k.human ? 2.5 : 1);
       if (d < bd) { bd = d; best = k; }
     }
@@ -1032,27 +1036,27 @@ export class Game {
     if (attacking) {
       if (isD) {
         // defenders trail the rush, then hold the blue line once the puck is in
-        u = pu > BL ? BL + 2.5 : clamp(pu - 11, -L + 7, BL + 2.5);
+        u = pu > BL ? BL + 2.5 : clamp(pu - 11, -GL + 7, BL + 2.5);
         v = (TEAM === 3 ? pv * 0.3 : lane * 0.33 * W);
       } else if (s.slot === 0) {
         // centre: trail and support up ice, take the net front in their zone
-        if (pu > BL) { u = L - 6; v = Math.sin(ph) * 2; }
+        if (pu > BL) { u = GL - 6; v = Math.sin(ph) * 2; }
         else { u = pu - 1.5; v = (pv > 0 ? -1 : 1) * 0.15 * W; }
       } else {
         // wingers stretch their own lane ahead of the puck, then work the half-wall
-        u = pu > BL ? L - 11 + Math.cos(ph) * 1.5 : clamp(pu + 6, -L + 8, L - 9);
+        u = pu > BL ? GL - 11 + Math.cos(ph) * 1.5 : clamp(pu + 6, -GL + 8, GL - 9);
         v = lane * (0.55 * W + Math.sin(ph) * 1.5);
       }
     } else {
       const dz = pu < -BL; // puck in our defensive zone
       if (dz) {
         // box in front of the net: defenders low, forwards cover the points
-        if (isD) { u = -L + 5.5; v = lane === 0 ? pv * 0.3 : lane * 2.6; }
-        else { u = -L + 12.5; v = (lane === 0 ? pv * 0.25 : lane * 0.38 * W); }
+        if (isD) { u = -GL + 5.5; v = lane === 0 ? pv * 0.3 : lane * 2.6; }
+        else { u = -GL + 12.5; v = (lane === 0 ? pv * 0.25 : lane * 0.38 * W); }
       } else {
         // 1-2-2 back-check: forwards a step behind the puck, defenders keep a gap
-        if (isD) { u = clamp(pu - 13, -L + 6, BL); v = lane === 0 ? pv * 0.3 : lane * 0.3 * W; }
-        else { u = clamp(pu - 5, -L + 10, L - 8); v = lane === 0 ? pv * 0.4 : lane * 0.35 * W; }
+        if (isD) { u = clamp(pu - 13, -GL + 6, BL); v = lane === 0 ? pv * 0.3 : lane * 0.3 * W; }
+        else { u = clamp(pu - 5, -GL + 10, GL - 8); v = lane === 0 ? pv * 0.4 : lane * 0.35 * W; }
       }
       // pick up the nearest attacker to that spot and stay goal-side of him
       let m: Skater | null = null, md = 6;
@@ -1065,14 +1069,14 @@ export class Game {
     }
     // a small pull toward the puck keeps the shape alive without collapsing it
     u = u * 0.88 + pu * 0.12; v = v * 0.88 + pv * 0.12;
-    return [clamp(u * dir, -L + 2, L - 2), clamp(v * dir, -W + 1.5, W - 1.5)];
+    return [clamp(u * dir, -GL + 2, GL - 2), clamp(v * dir, -W + 1.5, W - 1.5)];
   }
 
   // ---------------------------------------------------------------- bots
   private ai(s: Skater, dt: number): Ctl {
     const c: Ctl = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
     const p = this.pucks[0], car = p.owner;
-    const dir = s.team === 0 ? 1 : -1, tgx = dir * L;
+    const dir = s.team === 0 ? 1 : -1, tgx = dir * GL;
     const sk = s.team === 1 ? this.skillLevel : 0.7;
     const isD = s.slot === 2 || s.slot === 4;
     let tx = s.x, ty = s.y;
@@ -1149,7 +1153,7 @@ export class Game {
           // predict where the carrier is going, stand between that point and our net at a stick-length
           // gap, shade to the inside so the open lane runs to the boards, tighten the gap near our net or
           // once he is pinned on the boards. Beaten from behind: come alongside for a poke, then give up.
-          const ngx = -dir * L;
+          const ngx = -dir * GL;
           const dC = Math.hypot(car.x - s.x, car.y - s.y);
           const lead = clamp(dC / 9, 0.1, 0.45);
           const px = car.x + car.vx * lead, py = car.y + car.vy * lead;
@@ -1224,7 +1228,8 @@ export class Game {
 
 const NOCTL: Ctl = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
 
-/** Keep a circle inside the rounded rink. Pucks may enter the goal mouths. Returns true on a bounce. */
+/** Keep a circle inside the rounded rink (the end boards are solid; the nets stand in front of them).
+ *  Returns true on a bounce. */
 export function collideBoards(o: { x: number; y: number; vx: number; vy: number }, r: number, rest: number, puck: boolean): boolean {
   let hit = false;
   const sx = o.x < 0 ? -1 : 1, sy = o.y < 0 ? -1 : 1;
@@ -1241,14 +1246,6 @@ export function collideBoards(o: { x: number; y: number; vx: number; vy: number 
     return hit;
   }
   if (ax > L - r) {
-    if (puck && ay < GOAL_HALF - PR) {
-      // inside the goal mouth: keep it between the posts
-      return false;
-    }
-    if (puck && ax > L + 0.05) { // inside net beside post: clamp to post
-      o.y = sy * (GOAL_HALF - PR); o.vy = -o.vy * 0.3;
-      return false;
-    }
     o.x = sx * (L - r);
     if (o.vx * sx > 0) { hit = o.vx * sx > 1; o.vx = -o.vx * rest; }
   }
@@ -1258,3 +1255,24 @@ export function collideBoards(o: { x: number; y: number; vx: number; vy: number 
   }
   return hit;
 }
+
+/** The net as a solid box from the goal line back NET_DEPTH, between the posts: skaters skate around it and the
+ *  puck rebounds off its sides and back (goals are scored through the open front, see updatePuck). */
+export function collideNet(o: { x: number; y: number; vx: number; vy: number }, r: number, rest: number, openMouth = false): boolean {
+  const sx = o.x < 0 ? -1 : 1, lx = Math.abs(o.x) - GL, ly = o.y;
+  if (openMouth && lx < 0.5 && Math.abs(ly) < GOAL_HALF - r) return false;   // the puck can go in the front
+  // closest point on the box [0, NET_DEPTH] x [-GOAL_HALF, GOAL_HALF] (local x into the net)
+  const cx = clamp(lx, 0, NET_DEPTH), cy = clamp(ly, -GOAL_HALF, GOAL_HALF);
+  let dx = lx - cx, dy = ly - cy, d = Math.hypot(dx, dy);
+  if (d >= r) return false;
+  if (d < 1e-6) {   // centre inside the box: push out the nearest way (not through the front mouth for a puck going in)
+    const outs: [number, number, number][] = [[lx, -1, 0], [NET_DEPTH - lx, 1, 0], [GOAL_HALF - ly, 0, 1], [ly + GOAL_HALF, 0, -1]];
+    outs.sort((a, b) => a[0] - b[0]); dx = outs[0][1]; dy = outs[0][2]; d = 0;
+  } else { dx /= d; dy /= d; }
+  const push = r - d;
+  o.x += sx * dx * push; o.y += dy * push;
+  const nx = sx * dx, ny = dy, vn = o.vx * nx + o.vy * ny;
+  if (vn < 0) { o.vx -= (1 + rest) * vn * nx; o.vy -= (1 + rest) * vn * ny; return -vn > 1; }
+  return false;
+}
+

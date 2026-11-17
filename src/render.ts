@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute } from 'three/tsl';
-import { Game, L, W, CR, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
+import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
 // if a file is missing or broken the procedural model simply stays.
@@ -145,13 +145,15 @@ export class View {
     // creases
     for (const s of [-1, 1]) {
       g.fillStyle = 'rgba(70,160,255,0.28)'; g.strokeStyle = '#d83a3a'; g.lineWidth = px(5);
-      g.beginPath(); g.arc(X(s * (L - 0.9)), Y(0), 3.1 * k, 0, Math.PI * 2); g.fill(); g.stroke();
+      // half-circle crease in front of the net, which now stands out from the end boards
+      const a0 = s > 0 ? Math.PI / 2 : -Math.PI / 2;
+      g.beginPath(); g.arc(X(s * GL), Y(0), 3.1 * k, a0, a0 + Math.PI); g.closePath(); g.fill(); g.stroke();
     }
     // lines
     g.fillStyle = '#d83a3a'; g.fillRect(X(0) - px(6), 0, px(12), ch);
     const BL = 0.3 * L;
     g.fillStyle = '#2f62d8'; g.fillRect(X(-BL) - px(7), 0, px(14), ch); g.fillRect(X(BL) - px(7), 0, px(14), ch);
-    g.fillStyle = '#d83a3a'; g.fillRect(X(-(L - 0.9)) - px(3), 0, px(6), ch); g.fillRect(X(L - 0.9) - px(3), 0, px(6), ch);
+    g.fillStyle = '#d83a3a'; g.fillRect(X(-GL) - px(3), 0, px(6), ch); g.fillRect(X(GL) - px(3), 0, px(6), ch);   // goal lines
     g.lineWidth = px(5); g.strokeStyle = '#d83a3a';
     for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
       g.beginPath(); g.arc(X(sx * 0.66 * L), Y(sy * 0.5 * W), 4 * k, 0, Math.PI * 2); g.stroke();
@@ -181,17 +183,10 @@ export class View {
     floor.rotation.x = -Math.PI / 2; floor.position.y = -0.03;
     this.scene.add(floor);
 
-    // boards as instanced segments, leaving the goal mouths open
+    // boards as instanced segments; the end boards are solid (the nets stand out in front of them)
     const segs: [number, number, number, number][] = [];
     const o = roundedOutline(0, 10);
-    for (let i = 0; i < o.length; i++) {
-      const a = o[i], b = o[(i + 1) % o.length];
-      const endWall = Math.abs(a[0]) > L - 0.01 && Math.abs(b[0]) > L - 0.01;
-      if (endWall) {
-        const lo = Math.min(a[1], b[1]), hi = Math.max(a[1], b[1]);
-        segs.push([a[0], lo, a[0], -GOAL_HALF], [a[0], GOAL_HALF, a[0], hi]);
-      } else segs.push([a[0], a[1], b[0], b[1]]);
-    }
+    for (let i = 0; i < o.length; i++) { const a = o[i], b = o[(i + 1) % o.length]; segs.push([a[0], a[1], b[0], b[1]]); }
     const wall = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1.1, 0.4), this.std(0xf4f6fa), segs.length);
     const cap = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.14, 0.5), this.std(0x2f62d8), segs.length);
     const kick = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.22, 0.46), this.std(0xffc93d), segs.length);
@@ -209,7 +204,7 @@ export class View {
     });
     this.scene.add(wall, cap, kick);
 
-    // nets recessed into the end boards
+    // nets on the goal lines, with room to skate behind them
     for (const s of [-1, 1]) {
       const net = new THREE.Group();
       const red = this.std(0xe03131);
@@ -229,7 +224,7 @@ export class View {
       const lm = new THREE.MeshBasicMaterial({ color: 0x551111 });
       const lamp = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4, 0), lm); lamp.position.set(NET_DEPTH + 0.5, 1.8, 0);
       net.add(lamp); this.lamps.push(lm);
-      net.position.set(s * L, 0, 0); net.scale.x = s;
+      net.position.set(s * GL, 0, 0); net.scale.x = s;
       this.scene.add(net); this.nets.push(net);
     }
 
