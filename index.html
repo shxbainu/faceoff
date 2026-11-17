@@ -55,6 +55,15 @@
 
   #you { position: absolute; transform: translate(-50%, -100%); background: #1e90ff; color: #fff; border-radius: 2px;
     font-weight: 800; font-size: 12px; line-height: 16px; padding: 0 8px; display: none; }
+  /* sprint bar: blue, brighter while sprinting, red and pulsing when winded; the tick marks where it unlocks again */
+  #sprint { position: absolute; width: 64px; height: 7px; background: var(--bg); border: 2px solid var(--bg); border-radius: 4px;
+    transform: translate(-50%, 0); display: none; overflow: hidden; pointer-events: none; }
+  #sprint i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #3d8bff; border-radius: 2px; }
+  #sprint s { position: absolute; left: 35%; top: 0; bottom: 0; width: 2px; background: var(--bg); opacity: 0; }
+  #sprint.on i { background: #8fd0ff; }
+  #sprint.gassed i { background: #e5482d; animation: gas .5s ease-in-out infinite alternate; }
+  #sprint.gassed s { opacity: 1; }
+  @keyframes gas { from { opacity: 1; } to { opacity: .45; } }
   /* shot wind-up */
   #wind { position: absolute; width: 72px; height: 8px; background: var(--bg); border: 2px solid var(--bg); border-radius: 2px;
     transform: translate(-50%, 0); display: none; overflow: hidden; }
@@ -102,6 +111,7 @@
 <div id="hud">
   <div id="pops"></div>
   <div id="wind"><i></i><u></u></div>
+  <div id="sprint"><i></i><s></s></div>
   <div id="you">You</div>
   <div id="heat" class="panel"><div class="row"><span class="lbl">Heat</span><span id="mult">x1</span></div>
     <div id="heatbar"><div id="heatfill"></div><s style="left:25%"></s><s style="left:50%"></s><s style="left:75%"></s></div><div id="buffs">No bonus yet</div><div id="style">Style 0</div></div>

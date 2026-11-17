@@ -840,6 +840,8 @@ export class View {
         v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
+        // sprinting: each hard push kicks a little ice back off the skates
+        if (s.sprint && !s.air && dt > 0 && Math.random() < 0.35) { const sp = Math.hypot(s.vx, s.vy) || 1; this.spray(s.x, s.y, -s.vx / sp, -s.vy / sp, 2, 0xe8f4ff, 4); }
       } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
       v.root.scale.setScalar(boxed ? 0.6 : 1);
     }
@@ -860,10 +862,9 @@ export class View {
     // human markers
     const h = g.ctrl;
     this.disc.position.x = h.x; this.disc.position.z = h.y; this.disc.visible = h.out <= 0;
-    this.discMat.opacity = 0.6 + 0.4 * h.stamina;
-    const ps = (h.frost ? 0.8 : 1) * (1 + Math.sin(this.t * 5) * 0.06);
-    // the blue disc shrinks inside its ink ring as stamina runs down
-    this.disc.scale.setScalar(ps * (0.55 + 0.45 * h.stamina)); this.discInk.scale.setScalar(ps);
+    this.discMat.opacity = 0.85;
+    const ps = (h.frost ? 0.8 : 1) * (1 + Math.sin(this.t * 5) * 0.06);   // stamina has its own sprint bar now
+    this.disc.scale.setScalar(ps); this.discInk.scale.setScalar(ps);
     // Heat shows on the ice as a small touch: a few embers off your skates
     const ht = g.tier(0);
     if (ht > 0 && dt > 0 && this.disc.visible && Math.random() < 0.06 * ht) this.burst(h.x, h.y, 1, ht >= 4 ? 0xffb400 : 0xe5482d, 1.4, 2.5, 0.11, 0.1);

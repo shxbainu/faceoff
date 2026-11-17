@@ -72,17 +72,17 @@ function ctl(): Ctl {
     return {
       mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
       my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-      pass: k('KeyJ', 'Space'), saucer: false, wrist, shoot: held >= TAP,
+      pass: k('KeyJ'), saucer: false, wrist, shoot: held >= TAP,
       check: k('KeyL') && !near, poke: k('KeyL') && near,
-      burst: false, swap: k('KeyQ'),
+      burst: k('Space'), swap: k('KeyQ'),
     };
   }
   return {
     // the camera looks up-ice (+x), so screen up is +x and screen right is +y
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
     my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
-    pass: k('KeyJ', 'Space'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('ShiftLeft', 'ShiftRight'), poke: k('KeyU'),
-    burst: false, swap: k('KeyQ'),
+    pass: k('KeyJ'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('ShiftLeft', 'ShiftRight'), poke: k('KeyU'),
+    burst: k('Space'), swap: k('KeyQ'),
   };
 }
 
@@ -136,13 +136,14 @@ function showTitle() {
 }
 
 function controlsHelp() {
-  const skate = '<span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>';
+  const skate = '<span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></span><span>Skate</span>'
+    + '<span><kbd>Space</kbd></span><span>Sprint (hold) · drains the sprint bar under you; empty it and you are winded until it refills</span>';
   const swap = '<span><kbd>Q</kbd></span><span>Switch to the skater nearest the puck</span>';
   const rows = scheme === 'simple' ? `
-      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Shoot · tap for a quick wrist shot, hold to wind up a slapshot</span>
       <span><kbd>L</kbd></span><span>Check · pokes when the puck is in reach, body checks otherwise</span>` : `
-      <span><kbd>J</kbd> / <kbd>Space</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
+      <span><kbd>J</kbd></span><span>Pass · tap without the puck to call for it · tap on the faceoff drop</span>
       <span><kbd>K</kbd></span><span>Saucer pass · lifted over sticks</span>
       <span><kbd>L</kbd></span><span>Wrist shot · quick release</span>
       <span><kbd>I</kbd></span><span>Slapshot · hold to wind up, release · hold before a pass lands for a one-timer</span>
@@ -288,6 +289,8 @@ function handle(e: Ev) {
 }
 
 const windEl = $('wind'), windFill = windEl.querySelector('u') as HTMLElement;
+const sprintEl = $('sprint'), sprintFill = sprintEl.querySelector('i') as HTMLElement;
+let sprintShow = 0, lastSprintW = -1;
 let lastScore = '', lastClock = '', lastHeat = -1, lastMult = 0, lastStyle = -1;
 function hud() {
   const sc = game.score.join('-');
@@ -311,6 +314,16 @@ function hud() {
     you.style.left = Math.max(28, Math.min(window.innerWidth - 28, yx)) + 'px';
     you.style.top = Math.max(28, Math.min(window.innerHeight - 100, yy)) + 'px';
   } else you.style.display = 'none';
+  // sprint bar under your skater: shows while it is in use or refilling, fades once full
+  sprintShow = h.stamina < 0.999 || h.sprint ? 1 : Math.max(0, sprintShow - 1 / 45);
+  if (mode === 'match' && h.out <= 0 && sprintShow > 0) {
+    const [x, y] = view.project(h.x - 1.15, 0, h.y);
+    sprintEl.style.display = 'block'; sprintEl.style.left = x + 'px'; sprintEl.style.top = y + 'px';
+    sprintEl.style.opacity = String(Math.min(1, sprintShow * 1.5));
+    const w = Math.round(h.stamina * 100);
+    if (w !== lastSprintW) { lastSprintW = w; sprintFill.style.width = w + '%'; }
+    sprintEl.classList.toggle('on', h.sprint); sprintEl.classList.toggle('gassed', h.gassed);
+  } else sprintEl.style.display = 'none';
   if (mode === 'match' && h.wind >= 0 && game.phase === 'play') {
     const [x, y] = view.project(h.x, 0, h.y + 1.6);
     windEl.style.display = 'block'; windEl.style.left = x + 'px'; windEl.style.top = y + 'px';

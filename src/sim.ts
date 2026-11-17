@@ -68,6 +68,8 @@ export interface Ctl {
  *  turnHigh   turn rate at top speed: wide carving arcs that keep their speed
  *  brake      deceleration when pushing against your own motion (skid to a hockey stop) */
 export interface SkateStats { accel: number; topSpeed: number; glide: number; turnLow: number; turnHigh: number; brake: number }
+export const SPRINT = { tank: 2.4, refill: 3.2, delay: 0.45, relock: 0.35, speed: 1.3, accel: 1.4 };
+
 export const SKATE_BASE: SkateStats = { accel: 32, topSpeed: 10.5, glide: 0.28, turnLow: 14, turnHigh: 4.4, brake: 32 };
 
 export interface Skater {
@@ -76,6 +78,7 @@ export interface Skater {
   stun: number; air: boolean; z: number; vz: number; out: number; boxed: number;
   wind: number; checkT: number; checkCd: number; blockT: number; pickupCd: number;
   stamina: number; calling: number; frost: boolean;
+  sprint: boolean; gassed: boolean; rest: number;   // sprint bar: sprinting now; emptied it (locked out until it refills a bit); time since last sprint
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
   drive: number;               // display: 1 while pushing to skate (input held, not skidding), 0 coasting or stopping
   /** time spent in contact with an opponent; when beaten from behind; stay off the carrier for a moment */
@@ -156,7 +159,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -225,7 +228,7 @@ export class Game {
       s.vx = s.vy = 0; s.face = d < 0 ? 0 : Math.PI;
       s.stun = 0; s.air = false; s.z = 0; s.out = 0; s.wind = -1; s.checkT = 0; s.checkCd = 0.3; s.pickupCd = 0;
       s.tangle = 0; s.beaten = 0; s.disengage = 0;
-      s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6);
+      s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6); s.gassed = false; s.sprint = false;
       if (s.boxed > 0) s.boxed = 0;
     }
     for (const g of this.goalies) { g.y = 0; g.vy = 0; }
@@ -487,11 +490,22 @@ export class Game {
     let max = this.maxSpeed(s), acc = mv.accel;
     if (has) max *= 0.93;                       // carrying the puck costs a little speed (footwork and passing matter)
     if (s.wind >= 0 && has) max *= 0.6;
-    const tank = 1.8 + 0.5 * this.pw(s.team, 'burner');
+    // Sprint bar: holding sprint while skating raises top speed and acceleration and drains the bar
+    // (about 2.4 s from full). It refills after a short rest, quicker when not skating. Emptying it
+    // leaves you winded: no sprint until it is back to SPRINT_RELOCK. Checks also draw from it.
+    const tank = SPRINT.tank + 0.6 * this.pw(s.team, 'burner');
     s.settle -= dt; s.slow -= dt;
     if (s.slow > 0) { max *= 0.55; acc *= 0.6; } // a standing check landed: legs are tied up for a moment
-    if (c.burst && ml > 0 && s.stamina > 0.03) { max *= 1.35; acc *= 1.5; s.stamina = Math.max(0, s.stamina - dt / tank); }
-    else s.stamina = Math.min(1, s.stamina + (dt / 4) * (1 + 0.08 * this.tier(s.team)));
+    if (s.gassed && s.stamina >= SPRINT.relock) s.gassed = false;
+    s.sprint = c.burst && ml > 0 && !s.gassed && s.stamina > 0 && s.stun <= 0;
+    if (s.sprint) {
+      max *= SPRINT.speed; acc *= SPRINT.accel; s.rest = 0;
+      s.stamina = Math.max(0, s.stamina - dt / tank);
+      if (s.stamina <= 0) { s.gassed = true; if (s === this.ctrl) this.ev({ t: 'gassed', x: s.x, y: s.y }); }
+    } else {
+      s.rest += dt;
+      if (s.rest > SPRINT.delay) s.stamina = Math.min(1, s.stamina + (dt / SPRINT.refill) * (ml > 0 ? 1 : 1.5) * (1 + 0.08 * this.tier(s.team)));
+    }
     if (s.frost) acc *= 0.5;
 
     if (s.checkT > 0) {
@@ -1322,7 +1336,7 @@ export class Game {
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },
-      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, slow: s.slow })),
+      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, gassed: s.gassed, slow: s.slow })),
       stats: this.stats,
       goalies: this.goalies.map(g => ({ team: g.team, x: g.x, y: g.y })),
     };

@@ -106,5 +106,16 @@ const travel = a => { let t = 0; for (let i = 1; i < a.length; i++) t += Math.ab
 const tTurn = tr.find((s, i) => Math.abs(bodyH[i] - bodyH[0]) > Math.PI * 0.9);
 report.reverse180 = { bodyTurnedDeg: deg(bodyH.at(-1) - bodyH[0]), bodyRotationTravelDeg: deg(travel(bodyH)), faceTravelDeg: deg(travel(faceH)),
   secToFaceBack: tTurn ? +(tTurn.t - tr[0].t).toFixed(2) : '>1.4', endSpeed: +tr.at(-1).sp.toFixed(2), endVelDeg: deg(Math.atan2(tr.at(-1).vy, tr.at(-1).vx)) };
+// H. sprint bar: hold W + Space from rest until winded, then let go and time the refill
+await recenter(); await hold(['KeyS'], 1.0); await stopHere();
+const bar = () => page.evaluate(() => { const s = window.__faceoff.snap(), k = s.skaters.find(k => k.ctrl); return { st: k.stamina, sprint: k.sprint, gassed: k.gassed, sp: Math.hypot(k.vx, k.vy) }; });
+await page.keyboard.down('KeyW'); await page.keyboard.down('Space');
+const t0 = Date.now(); let topSp = 0, gassedAt = null;
+while (Date.now() - t0 < 4000) { const b = await bar(); topSp = Math.max(topSp, b.sp); if (b.gassed && gassedAt == null) gassedAt = (Date.now() - t0) / 1000; if (gassedAt) break; await page.waitForTimeout(40); }
+const winded = await bar();
+await page.keyboard.up('Space'); await page.keyboard.up('KeyW');
+const t1 = Date.now(); let unlockAt = null, fullAt = null;
+while (Date.now() - t1 < 6000) { const b = await bar(); if (!b.gassed && unlockAt == null) unlockAt = (Date.now() - t1) / 1000; if (b.st >= 0.999) { fullAt = (Date.now() - t1) / 1000; break; } await page.waitForTimeout(40); }
+report.sprint = { sprintTopSpeed: +topSp.toFixed(2), secToEmpty: gassedAt, windedSpeed: +winded.sp.toFixed(2), secToUnlock: unlockAt, secToFull: fullAt };
 console.log(JSON.stringify(report, null, 1));
 await browser.close(); process.kill(-server.pid);
