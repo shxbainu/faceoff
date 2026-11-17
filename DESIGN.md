@@ -286,3 +286,22 @@ Stepped through the reference at its native 59.94 fps (ffmpeg), following one sk
   skater stays as the fallback.
 - Still open: skaters are about 55 px tall on a 720p screen (reference about 90 px), so the camera
   could come closer; no fall/hit clips yet (falls still tip the whole body).
+
+### Playtest feedback and plan, 2026-11-16 (evening)
+
+Feedback (user): too few offensive options (you can only turn and move side to side); wants skill moves and
+moves without overcomplicating, skater attributes, active abilities as in the reference; more speed feeling
+and "oomph" on big hits and shots (impact frames, more dopamine on every action); no space behind the net,
+which real hockey has; more animation and less rigid movement.
+
+Mapped onto the phase plan (1 rink/camera/goalies done, 2 switching/formations done, 3 models mostly done,
+4 stats and abilities, 5 run structure):
+1. **Finish Phase 3 now.** Nets on a goal line 4.4 units out from the end boards (NHL 11 ft of 200) with room
+   to skate behind; movement feel: body lean into turns, crossover steps, hockey stop with ice spray, backward
+   skating, smoother acceleration and turning.
+2. **Game-feel pass** (the feedback layer from the build order, step 4) before Phase 4, so abilities land on
+   actions that already feel good: impact frames, hit-stop scaled by hit size, camera punch and kick, shot
+   trails, speed lines at full stride, bigger hit and goal moments, layered sound.
+3. **Phase 4:** attributes (speed, shot, hands, checking) and visible archetypes; two skill moves on existing
+   keys without modifier buttons (quick deke, spin); one active ability per skater on O; passives from rounds.
+4. **Phase 5:** run structure.
