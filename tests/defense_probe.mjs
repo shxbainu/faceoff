@@ -7,6 +7,9 @@
 //   challengedShare share of carry time with a defender goal-side within 2.5 (someone actually on him)
 //   freeRunShare    share of carry time inside the attacking half with nobody goal-side within 4 (walking in)
 //   pokes, takeaways, hits per match
+//   hipAngleDeg     pressing defender's facing vs the line to the carrier (angle control: ~30-40, not 0 = chest to chest)
+//   insideShare     share of zone time the pressing defender is on the carrier's inside (closer to the middle of the ice)
+//   carrierWideShare share of zone carry time the carrier is pushed wide (|y| > 0.45 W) toward the boards
 import { build } from 'esbuild';
 import { pathToFileURL } from 'node:url';
 import { mkdtempSync } from 'node:fs';
@@ -18,7 +21,7 @@ await build({ entryPoints: [src], bundle: true, format: 'esm', platform: 'node',
 const S = await import(pathToFileURL(out).href);
 const noInput = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
 const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
-const T = { carry: 0, near: 0, faceOff: 0, faceAway: 0, challenged: 0, free: 0, half: 0, rev: 0, play: 0, pokes: 0, takeaways: 0, hits: 0, backward: 0 };
+const T = { zone: 0, inside: 0, wide: 0, hipN: 0, hip: 0, carry: 0, near: 0, faceOff: 0, faceAway: 0, challenged: 0, free: 0, half: 0, rev: 0, play: 0, pokes: 0, takeaways: 0, hits: 0, backward: 0 };
 for (let m = 0; m < MATCHES; m++) {
   const powers = Object.fromEntries(S.POWERS.map(p => [p.id, 0]));
   const g = new S.Game(1 + (m % 4), S.OPPONENTS[m % S.OPPONENTS.length], powers, 4321 + m * 89);
@@ -45,6 +48,16 @@ for (let m = 0; m < MATCHES; m++) {
       if (gs && d < goalSide) goalSide = d;
     }
     if (goalSide < 2.5) T.challenged += dt;
+    // in the defending zone: is the presser inside him, is he pushed wide, how are the presser's hips angled
+    if (car.x * dir > 0.3 * S.L) {
+      T.zone += dt;
+      if (Math.abs(car.y) > 0.45 * S.W) T.wide += dt;
+      const pr = g.pressing?.[1 - car.team];
+      if (pr && g.active(pr) && Math.hypot(pr.x - car.x, pr.y - car.y) < 5) {
+        if (Math.abs(pr.y) < Math.abs(car.y)) T.inside += dt;
+        if (pr.ai.look) { T.hip += Math.abs(wrap(Math.atan2(car.y - pr.y, car.x - pr.x) - pr.face)) * dt; T.hipN += dt; }
+      }
+    }
     if (car.x * dir > 0) { T.half += dt; if (goalSide > 4) T.free += dt; }
     if (near && nd < 5) {
       T.near += dt;
@@ -69,5 +82,6 @@ console.log(JSON.stringify({
   faceOffDeg: Math.round(T.faceOff / T.near * 180 / Math.PI), faceAwayShare: pct(T.faceAway / T.near), backwardShare: pct(T.backward / T.near),
   reversalsPerMin: +(T.rev / (T.play / 60)).toFixed(1),
   challengedShare: pct(T.challenged / T.carry), freeRunShare: pct(T.free / T.half),
+  hipAngleDeg: Math.round(T.hip / (T.hipN || 1) * 180 / Math.PI), insideShare: pct(T.inside / T.zone), carrierWideShare: pct(T.wide / T.zone),
   pokeTries: per(T.pokeTries || 0), pokes: per(T.pokes), takeaways: per(T.takeaways), hits: per(T.hits), why: T.why,
 }));

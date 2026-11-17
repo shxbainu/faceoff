@@ -1,6 +1,6 @@
 import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize } from './sim';
 import { View } from './render';
-import { sfx, unlock } from './audio';
+import { sfx, unlock, audio } from './audio';
 import '@fontsource/archivo/latin-500.css';
 import '@fontsource/archivo/latin-800.css';
 
@@ -270,7 +270,14 @@ function handle(e: Ev) {
     case 'switch': sfx.recv(); break;
     case 'recv': case 'pickup': sfx.recv(); break;
     case 'shot': sfx.shot(!!e.big); break;
-    case 'hit': sfx.hit(!!e.big); break;
+    case 'hit': audio.play(e.big ? 'heavy_hit' : 'hit'); break;
+    case 'poke': case 'steal': audio.play('stick_clack'); break;
+    case 'pokeTry': audio.play('stick_whiff'); break;
+    case 'stickDrop':
+      audio.play('stick_drop');
+      if (game.skaters.find(k => k.id === e.id)?.human) pop('Stick down! Skate over it', e.x!, e.y!, true);
+      break;
+    case 'stickPickup': case 'stickSpare': audio.play('stick_pickup'); break;
     case 'slam': sfx.slam(); break;
     case 'bump': sfx.board(e.big ? 22 : 10); break;
     case 'save': case 'catch': sfx.save(); break;

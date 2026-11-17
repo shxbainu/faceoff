@@ -31,6 +31,8 @@ interface SkaterView {
   bones?: { sp2: THREE.Object3D; sp3: THREE.Object3D; head: THREE.Object3D };
   mb?: { twist: number; phase: number; posture: number; sway: number };
   stick?: THREE.Object3D; bladeDbg?: THREE.Mesh;
+  /** hit impact: a quick squash and lurch along the hit, so the contact lands with weight */
+  crunch?: { t: number; len: number; dx: number; dy: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
   ikW?: number; ikT?: THREE.Vector3;
@@ -72,6 +74,10 @@ export class View {
   private skaters: SkaterView[] = [];
   private teamMat: { body: THREE.MeshStandardMaterial; trim: THREE.MeshStandardMaterial }[] = [];
   private puck!: THREE.Mesh; private puckMat!: THREE.MeshStandardMaterial; private puckGlow!: THREE.Mesh; private puckStreak!: THREE.Mesh; private puckRing!: THREE.Mesh;
+  /** high-visibility puck cue: a neon glow on the ice under it, and an x-ray ring drawn over anything in front of it */
+  private puckHalo!: THREE.Mesh; private puckXray!: THREE.Mesh;
+  /** dropped sticks lying on the ice */
+  private looseSticks: THREE.Group[] = [];
   private ghosts: THREE.Mesh[] = [];
   private arrow!: THREE.Mesh; private disc!: THREE.Mesh; private discMat!: THREE.MeshBasicMaterial;
   private ring!: THREE.Mesh;
@@ -919,6 +925,18 @@ export class View {
     this.puckStreak = new THREE.Mesh(sgeo, new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(stc), transparent: true, depthWrite: false }));
     this.puckStreak.visible = false;
     this.scene.add(this.puck, this.puckGlow, this.puckStreak);
+    // High-visibility cue (the reference marks its puck the same way): a soft neon-lime glow, a colour no team
+    // wears and that stands out from both the white ice and the blue lines, so the puck can't get lost in a scrum,
+    // a rebound or a hard pass. It stretches along the puck's path when it moves fast. The x-ray ring ignores depth,
+    // so it still shows the puck's spot when skaters or pads are in front of it.
+    const hc = document.createElement('canvas'); hc.width = hc.height = 64;
+    const hg = hc.getContext('2d')!, rg = hg.createRadialGradient(32, 32, 4, 32, 32, 32);
+    rg.addColorStop(0, 'rgba(200,255,40,0.95)'); rg.addColorStop(0.45, 'rgba(190,255,30,0.55)'); rg.addColorStop(1, 'rgba(190,255,30,0)');
+    hg.fillStyle = rg; hg.fillRect(0, 0, 64, 64);
+    this.puckHalo = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(hc), transparent: true, depthWrite: false }));
+    this.puckXray = new THREE.Mesh(new THREE.RingGeometry(PR + 0.22, PR + 0.32, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xb8ff1a, transparent: true, opacity: 0.6, depthTest: false, depthWrite: false }));
+    this.puckXray.renderOrder = 998; this.puckHalo.renderOrder = 1;
+    this.scene.add(this.puckHalo, this.puckXray);
     for (let i = 0; i < 4; i++) {
       const gp = new THREE.Mesh(this.puck.geometry, new THREE.MeshBasicMaterial({ color: 0x575266 }));
       gp.visible = false; this.scene.add(gp); this.ghosts.push(gp);
@@ -980,6 +998,7 @@ export class View {
     switch (e.t) {
       case 'hit': {
         const dx = e.dx ?? 0, dy = e.dy ?? 0;
+        if (e.id !== undefined) { const vi = this.game?.skaters.findIndex(k => k.id === e.id) ?? -1; if (vi >= 0 && this.skaters[vi]) this.skaters[vi].crunch = { t: e.big ? 0.22 : 0.15, len: e.big ? 0.22 : 0.15, dx, dy }; }
         this.burst(x, y, e.big ? 44 : 20, 0xffffff, e.big ? 12 : 7, 6, e.big ? 0.22 : 0.16);
         this.spray(x, y, dx, dy, e.big ? 40 : 16, 0xdff2ff, e.big ? 20 : 12);
         this.scuff(x, y, e.big ? 1.0 : 0.6);
@@ -997,7 +1016,8 @@ export class View {
       case 'save': this.burst(x, y, 14, 0x9fd0ff, 7, 4, 0.12); break;
       case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); break;   // glove snaps shut
       case 'post': this.burst(x, y, 10, 0xff5555, 6, 5, 0.1); break;
-      case 'poke': this.burst(x, y, 6, 0xffffff, 4, 2, 0.09); break;
+      case 'poke': case 'steal': this.burst(x, y, 9, 0xffffff, 5, 2.5, 0.08); this.burst(x, y, 4, 0xffe9a8, 3, 2, 0.06); break;   // stick on stick: a white crack and a few wood chips
+      case 'stickDrop': this.burst(x, y, 10, 0xd9c9a3, 5, 4, 0.1); this.spray(x, y, e.dx ?? 0, e.dy ?? 0, 10, 0xe8f4ff, 6); break;
       case 'spin': this.burst(x, y, 10, 0xe8f4ff, 4, 1.5, 0.1); break;
       case 'deke': this.burst(x, y, 8, 0x7fd8ff, 5, 3, 0.12); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;
@@ -1022,8 +1042,9 @@ export class View {
   }
 
   // ------------------------------------------------------------ frame
+  private game: Game | null = null;
   frame(g: Game, dt: number, rdt: number) {
-    this.t += rdt;
+    this.t += rdt; this.game = g;
     const p = g.pucks[0];
     // skaters
     for (let i = 0; i < g.skaters.length; i++) {
@@ -1049,7 +1070,15 @@ export class View {
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
         if (s.stun <= 0 && !s.air) this.microBlend(v, s, p, rdt);
-        this.stickIK(v, s, p, rdt);
+        if (v.stick) v.stick.visible = s.stickless <= 0;
+        if (s.stickless <= 0) this.stickIK(v, s, p, rdt);
+        if (v.crunch) {   // hit impact: squash and lurch along the hit, then spring back
+          const c = v.crunch; c.t -= rdt;
+          const k = c.t > 0 ? Math.sin(Math.PI * (1 - c.t / c.len)) : 0;
+          v.body.scale.set(1 + 0.1 * k, 1 - 0.16 * k, 1 + 0.1 * k);
+          v.body.position.x = c.dx * 0.35 * k; v.body.position.z = c.dy * 0.35 * k;
+          if (c.t <= 0) { v.crunch = undefined; v.body.scale.set(1, 1, 1); v.body.position.x = v.body.position.z = 0; }
+        }
         if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is
           const st = this.stickOf(v);
           if (st && this.stickGeo) {
@@ -1125,6 +1154,15 @@ export class View {
     this.puck.position.set(pkx, 0.05 + dropH + lift, pkz);
     this.puckGlow.position.set(pkx, 0.03, pkz);
     this.puckRing.position.set(pkx, 0.025, pkz); this.puckRing.visible = dropH === 0;
+    {
+      const hs = Math.hypot(p.vx, p.vy), fast = !p.owner && hs > 10;
+      this.puckHalo.visible = this.puckXray.visible = dropH === 0 && !p.held;
+      this.puckHalo.position.set(pkx, 0.02, pkz);
+      this.puckHalo.rotation.y = fast ? -Math.atan2(p.vy, p.vx) : 0;
+      const pulse = 1 + Math.sin(this.t * 6) * 0.06;
+      this.puckHalo.scale.set(pulse * (fast ? 1 + Math.min(1.6, hs * 0.035) : 1), 1, pulse);   // stretched along its path when fast
+      this.puckXray.position.set(pkx, 0.06, pkz);
+    }
     const fire = g.fireT > 0 && (p.owner ? p.owner.team === 0 : p.lastTeam === 0);
     this.puckGlow.visible = fire;   // red glow only when on fire; normally the grey ring marks the puck
     this.puckGlow.scale.setScalar(1.5 + Math.sin(this.t * 20) * 0.2);
@@ -1141,6 +1179,22 @@ export class View {
       const gp = g.pucks[i + 1], m = this.ghosts[i];
       m.visible = !!gp && gp.alive;
       if (m.visible) m.position.set(gp.x, 0.09, gp.y);
+    }
+
+    // dropped sticks: a shaft and blade lying flat, sliding and spinning to a stop
+    for (let i = 0; i < Math.max(g.sticks.length, this.looseSticks.length); i++) {
+      const k = g.sticks[i];
+      let m = this.looseSticks[i];
+      if (k && !m) {
+        m = new THREE.Group();
+        const wood = this.std(0xd9c9a3), tape = this.std(0x1a1a22);
+        const shaft = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.06), wood); shaft.position.x = 0.95;
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 0.12), tape); blade.position.set(1.95, 0, 0.12); blade.rotation.y = -0.35;
+        m.add(shaft, blade); this.scene.add(m); this.looseSticks.push(m);
+      }
+      if (!m) continue;
+      m.visible = !!k;
+      if (k) { m.position.set(k.x, 0.035, k.y); m.rotation.y = -k.ang; }
     }
 
     // particles

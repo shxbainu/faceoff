@@ -54,3 +54,24 @@ export const sfx = {
   buzzer() { osc('sawtooth', 110, 105, 0.9, 0.4); },
   lose() { osc('triangle', 330, 110, 0.7, 0.4); },
 };
+
+/** Named sound hooks for gameplay events: audio.play('heavy_hit'), audio.play('stick_clack'), ...
+ *  All synthesised like the rest; game code asks for a sound by name and never touches the synth. */
+export type SoundName = 'heavy_hit' | 'hit' | 'stick_clack' | 'stick_whiff' | 'stick_drop' | 'stick_pickup' | 'body_thud';
+const clack = (vol: number, delay = 0, pitch = 1) => {   // wood on wood: a sharp band of noise and a falling click
+  if (!ctx) return;
+  setTimeout(() => { noise(0.035, vol, 3200 * pitch, 6); osc('triangle', 1500 * pitch, 900 * pitch, 0.045, vol * 0.5); }, delay * 1000);
+};
+export const audio = {
+  play(name: SoundName) {
+    switch (name) {
+      case 'heavy_hit': sfx.hit(true); osc('sine', 48, 24, 0.5, 0.9, 0.03); noise(0.12, 0.7, 180, 0.6); break;   // extra low crunch
+      case 'hit': sfx.hit(false); break;
+      case 'body_thud': osc('sine', 110, 45, 0.16, 0.6); noise(0.08, 0.4, 400, 0.8); break;
+      case 'stick_clack': clack(0.8); clack(0.45, 0.04, 1.15); break;
+      case 'stick_whiff': noise(0.09, 0.25, 1800, 1.2); break;
+      case 'stick_drop': clack(0.6, 0.0, 0.9); clack(0.45, 0.09, 1.05); clack(0.3, 0.2, 0.95); clack(0.18, 0.33, 1.1); break;   // clatters as it bounces
+      case 'stick_pickup': clack(0.35, 0, 1.3); osc('triangle', 660, 990, 0.12, 0.25, 0.03); break;
+    }
+  },
+};

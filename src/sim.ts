@@ -84,7 +84,10 @@ export const STICK_R = 1.05;
  *  side for these right-handed shooters). Measured from the animated blade with tests/blade_probe.mjs --live;
  *  re-measure if the clips change (mocap), the renderer's arm IK handles the rest. */
 export const CARRY = { fwd: 1.15, lat: 0.7, dangleAmp: 0.32, dangleMin: 0.1, dangleRate: 7 };   // blade distance from the body
-export const SPIN_T = 0.42;   // spin move length, seconds
+export const SPIN_T = 0.42;
+/** Hits: how long a skater stays down, and stick drops. A big hit always knocks the stick loose, a normal knockdown
+ *  half the time; he must skate over it to get it back (or a spare comes over the boards after STICK_SPARE s). */
+export const HIT = { stunBig: 2.4, stunNormal: 1.5, dropNormal: 0.5, stickPickR: 0.9, STICK_SPARE: 8 };   // spin move length, seconds
 export const SPRINT = { tank: 2.4, refill: 3.2, delay: 0.45, relock: 0.35, speed: 1.3, accel: 1.4 };
 
 export const SKATE_BASE: SkateStats = { accel: 32, topSpeed: 10.5, glide: 0.28, turnLow: 14, turnHigh: 4.4, brake: 32 };
@@ -108,7 +111,9 @@ export interface Skater {
     /** defending: the point to face (the carrier) while moving any direction; smoothed contain target */
     look?: [number, number] | null; sx?: number; sy?: number; dodge?: number; dodgeT?: number;
     /** getting open: chosen offset from the formation spot and when to look again; give-and-go run time */
-    openU?: number; openV?: number; openT?: number; runT?: number };
+    openU?: number; openV?: number; openT?: number; runT?: number;
+    /** angle control: facing offset from the carrier (hips turned toward the outside), and a velocity to match */
+    faceOff?: number; vel?: [number, number] | null };
   /** spin move with the puck: time left, cooldown, direction, facing at the start, the defender being spun past */
   spinT: number; spinCd: number; spinDir: number; spinFace: number; spinFoe: Skater | null;
   /** one-touch pass queued while a pass is on its way to you (seconds left), and the direction held then */
@@ -117,10 +122,14 @@ export interface Skater {
   stickAng: number; stickX: number; stickY: number;
   recvT: number;   // time left in the one-timer window after a pass lands on your stick
   dangle: number;  // stickhandling phase: the puck is worked side to side on the blade
+  stickless: number;  // >0: knocked loose from his stick this long ago (no shooting, passing, poking or puck pickup)
   pokeT: number; pokeX: number; pokeY: number;   // a poke in progress: time left and where the stick is going
 }
 
 /** goalies stay in their crease and slide along the goal line */
+/** a stick knocked out of a skater's hands, sliding on the ice until he skates over it */
+export interface DroppedStick { owner: Skater; x: number; y: number; vx: number; vy: number; ang: number; spin: number }
+
 export interface Goalie { team: number; x: number; y: number; vx: number; vy: number; react: number; face: number }
 
 export interface Puck {
@@ -136,7 +145,7 @@ export interface Puck {
   held: Goalie | null; holdT: number;
 }
 
-export interface Ev { t: string; x?: number; y?: number; text?: string; n?: number; big?: boolean; team?: number; dx?: number; dy?: number }
+export interface Ev { t: string; x?: number; y?: number; text?: string; n?: number; big?: boolean; team?: number; dx?: number; dy?: number; id?: number }
 
 export interface Stats { shots: number[]; hits: number[]; passes: number[]; saves: number[]; oneTimers: number; attack: number[] }
 
@@ -168,6 +177,7 @@ export class Game {
   /** test rink (?test): your skater alone on empty ice, no AI, goalies, clock, faceoffs or goals */
   sandbox = false;
   passMods: PassMods = { ...PASS_BASE };
+  sticks: DroppedStick[] = [];
   /** the skater the player is steering; changes hands with the puck and on the switch key */
   ctrl!: Skater;
   private pSwap = false;
@@ -190,7 +200,7 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, stickless: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
         ai: { hold: 0, patience: 2, windGoal: 0.5, react: 0.3, oneT: false },
@@ -262,6 +272,7 @@ export class Game {
       s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6); s.gassed = false; s.sprint = false;
       if (s.boxed > 0) s.boxed = 0;
     }
+    this.sticks.length = 0; for (const k of this.skaters) k.stickless = 0;
     for (const g of this.goalies) { g.x = (g.team === 0 ? -1 : 1) * (GL - 1.5); g.y = 0; g.vx = g.vy = 0; g.face = g.team === 0 ? 0 : Math.PI; }
     if (this.ctrl) this.setCtrl(this.skaters[0]);
     this.pucks.length = 1;
@@ -346,6 +357,7 @@ export class Game {
 
     this.updateGimmick(dt);
     this.updateGoalies(dt);
+    this.updateSticks(dt);
     for (const s of this.skaters) {
       const c = s.human && !this.autoplay ? human : this.ai(s, dt);
       this.updateSkater(s, c, dt);
@@ -599,7 +611,7 @@ export class Game {
     const sp = Math.hypot(s.vx, s.vy);
     let ta = s.face;
     if (s.wind >= 0 && has) ta = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
-    else if (!s.human && !has && s.ai.look && s.checkT <= 0) ta = Math.atan2(s.ai.look[1] - s.y, s.ai.look[0] - s.x);   // defending: square to the carrier, skate backward if need be
+    else if (!s.human && !has && s.ai.look && s.checkT <= 0) ta = Math.atan2(s.ai.look[1] - s.y, s.ai.look[0] - s.x) + (s.ai.faceOff ?? 0);   // defending: eyes on the carrier, hips angled (angle control)
     else if (skid && ml > 0) ta = Math.atan2(my, mx);   // skidding to a stop: turn once, toward where you are heading next
     else if (sp > 2.5) ta = Math.atan2(s.vy, s.vx);   // face where you are actually skating (arcs)
     else if (ml > 0) ta = Math.atan2(my, mx);
@@ -627,7 +639,7 @@ export class Game {
       // late one-timer: the shot was pressed just after the pass landed, still within the window
       s.recvT = 0; s.face = Math.atan2(-s.y, (s.team === 0 ? GL : -GL) - s.x);
       this.doShot(s, 0.5, true, my);
-    } else if (c.shoot) {
+    } else if (c.shoot && s.stickless <= 0) {
       s.wind = s.wind < 0 ? 0 : s.wind + dt;
       if (p.owner === s && s.wind > 1.5) { this.doShot(s, s.wind, false, my); s.wind = -1; }
     } else if (s.pShoot || s.wind >= 0) {
@@ -680,6 +692,7 @@ export class Game {
   }
 
   private startCheck(s: Skater, mode: 'poke' | 'body' | 'auto' = 'auto') {
+    if (s.stickless > 0) { if (mode === 'poke') return; mode = 'body'; }   // no stick: only the body is left
     const p = this.pucks[0], car = p.owner;
     const sp = Math.hypot(s.vx, s.vy);
     const dC = car ? Math.hypot(car.x - s.x, car.y - s.y) : 99;
@@ -690,7 +703,7 @@ export class Game {
       s.pokeT = 0.26; s.pokeX = p.x; s.pokeY = p.y;   // the stick goes for the puck itself
       // a poke is aim and timing, not a dice roll: the stick has to reach the puck itself.
       // The puck rides in front of the carrier, so turning away puts their body in the way.
-      const reach = 1.6 * (1 - 0.12 * this.pw(car.team, 'magnet'));
+      const reach = 1.45 * (1 - 0.12 * this.pw(car.team, 'magnet'));
       const dP = Math.hypot(p.x - s.x, p.y - s.y);
       if (car.settle > 0 || car.spinT > 0 || dP > reach || dP > dC + 0.15) this.ev({ t: 'bump', x: p.x, y: p.y });
       else {
@@ -742,7 +755,7 @@ export class Game {
     p.owner = s; p.kind = 'loose'; p.target = null; p.from = null; p.cc = 0; p.oneTimer = false; p.fire = false;
     p.lastTeam = s.team; p.checked.clear();
     if (prevTeam !== s.team) this.chain = 0;
-    s.ai.hold = 0; s.ai.patience = 1.2 + this.rnd() * 1.0; s.settle = 0.45;
+    s.ai.hold = 0; s.ai.patience = 1.2 + this.rnd() * 1.0; s.settle = 0.6;   // a moment to settle a pass before a poke can take it
     if (this.phase === 'play' || this.phase === 'faceoff') {
       if (s.team === 0) this.setCtrl(s);
       else if (prevTeam !== s.team || this.ctrl.team === 0) {
@@ -887,6 +900,29 @@ export class Game {
     } else if (sweet && s.human) this.addHeat(50, 'Sweet spot', s.x, s.y);
   }
 
+  /** knocked loose: the stick slides off along the hit, spinning */
+  private dropStick(b: Skater, nx: number, ny: number, big: boolean) {
+    b.stickless = 1e-3;
+    const sp = big ? 9 : 6, side = this.rnd() - 0.5;
+    this.sticks.push({ owner: b, x: b.x + nx * 0.6, y: b.y + ny * 0.6, vx: nx * sp - ny * side * 4, vy: ny * sp + nx * side * 4, ang: b.face, spin: (this.rnd() - 0.5) * 18 });
+    this.ev({ t: 'stickDrop', x: b.x, y: b.y, big, team: b.team, id: b.id });
+  }
+
+  /** dropped sticks slide and spin to a stop; the owner gets his back by skating over it (or a spare after a while) */
+  private updateSticks(dt: number) {
+    for (const s of this.skaters) if (s.stickless > 0) s.stickless += dt;
+    for (let i = this.sticks.length - 1; i >= 0; i--) {
+      const k = this.sticks[i], o = k.owner;
+      const f = Math.exp(-2.2 * dt); k.vx *= f; k.vy *= f; k.spin *= Math.exp(-3 * dt);
+      k.x = clamp(k.x + k.vx * dt, -L + 0.5, L - 0.5); k.y = clamp(k.y + k.vy * dt, -W + 0.5, W - 0.5); k.ang += k.spin * dt;
+      const back = o.stun <= 0 && Math.hypot(o.x - k.x, o.y - k.y) < HIT.stickPickR;
+      if (back || o.stickless > HIT.STICK_SPARE || o.stickless <= 0) {
+        this.sticks.splice(i, 1);
+        if (o.stickless > 0) { o.stickless = 0; this.ev({ t: back ? 'stickPickup' : 'stickSpare', x: o.x, y: o.y, team: o.team }); }
+      }
+    }
+  }
+
   private hit(a: Skater, b: Skater) {
     a.hits.add(b.id);
     const sp = Math.hypot(a.vx, a.vy) || 1, nx = a.vx / sp, ny = a.vy / sp;
@@ -904,10 +940,12 @@ export class Game {
     }
     const wreck = this.opp.gimmick === 'wreck';
     if (wreck && b.team === 1 && !big) b.stun = 0.35;
-    else b.stun = (big ? 1.6 : 1.0) * (wreck && a.team === 1 ? 1.7 : 1) * (1 + 0.04 * this.tier(a.team));
+    else b.stun = (big ? HIT.stunBig : HIT.stunNormal) * (wreck && a.team === 1 ? 1.7 : 1) * (1 + 0.04 * this.tier(a.team));
     if (b.team === 0) this.coolHeat(b.human ? 120 : 60); // getting flattened costs Heat
     const kb = Math.max(sp * (big ? 1.3 : 1.05), big ? 13 : 9); // knockback: they fly, the checker drives through
     b.vx = nx * kb; b.vy = ny * kb; b.wind = -1; b.checkT = 0;
+    b.face = Math.atan2(-ny, -nx);   // turned to face the hit, so he goes down backward along it
+    if (b.stun > 0.5 && b.stickless <= 0 && (big || this.rnd() < HIT.dropNormal)) this.dropStick(b, nx, ny, big);
     this.dropPuck(b, nx * 5 + (this.rnd() - 0.5) * 6, ny * 5 + (this.rnd() - 0.5) * 6);
     b.pickupCd = 1;
     a.vx *= 0.8; a.vy *= 0.8;
@@ -919,7 +957,7 @@ export class Game {
       b.air = true; b.z = 0.1; b.vz = 11.25; b.stun = 0;
       b.vy = side * Math.max(9, (W + 2 - Math.abs(b.y)) / 0.72); b.vx = nx * 4;
     }
-    this.ev({ t: 'hit', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, big, dx: nx, dy: ny, team: a.team });
+    this.ev({ t: 'hit', x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, big, dx: nx, dy: ny, team: a.team, id: b.id });
     this.ev({ t: 'freeze', n: big ? 0.15 : 0.07 });
     this.ev({ t: 'shake', n: big ? 1.1 : b.human || a.human ? 0.5 : 0.3 });
     if (big) this.ev({ t: 'slowmo', n: 0.22 });
@@ -1078,18 +1116,18 @@ export class Game {
     if (p.kind === 'shot' && sp < 7) { p.kind = 'loose'; p.fire = false; }
 
     for (const s of this.skaters) {
-      if (!this.active(s) || s.pickupCd > 0) continue;
+      if (!this.active(s) || s.pickupCd > 0 || s.stickless > 0) continue;
       const d = Math.hypot(p.x - s.x, p.y - s.y);
       const reach = 1.05 * (1 + 0.25 * this.pw(s.team, 'magnet'));
       if (p.kind === 'pass') {
         if (s.team === p.lastTeam) {
           if (s === p.from) continue;
           if (d < (s === p.target ? reach + 0.25 : reach * 0.8)) { this.receive(p, s); return; }
-        } else if ((d < 1.15 || Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.8) && !p.checked.has(s.id)) {
+        } else if ((d < 0.95 || (s.stickless <= 0 && Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.65)) && !p.checked.has(s.id)) {
           p.checked.add(s.id);
-          const onBlade = Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.8;
+          const onBlade = s.stickless <= 0 && Math.hypot(p.x - s.stickX, p.y - s.stickY) < 0.65;
           if (p.lifted) { if (p.lastTeam === 0) this.addHeat(100, 'Saucer pass', s.x, s.y); continue; }
-          let ch = s.blockT > 0 ? 0.8 : onBlade ? 0.5 : 0.35;   // a blade laid in the lane takes it more often than a body
+          let ch = s.blockT > 0 ? 0.7 : onBlade ? 0.42 : 0.28;   // a blade laid in the lane takes it more often than a body
           ch *= Math.pow(0.5, this.pw(p.lastTeam, 'curve'));
           if (this.rnd() < ch) {
             this.gain(p, s);
@@ -1227,6 +1265,13 @@ export class Game {
     return this.optCache.mate;
   }
 
+  /** distance from a point to the nearest active teammate of s (not s) */
+  private mateDist(x: number, y: number, s: Skater): number {
+    let d = 99;
+    for (const o of this.skaters) if (o !== s && o.team === s.team && this.active(o)) d = Math.min(d, Math.hypot(o.x - x, o.y - y));
+    return d;
+  }
+
   /** distance from a point to the nearest active skater not on this team */
   private oppDist(x: number, y: number, team: number): number {
     let d = 99;
@@ -1311,14 +1356,14 @@ export class Game {
       } else {
         // wingers stretch their own lane ahead of the puck, then work the half-wall
         u = pu > BL ? GL - 11 + Math.cos(ph) * 1.5 : clamp(pu + 6, -GL + 8, GL - 9);
-        v = lane * (0.55 * W + Math.sin(ph) * 1.5);
+        v = lane * (0.7 * W + Math.sin(ph) * 1.2);   // stretched out along the boards: width opens the passing lanes
       }
     } else {
       const dz = pu < -BL; // puck in our defensive zone
       if (dz) {
         // box in front of the net: defenders low, forwards cover the points
         if (isD) { u = -GL + 5.5; v = lane === 0 ? pv * 0.3 : lane * 2.6; }
-        else { u = -GL + 12.5; v = (lane === 0 ? pv * 0.25 : lane * 0.38 * W); }
+        else { u = -GL + 12.5; v = (lane === 0 ? pv * 0.25 : lane * 0.45 * W); }   // forwards out to the points
       } else {
         // 1-2-2 back-check: forwards a step behind the puck, defenders keep a gap
         if (isD) { u = clamp(pu - 13, -GL + 6, BL); v = lane === 0 ? pv * 0.3 : lane * 0.3 * W; }
@@ -1334,7 +1379,14 @@ export class Game {
       if (m) { u = u * 0.55 + (m.x * dir - 2.6) * 0.45; v = v * 0.55 + m.y * dir * 0.45; }   // goal-side with a cushion, not in his pocket
     }
     // a small pull toward the puck keeps the shape alive without collapsing it
-    u = u * 0.88 + pu * 0.12; v = v * 0.88 + pv * 0.12;
+    u = u * 0.9 + pu * 0.1; v = v * 0.9 + pv * 0.1;
+    // spacing: no two teammates share ice; a spot within SPACE of a teammate is pushed off him (no mid-ice jams)
+    const SPACE = 5.5;
+    for (const m of this.skaters) {
+      if (m === s || m.team !== s.team || !this.active(m)) continue;
+      const mu = m.x * dir, mv = m.y * dir, du = u - mu, dv = v - mv, dd = Math.hypot(du, dv);
+      if (dd < SPACE && dd > 1e-3) { const k = (SPACE - dd) * 0.7 / dd; u += du * k; v += dv * k; }
+    }
     return [clamp(u * dir, -GL + 2, GL - 2), clamp(v * dir, -W + 1.5, W - 1.5)];
   }
 
@@ -1346,12 +1398,16 @@ export class Game {
     const sk = s.team === 1 ? this.skillLevel : 0.7;
     const isD = s.slot === 2 || s.slot === 4;
     let tx = s.x, ty = s.y;
-    s.ai.look = null;
+    s.ai.look = null; s.ai.faceOff = 0; s.ai.vel = null;
 
     // who has it: carrier, or the side a pass belongs to
     const ownTeam = car ? car.team : p.kind === 'pass' ? p.lastTeam : -1;
 
-    if (car === s) {
+    const myStick = s.stickless > 0 ? this.sticks.find(k => k.owner === s) : undefined;
+    if (myStick) {
+      // stick down: nothing else matters until it is back in hand
+      tx = myStick.x; ty = myStick.y; c.burst = Math.hypot(tx - s.x, ty - s.y) > 4;
+    } else if (car === s) {
       s.ai.hold += dt;
       const dg = Math.hypot(tgx - s.x, s.y), ahead = (tgx - s.x) * dir;
       const [no, nd] = this.nearestOpp(s);
@@ -1451,7 +1507,7 @@ export class Game {
           const gap = pinned ? 1.3 : 1.45 + 1.5 * far + clamp((csp - 6) * 0.1, 0, 0.5) - 0.35 * straight;
           // inside = toward the middle of the ice, perpendicular to the line to our net
           let ix = -uy, iy = ux; if (iy * -Math.sign(py || 1) < 0) { ix = -ix; iy = -iy; }
-          const shade = pinned ? 0.2 : 0.8;
+          const shade = pinned ? 0.2 : 1.15;   // stand on his inside shoulder: the open ice is toward the boards
           tx = px + ux * gap + ix * shade; ty = py + uy * gap + iy * shade;
           // stand him up at our blue line: don't back into the zone while he is still outside it
           const BLu = -0.3 * L, carU = car.x * dir;
@@ -1472,6 +1528,16 @@ export class Game {
           // anyone can backpedal, pivot and skate with him instead
           const away = (car.vx * ux + car.vy * uy) > 9.5;
           s.ai.look = behind || away ? null : [car.x, car.y];
+          // Angle control: not chest to chest. Hips turn about 40 degrees toward the boards side, so he skates a
+          // diagonal back toward the net, the inside lane stays shut behind his body and stick, and the carrier's
+          // only way past is the outside. Head and chest keep looking at the carrier (renderer's upper-body layer).
+          if (s.ai.look) {
+            const a0 = Math.atan2(car.y - s.y, car.x - s.x), ao = Math.atan2(-iy, -ix);
+            let da = ao - a0; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+            s.ai.faceOff = clamp(da, -0.7, 0.7) * (pinned ? 0.4 : 1);
+            // match his speed along the retreat instead of stop-start: his (lagged) velocity plus a pull to the gap point
+            s.ai.vel = [s.ai.rvx + (tx - s.x) * 2.6, s.ai.rvy + (ty - s.y) * 2.6];
+          }
           // Engage: when he comes into reach (he skates into the gap, gets held at the line, slows down, or is in
           // tight), step up and go for the puck with the stick, then settle back into the gap.
           s.ai.stab = (s.ai.stab ?? 0) - dt;
@@ -1489,7 +1555,7 @@ export class Game {
           // only commit when the stick can reach the puck, or with real closing speed for a hit
           const closing = ((car.x - s.x) * (s.vx - car.vx) + (car.y - s.y) * (s.vy - car.vy)) / (dS || 1);
           const dPk = Math.hypot(p.x - s.x, p.y - s.y);
-          const poke = dPk < 1.6 && dPk < dS + 0.15 && dS < 2.4 && (s.ai.stab ?? 0) > -0.25;
+          const poke = dPk < 1.45 && dPk < dS + 0.15 && dS < 2.3 && (s.ai.stab ?? 0) > -0.25;
           const nearNet = Math.hypot(-dir * GL - car.x, car.y) < 26;
           const body = (s.ai.pinned && dS < 2.4 && closing > 2.5) || (nearNet && dS < 3.2 && closing > 5.5) || (dS < 2.6 && closing > 8);
           if ((poke || body) && s.checkCd <= 0) {
@@ -1518,7 +1584,8 @@ export class Game {
               for (const du of [-3, 0, 3]) for (const dv of [-5, -2.5, 0, 2.5, 5]) {
                 const cx = clamp(tx + du * dir, -GL + 2, GL - 2), cy = clamp(ty + dv, -W + 1.5, W - 1.5);
                 const sc = Math.min(this.laneGap(car.x, car.y, cx, cy, s.team), 3) + Math.min(this.oppDist(cx, cy, s.team), 5) * 0.6
-                  - Math.hypot(du, dv) * 0.12 + du * 0.04 + (du === (s.ai.openU ?? 0) && dv === (s.ai.openV ?? 0) ? 0.3 : 0);
+                  - Math.hypot(du, dv) * 0.12 + du * 0.04 + (du === (s.ai.openU ?? 0) && dv === (s.ai.openV ?? 0) ? 0.3 : 0)
+                  - Math.max(0, 6 - this.mateDist(cx, cy, s)) * 0.45;   // keep the triangle wide: away from teammates
                 if (sc > bs) { bs = sc; bu = du; bv = dv; }
               }
               s.ai.openU = bu; s.ai.openV = bv; s.ai.openT = 0.45 + this.rnd() * 0.3;
@@ -1563,7 +1630,11 @@ export class Game {
       }
     }
     const dx = tx - s.x, dy = ty - s.y, d = Math.hypot(dx, dy);
-    if (d > 0.35) {
+    if (s.ai.vel && !c.burst && (s.ai.stab ?? 0) <= 0) {
+      // velocity matching (angle-control defender): skate the wanted velocity; ease off when already going faster
+      const [vx, vy] = s.ai.vel, vl = Math.hypot(vx, vy), sp = Math.hypot(s.vx, s.vy);
+      if (vl > 0.4 && !(sp > vl * 1.25 && (s.vx * vx + s.vy * vy) / (sp * vl || 1) > 0.8)) { c.mx = vx / vl; c.my = vy / vl; }
+    } else if (d > 0.35) {
       const sp = Math.hypot(s.vx, s.vy);
       // ease into a spot instead of overshooting it
       if (!(d < 1.6 && sp > d * 4.5)) { c.mx = dx / d; c.my = dy / d; }
@@ -1579,7 +1650,8 @@ export class Game {
       phase: this.phase, score: this.score.slice(), clock: this.clock, ot: this.ot, foLive: this.foLive,
       heat: this.heat, tier: this.mult() - 1, fire: this.fireT, style: this.style, winner: this.winner,
       puck: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, owner: p.owner ? p.owner.id : -1, kind: p.kind, target: p.target ? p.target.id : -1 },
-      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, spin: s.spinT > 0, poke: s.pokeT > 0, gassed: s.gassed, slow: s.slow })),
+      skaters: this.skaters.map(s => ({ id: s.id, team: s.team, x: s.x, y: s.y, vx: s.vx, vy: s.vy, face: s.face, ctrl: s === this.ctrl, stun: s.stun, ok: this.active(s), wind: s.wind, stamina: s.stamina, sprint: s.sprint, spin: s.spinT > 0, poke: s.pokeT > 0, stickless: s.stickless, gassed: s.gassed, slow: s.slow })),
+      sticks: this.sticks.map(k => ({ owner: k.owner.id, x: k.x, y: k.y, ang: k.ang })),
       stats: this.stats,
       goalies: this.goalies.map(g => ({ team: g.team, x: g.x, y: g.y })),
     };
