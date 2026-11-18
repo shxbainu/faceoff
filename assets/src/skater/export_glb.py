@@ -60,7 +60,12 @@ def bake_texture():
     try: sc.render.engine = 'CYCLES'
     except TypeError: pass
     sc.cycles.samples = 4; sc.render.bake.use_pass_direct = False; sc.render.bake.use_pass_indirect = False
-    sc.render.bake.margin = 4
+    # Pad every UV island with its own colour well past its edge. The space between islands is black, and with a 4 px
+    # margin the mipmaps pulled that black into the island edges: dark seams on the jersey at game distance.
+    # Adjacent-faces margins continue the colour across the seam (falls back to plain extend).
+    sc.render.bake.margin = 32
+    types = [i.identifier for i in type(sc.render.bake).bl_rna.properties['margin_type'].enum_items]
+    sc.render.bake.margin_type = 'ADJACENT_FACES' if 'ADJACENT_FACES' in types else types[-1]
     select_only([out], out)
     bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, use_clear=True)
     for m, n in nodes: m.node_tree.nodes.remove(n)
@@ -88,6 +93,11 @@ def bake_clips():
     actions = []; orig = arm.animation_data.action
     for name, c in clips.items():
         arm.animation_data.action = orig     # always sample the authored timeline, not the last bake
+        # The IK-driven bones are not keyed, so each bake leaves its last pose on them, and Blender's IK starts from
+        # the current pose: after the save clips before it, the blocker arm in g_pad_l settled 8 cm short of its
+        # target. Start every clip from the rest pose on those bones (every clip then bakes to the live pose).
+        for pb in arm.pose.bones:
+            if pb.name.startswith(('upperarm', 'lowerarm', 'thigh', 'calf', 'hand')): pb.rotation_quaternion = (1, 0, 0, 0); pb.location = (0, 0, 0)
         bpy.ops.nla.bake(frame_start=c['start'], frame_end=c['end'], step=1, only_selected=False,
                          visual_keying=True, clear_constraints=False, clear_parents=False,
                          use_current_action=False, bake_types={'POSE'})

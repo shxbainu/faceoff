@@ -50,8 +50,11 @@ def blade_on_ice(floor=0.012):
     if low < floor:
         ctl.matrix_world = Matrix.Translation(Vector((0, 0, floor - low))) @ ctl.matrix_world; vl.update()
 
-def key(f):
-    blade_on_ice()
+def key(f, goalie=False):
+    # goalie clips: no skater-stick ice check. The skater stick is hidden on a goalie, and lifting the stick control
+    # for it raised both hands about 0.5 m (to head height). The goalie stick is kept off the ice in
+    # import_goalie_gear.py instead.
+    if not goalie: blade_on_ice()
     for n in BODY:
         P[n].keyframe_insert('location', frame=f); P[n].keyframe_insert('rotation_quaternion', frame=f)
     for o in (ctl, *FT.values(), *HT.values()):
@@ -62,7 +65,7 @@ READY_OBJ = {o.name: o.matrix_basis.copy() for o in (ctl, *FT.values(), *HT.valu
 CLIPS = {}
 def clip(name, start, length, loop, poser, keys):
     for k in keys:
-        reset(); poser(k / length if loop else k / length); key(start + k)
+        reset(); poser(k / length if loop else k / length); key(start + k, name == 'goalie' or name.startswith('g_'))
     CLIPS[name] = {'start': start, 'end': start + length - (1 if loop else 0), 'loop': loop}
     return start + length + 6
 
@@ -243,23 +246,52 @@ def check(t):
     stick(rot=[((0, 0, 1), 15 * drive)], move=(0.05 * drive, -0.1 * drive, 0.05 * drive))
 f = clip('check', f, 20, False, check, [0, 4, 7, 10, 12, 16, 20])
 
-# ---- goalie: wide, low stance, stick flat on the ice in front, a little side-to-side shuffle ----
-# ---- goalie. The blocker (right) hand holds the stick alone; the glove (left) hand is keyed on its own, off the
-# stick (its IK target is moved directly). Stance: wide, deep knee bend, chest up, glove open beside the hip,
-# stick blade flat on the ice in front of the five-hole. Saves start from the stance and return to it. ----
-def glove_at(p):
-    o = HT['l']; Mw = o.matrix_world.copy(); Mw.translation = Vector(p); o.matrix_world = Mw; vl.update()
+# ---- goalie. Each hand target is keyed in world space (position and rotation), not through the stick control:
+# the blocker (right) hand holds the goalie stick at the top of its paddle (the stick is fitted to that hand in
+# import_goalie_gear.py), the glove (left) hand is open to the shooter. Stance: wide, knees bent, chest forward,
+# blocker low beside the right pad, glove at the hip, out to the side. Saves start from the stance and return to it. ----
 def smooth(u): u = min(1.0, max(0.0, u)); return u * u * (3 - 2 * u)
+def _frame(Y, X):
+    Y = Y.normalized(); X = (X - Y * X.dot(Y)).normalized(); Z = X.cross(Y)
+    return Matrix((X, Y, Z)).transposed()
+WRIST_MAX = math.radians(50)
+def hand_at(s, p, fingers, back):
+    """put hand target s at world point p. fingers: where the fingers should point; back: where the back of the hand
+    should face. The finger direction is pulled toward the forearm so the wrist bends at most WRIST_MAX (a real wrist
+    goes to about 70-80 degrees). Palm normal: +X of the left hand bone, -X of the right (read from the ready pose)."""
+    o = HT[s]; Mw = o.matrix_world.copy(); Mw.translation = Vector(p); o.matrix_world = Mw; vl.update()
+    fa = (W @ P['lowerarm_' + s].tail - W @ P['lowerarm_' + s].head).normalized()
+    d = Vector(fingers).normalized(); a = fa.angle(d)
+    if a > WRIST_MAX: d = fa.slerp(d, WRIST_MAX / a).normalized()
+    Xb = Vector(back) * (-1 if s == 'l' else 1)   # bone X: palm side on the left hand, back of the hand on the right
+    R = _frame(d, Xb)
+    o.matrix_world = Matrix.Translation(Vector(p)) @ R.to_4x4(); vl.update()
+FWD_ = (0, -1, 0)
+def glove_at(p, up=0.0):
+    # glove open to the shooter: fingers up (and out to his left), back of the hand toward himself
+    hand_at('l', p, (0.3, -0.25 - 0.3 * up, 1.0), (0, 1, 0))
+def blocker_hand(p):
+    # blocker hand: fingers forward and in around the stick, back of the hand (the blocker board) to the shooter
+    hand_at('r', p, (0.35, -1.0, -0.2), (-0.3, -1, 0))
+R_BLK = None   # the blocker hand's stance rotation (the goalie stick is fitted to it)
+def blocker_at(p, flat=0.0, yaw=0.0):
+    """blocker hand at p, turned from its stance rotation: flat (degrees) lays the stick's paddle flatter toward the
+    ice (negative stands it up), yaw turns it about the vertical. The stick is fixed in this hand, so keying the hand
+    this way keeps the stick at a goalie's angle in every save instead of swinging with the forearm."""
+    R = Matrix.Rotation(math.radians(yaw), 3, 'Z') @ Matrix.Rotation(math.radians(-flat), 3, 'X') @ R_BLK
+    o = HT['r']; o.matrix_world = Matrix.Translation(Vector(p)) @ R.to_4x4(); vl.update()
 def stance(shift=0.0, low=0.0):
-    # feet a touch forward and hips not too low: shins stand fairly upright, like a real goalie's (pads square on)
+    # feet a touch forward and hips not too low: shins stand fairly upright, like a real goalie's (pads square on);
+    # the chest leans forward over the knees so the hands reach down in front of the pads
     foot('l', dx=0.11, dy=-0.1, yaw=10); foot('r', dx=-0.11, dy=-0.1, yaw=-10)
-    bmove('pelvis', (shift, 0.02, -0.11 - low)); brot('spine_01', 'X', 8); brot('Head', 'X', -8)
-GSTICK = ((-0.30, -0.30, 0.55), (0.06, -0.55, -0.83))
+    bmove('pelvis', (shift, 0.02, -0.11 - low)); brot('spine_01', 'X', 10); brot('Head', 'X', -10)
+BLK = Vector((-0.36, -0.42, 0.52)); GLV = Vector((0.40, -0.40, 0.66))   # stance: blocker hand, glove hand
+reset(); stance(); blocker_hand(BLK); R_BLK = HT['r'].matrix_world.to_3x3().normalized(); reset()
 def goalie(t):
     sw = S(TAU * t)
     stance(0.015 * sw)
-    stick_pose(*GSTICK, 0.0)
-    glove_at((0.42, -0.30, 0.62 + 0.01 * sw))
+    blocker_at(BLK + Vector((0.015 * sw, 0, 0)))
+    glove_at(GLV + Vector((0.015 * sw, 0, 0.01 * sw)))
 f = clip('goalie', f, 24, True, goalie, range(0, 25, 6))
 
 def env(t, a=0.22, b=0.65):   # 0 -> 1 fast, hold, back to 0 by the end
@@ -270,10 +302,9 @@ def butterfly(t):
     k = env(t)
     # feet go back and out behind the knees (shins flared), hips drop so the knees come down together in front
     foot('l', dx=0.11 + 0.14 * k, dy=0.44 * k, yaw=10 + 30 * k); foot('r', dx=-0.11 - 0.14 * k, dy=0.44 * k, yaw=-10 - 30 * k)
-    bmove('pelvis', (0, 0.02 + 0.12 * k, -0.16 - 0.40 * k)); brot('spine_01', 'X', 6 - 8 * k); brot('Head', 'X', -8 - 4 * k)
-    G, d = GSTICK
-    stick_pose((G[0] + 0.08 * k, G[1] - 0.06 * k, G[2] - 0.2 * k), (d[0] + 0.3 * k, d[1], d[2]), 0.0)
-    glove_at((0.42 + 0.06 * k, -0.30 - 0.04 * k, 0.62 - 0.12 * k))
+    bmove('pelvis', (0, 0.02 + 0.12 * k, -0.16 - 0.40 * k)); brot('spine_01', 'X', 8 - 8 * k); brot('Head', 'X', -10 - 2 * k)
+    blocker_at(BLK + Vector((0.14 * k, 0.04 * k, -0.30 * k)), flat=25 * k)
+    glove_at(GLV + Vector((0.06 * k, -0.02 * k, -0.08 * k)), up=0.3 * k)
 f = clip('g_butterfly', f, 24, False, butterfly, range(0, 25, 2))
 
 # glove save: the glove snaps up and out to his left, weight goes onto the left skate
@@ -282,8 +313,8 @@ def gsave(t):
     stance(0.12 * k)
     foot('l', dx=0.12 * k)
     brot('spine_02', 'Y', 10 * k)
-    stick_pose(*GSTICK, 0.0)
-    glove_at((0.42 + 0.28 * k, -0.30 - 0.12 * k, 0.62 + 0.42 * k))
+    blocker_at(BLK + Vector((0.12 * k, 0, 0)))
+    glove_at(GLV + Vector((0.30 * k, -0.08 * k, 0.48 * k)), up=0.6 * k)
 f = clip('g_glove', f, 20, False, gsave, range(0, 21, 2))
 
 # blocker save: the stick hand punches out to his right, blocker square to the shot
@@ -292,9 +323,8 @@ def bsave(t):
     stance(-0.12 * k)
     foot('r', dx=-0.12 * k)
     brot('spine_02', 'Y', -10 * k)
-    G, d = GSTICK
-    stick_pose((G[0] - 0.28 * k, G[1] - 0.10 * k, G[2] + 0.25 * k), (d[0] - 0.12 * k, d[1], d[2]), 0.0)   # stick stays pointing down: it lifts, never digs in
-    glove_at((0.42, -0.30, 0.62))
+    blocker_at(BLK + Vector((-0.26 * k, -0.06 * k, 0.30 * k)), flat=-10 * k)
+    glove_at(GLV + Vector((-0.12 * k, 0, 0)))
 f = clip('g_blocker', f, 20, False, bsave, range(0, 21, 2))
 
 # pad saves: one leg kicks straight out along the ice (the pad flat to the shot), the other knee drops
@@ -303,10 +333,10 @@ def padsave(t, sx):
     s_out, s_in = ('l', 'r') if sx > 0 else ('r', 'l')
     foot(s_out, dx=sx * (0.11 + 0.42 * k), dy=-0.05 * k, yaw=sx * (10 + 40 * k))
     foot(s_in, dx=-sx * 0.11, dy=0.12 * k, yaw=-sx * 10)
-    bmove('pelvis', (sx * 0.14 * k, 0.02, -0.16 - 0.22 * k)); brot('spine_01', 'X', 6); brot('Head', 'X', -8)
+    bmove('pelvis', (sx * 0.14 * k, 0.02, -0.16 - 0.22 * k)); brot('spine_01', 'X', 10); brot('Head', 'X', -10)
     brot('spine_02', 'Y', sx * 8 * k)
-    stick_pose(*GSTICK, 0.0)
-    glove_at((0.42 + (0.1 * k if sx > 0 else 0), -0.30, 0.62 - 0.1 * k))
+    blocker_at(BLK + Vector((sx * 0.14 * k, 0, -0.18 * k)), flat=15 * k)
+    glove_at(GLV + Vector((sx * 0.14 * k, 0, -0.14 * k)))
 f = clip('g_pad_l', f, 20, False, lambda t: padsave(t, 1), range(0, 21, 2))
 f = clip('g_pad_r', f, 20, False, lambda t: padsave(t, -1), range(0, 21, 2))
 
@@ -327,4 +357,15 @@ for fr in range(1, f, 2):
         miss = ((W @ P['lowerarm_' + s].tail) - HT[s].matrix_world.translation).length * 100
         worst['hand_miss_cm'] = max(worst['hand_miss_cm'], round(miss, 1))
 sc.frame_set(1)
+# goalie wrists: bend between the forearm and hand bones (a real wrist reaches about 70-80 degrees)
+gw = {}
+for c in [c for c in CLIPS if c == 'goalie' or c.startswith('g_')]:
+    for fr in range(CLIPS[c]['start'], CLIPS[c]['end'] + 1, 2):
+        sc.frame_set(fr)
+        for s in 'lr':
+            fa = (W @ P['lowerarm_' + s].matrix).col[1].to_3d(); hb = (W @ P['hand_' + s].matrix).col[1].to_3d()
+            miss = ((W @ P['lowerarm_' + s].tail) - HT[s].matrix_world.translation).length * 100
+            k_ = c + '_' + s; gw[k_] = max(gw.get(k_, (0, 0))[0], round(math.degrees(fa.angle(hb)))), max(gw.get(k_, (0, 0))[1], round(miss, 1))
+sc.frame_set(1)
+print('goalie wrist bend deg / hand miss cm', gw)
 print('clips', CLIPS, 'worst', worst)

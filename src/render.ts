@@ -2,7 +2,7 @@ import { FollowCam } from './camera';
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute } from 'three/tsl';
+import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute, float, step } from 'three/tsl';
 import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater, PR } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
@@ -106,6 +106,7 @@ export class View {
   private teamHex: [number, number][] = [[0xffffff, 0x222222], [0xffffff, 0x222222]];
   private helmetMat: THREE.MeshToonNodeMaterial[] = [];
   private gearBodyMat: THREE.MeshToonNodeMaterial[] = [];
+  private gearTrimMat: THREE.MeshToonNodeMaterial[] = [];
   private outfitMats: THREE.MeshToonNodeMaterial[] = []; private goalieOutfit: THREE.MeshToonNodeMaterial[] = []; private goalieInk: THREE.MeshBasicNodeMaterial | null = null;
   assetsReady: Promise<void> = Promise.resolve();
   private hemi!: THREE.HemisphereLight; private sun!: THREE.DirectionalLight; private lightK = 1;
@@ -387,10 +388,10 @@ export class View {
 
   /** toon material that also inks contours: wherever the surface turns away from the camera it goes to ink,
    *  which outlines arms, helmet and breezers inside the silhouette, not just around it */
-  private static inkToon(params: THREE.MeshToonMaterialParameters): THREE.MeshToonNodeMaterial {
+  private static inkToon(params: THREE.MeshToonMaterialParameters, band: [number, number] = [0.1, 0.24]): THREE.MeshToonNodeMaterial {
     const m = new THREE.MeshToonNodeMaterial(params);
     const facing = dot(normalView, positionViewDirection).abs();
-    const keep = smoothstep(0.1, 0.24, facing);   // edge ink on the surface itself: outlines without poking through
+    const keep = smoothstep(band[0], band[1], facing);   // edge ink on the surface itself: outlines without poking through
     const ink = new THREE.Color(INK);
     if (!DBG.has('noink')) m.colorNode = mix(vec3(ink.r, ink.g, ink.b), materialColor, keep);
     return m;
@@ -406,7 +407,57 @@ export class View {
     const si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight'), n = g.getAttribute('position').count;
     const out = new Float32Array(n);
     for (let i = 0; i < n; i++) { let b = 0; for (let k = 0; k < 4; k++) b += per[si.getComponent(i, k)] * sw.getComponent(i, k); out[i] = Math.min(1, b); }
+    // Where the arm rests against the torso, both surfaces are pushed out along their own normals, toward each other,
+    // so they cut into each other and the outline shell shows along the cut (a dark line across the chest). The
+    // inner side of the arm and the sides of the torso are pushed out less. (Bind pose: the body's midline is x = 0.)
+    {
+      const p = g.getAttribute('position'), nr = g.getAttribute('normal');
+      const armBone = m.skeleton.bones.map(b => /^(upperarm|lowerarm)/.test(b.name) ? 1 : 0);
+      const trunkBone = m.skeleton.bones.map(b => /^(spine|clavicle|pelvis)/.test(b.name) ? 1 : 0);
+      const ss = (a: number, b: number, x: number) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+      for (let i = 0; i < n; i++) {
+        let arm = 0, trunk = 0;
+        for (let k = 0; k < 4; k++) { const j = si.getComponent(i, k), w = sw.getComponent(i, k); arm += armBone[j] * w; trunk += trunkBone[j] * w; }
+        const px = p.getX(i), nx = nr.getX(i);
+        if (arm > 0.5 && Math.abs(px) > 1e-3) out[i] *= 1 - 0.65 * ss(0.2, 0.6, -Math.sign(px) * nx);   // inner arm faces the midline
+        if (trunk > 0.5) out[i] *= 1 - 0.45 * ss(0.45, 0.8, Math.abs(nx));                             // flanks face the arms
+      }
+    }
+    // Smooth it over the surface: a sharp step in bulk (spine_01 0.45 next to spine_02 1, the pelvis 0.35) creases
+    // the inflated jersey, and the outline shell pokes out of the crease as a dark slash. Vertices that share a
+    // position (UV seams) are one point here.
+    const p = g.getAttribute('position'), idx = g.getIndex();
+    const key = (i: number) => `${Math.round(p.getX(i) * 2000)},${Math.round(p.getY(i) * 2000)},${Math.round(p.getZ(i) * 2000)}`;
+    const ids = new Map<string, number>(), vid = new Int32Array(n);
+    for (let i = 0; i < n; i++) { const k = key(i); let v = ids.get(k); if (v === undefined) { v = ids.size; ids.set(k, v); } vid[i] = v; }
+    const nv = ids.size, nb: number[][] = Array.from({ length: nv }, () => []);
+    const tri = idx ? idx.count : n;
+    for (let t = 0; t < tri; t += 3) {
+      const a = vid[idx ? idx.getX(t) : t], b = vid[idx ? idx.getX(t + 1) : t + 1], c = vid[idx ? idx.getX(t + 2) : t + 2];
+      nb[a].push(b, c); nb[b].push(a, c); nb[c].push(a, b);
+    }
+    let val = new Float32Array(nv); const cnt = new Float32Array(nv);
+    for (let i = 0; i < n; i++) { val[vid[i]] += out[i]; cnt[vid[i]]++; }
+    for (let j = 0; j < nv; j++) val[j] /= cnt[j] || 1;
+    for (let pass = 0; pass < 4; pass++) {
+      const nx = new Float32Array(nv);
+      for (let j = 0; j < nv; j++) { let s = val[j], c = 1; for (const q of nb[j]) { s += val[q]; c++; } nx[j] = s / c; }
+      val = nx;
+    }
+    for (let i = 0; i < n; i++) out[i] = val[vid[i]];
     g.setAttribute('bulk', new THREE.BufferAttribute(out, 1));
+    // the shins, knees and boots stand behind the leg pads; pulled in a little they stay behind the pads when the
+    // knee bends (the 'gleg' weight: calf, foot and ball bones, and half the thigh)
+    const legBone = m.skeleton.bones.map(b => /^(calf|foot|ball)_/.test(b.name) ? 1 : /^thigh_/.test(b.name) ? 0.5 : 0);
+    const leg = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let l = 0; for (let k = 0; k < 4; k++) l += legBone[si.getComponent(i, k)] * sw.getComponent(i, k); leg[i] = Math.min(1, l); }
+    g.setAttribute('gleg', new THREE.BufferAttribute(leg, 1));
+    // the bare hands sit inside the blocker and catching glove; on a goalie they are not drawn (the 'ghand' weight:
+    // hand and finger bones)
+    const handBone = m.skeleton.bones.map(b => /^(hand|thumb|index|middle|ring|pinky)_/.test(b.name) ? 1 : 0);
+    const hand = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let h = 0; for (let k = 0; k < 4; k++) h += handBone[si.getComponent(i, k)] * sw.getComponent(i, k); hand[i] = Math.min(1, h); }
+    g.setAttribute('ghand', new THREE.BufferAttribute(hand, 1));
   }
 
   /** Per-vertex outline-shell thickness (0..1), stored as the 'outlineW' attribute. The inflated shell pokes
@@ -471,12 +522,22 @@ export class View {
     // Goalies wear the same jersey, filled out over chest protector and arm pads: the jersey itself is pushed out
     // along its normals by the per-vertex 'bulk' attribute (torso and arms only, see goalieBulk), so he stays a
     // human shape, just bigger up top, instead of having shapes stuck on.
-    const BULK = 0.05;
-    const bulkPos = positionLocal.add(normalLocal.mul(attribute('bulk', 'float').mul(BULK)));
+    const BULK = 0.05, LEG_IN = 0.02;   // legs pulled in 2 cm (behind the pads)
+    const goaliePush = attribute('bulk', 'float').mul(BULK).sub(attribute('gleg', 'float').mul(LEG_IN));
+    // A goalie's bare hands are always inside the blocker and catching glove, so they are not drawn at all (the 'ghand'
+    // weight: hand and finger bones): pulled in, the knuckles still showed through the glove's pocket.
+    const noHands = float(1).sub(step(0.5, attribute('ghand', 'float')));
+    const bulkPos = positionLocal.add(normalLocal.mul(goaliePush));
     this.outfitMats = outfitMats;
-    this.goalieOutfit = outfitMats.map(m => { const g = View.inkToon({ map: m.map, gradientMap: ramp }); g.positionNode = bulkPos; return g; });
+    this.goalieOutfit = outfitMats.map(m => { const g = View.inkToon({ map: m.map, gradientMap: ramp }); g.positionNode = bulkPos; g.opacityNode = noHands; g.alphaTest = 0.5; return g; });
     this.helmetMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
-    this.gearBodyMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][0]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }));
+    // Goalie gear is hard-surface (panels, split normals at creases): it has no outline shell and only a narrow
+    // contour band, so just faces seen nearly edge-on ink: lines at panel edges and silhouettes. With the body's
+    // wide band, whole panels turned a little from the camera went black.
+    const GEAR_INK: [number, number] = [0.03, 0.09];
+    this.gearBodyMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][0]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }, GEAR_INK));
+    this.gearTrimMat = [0, 1].map(t => View.inkToon({ color: new THREE.Color(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25), gradientMap: ramp }, GEAR_INK));
+    let gearDarkMat: THREE.Material | null = null;
     // ?hulldbg paints the shell magenta so any poke-through is easy to spot in test frames
     const ink = new THREE.MeshBasicNodeMaterial({ color: DBG.has('hulldbg') ? 0xff00ff : INK, side: THREE.BackSide,
       // pushed slightly back in depth: a sliver of shell just in front of the body loses to the body
@@ -484,7 +545,8 @@ export class View {
     ink.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W)));
     // the goalie's outline shell follows the bulked jersey
     this.goalieInk = ink.clone() as THREE.MeshBasicNodeMaterial;
-    this.goalieInk.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W).add(attribute('bulk', 'float').mul(BULK))));
+    this.goalieInk.positionNode = positionLocal.add(normalLocal.mul(attribute('outlineW', 'float').mul(INK_W).add(goaliePush)));
+    this.goalieInk.opacityNode = noHands; this.goalieInk.alphaTest = 0.5;
     const toon = new Map<THREE.Material, THREE.Material>();
     const toToon = (m: THREE.Material) => {
       let t = toon.get(m);
@@ -507,12 +569,17 @@ export class View {
         if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) { m.material = outfitMats[team]; v.outfit = m as THREE.SkinnedMesh; View.goalieBulk(m as THREE.SkinnedMesh); }
         else if (name.startsWith('helmet')) m.material = this.helmetMat[team];
         else if (name === 'gear_body') m.material = this.gearBodyMat[team];   // goalie gear: white takes the team colour
-        else if (name === 'gear_trim') m.material = this.helmetMat[team];     // and red the trim, like the helmets
+        else if (name === 'gear_trim') m.material = this.gearTrimMat[team];   // and red the trim, like the helmets
+        else if (name === 'gear_dark') m.material = gearDarkMat ??= View.inkToon({ color: (m.material as THREE.MeshStandardMaterial).color, gradientMap: ramp }, GEAR_INK);
         else m.material = toToon(m.material as THREE.Material);
         m.frustumCulled = false;
         // no outline shell on the visor, the thin skate blades or the goalie's cage bars: there it pokes through
         // as dark spikes (the stick is a plain box, so its shell is clean)
-        if (name.startsWith('visor') || name.startsWith('blade') || o.name.startsWith('g_cage')) return;
+        // Nor on any goalie gear (g_*: pads, blocker, glove, mask, cage, stick): hard props built from panels, where a
+        // shell shows through holes and gaps or pokes through the panel over it as black shards. Their outlines are
+        // the contour ink on their split normals (GEAR_INK).
+        const gear = /^g_/.test(o.name) || /^g_/.test(o.parent?.name ?? '');
+        if (name.startsWith('visor') || name.startsWith('blade') || gear) return;
         const sk = m as THREE.SkinnedMesh;
         View.outlineWeights(m, sk.isSkinnedMesh && !name.startsWith('helmet') ? 'body' : name.startsWith('helmet') ? 'helmet' : 'rigid');
         let hull: THREE.Mesh;
@@ -1031,6 +1098,7 @@ export class View {
     this.tintPlayers();
     this.helmetMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25));
     this.gearBodyMat.forEach((m, t) => m.color.setHex(this.teamHex[t][0]).lerp(new THREE.Color(0x8a8f99), 0.25));
+    this.gearTrimMat.forEach((m, t) => m.color.setHex(this.teamHex[t][1]).lerp(new THREE.Color(0x8a8f99), 0.25));
     this.gems.forEach((g, i) => {
       g.visible = i < gemColors.length;
       if (g.visible) (g.material as THREE.MeshBasicMaterial).color.setHex(gemColors[i]);
