@@ -251,8 +251,9 @@ def glove_at(p):
     o = HT['l']; Mw = o.matrix_world.copy(); Mw.translation = Vector(p); o.matrix_world = Mw; vl.update()
 def smooth(u): u = min(1.0, max(0.0, u)); return u * u * (3 - 2 * u)
 def stance(shift=0.0, low=0.0):
-    foot('l', dx=0.11, yaw=10); foot('r', dx=-0.11, yaw=-10)
-    bmove('pelvis', (shift, 0.02, -0.16 - low)); brot('spine_01', 'X', 6); brot('Head', 'X', -8)
+    # feet a touch forward and hips not too low: shins stand fairly upright, like a real goalie's (pads square on)
+    foot('l', dx=0.11, dy=-0.1, yaw=10); foot('r', dx=-0.11, dy=-0.1, yaw=-10)
+    bmove('pelvis', (shift, 0.02, -0.11 - low)); brot('spine_01', 'X', 8); brot('Head', 'X', -8)
 GSTICK = ((-0.30, -0.30, 0.55), (0.06, -0.55, -0.83))
 def goalie(t):
     sw = S(TAU * t)
@@ -292,7 +293,7 @@ def bsave(t):
     foot('r', dx=-0.12 * k)
     brot('spine_02', 'Y', -10 * k)
     G, d = GSTICK
-    stick_pose((G[0] - 0.28 * k, G[1] - 0.10 * k, G[2] + 0.25 * k), (d[0] - 0.35 * k, d[1], d[2] + 0.2 * k), 0.0)
+    stick_pose((G[0] - 0.28 * k, G[1] - 0.10 * k, G[2] + 0.25 * k), (d[0] - 0.12 * k, d[1], d[2]), 0.0)   # stick stays pointing down: it lifts, never digs in
     glove_at((0.42, -0.30, 0.62))
 f = clip('g_blocker', f, 20, False, bsave, range(0, 21, 2))
 

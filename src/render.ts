@@ -531,7 +531,7 @@ export class View {
       // goalie gear (g_* pieces) vs the skater's helmet, visor and stick: one or the other is shown
       v.gear = []; v.skaterKit = [];
       model.traverse(o => {
-        if ((o as THREE.Mesh).isMesh && o.name.startsWith('g_')) v.gear!.push(o);
+        if (o.name.startsWith('g_')) v.gear!.push(o);   // a gear piece: a mesh, or a group of meshes (several materials)
         else if (((o as THREE.Mesh).isMesh && /^(helmet|visor)/.test(o.name)) || (o.name === 'stick' && o.parent?.name === 'hand_r')) v.skaterKit!.push(o);
       });
       this.setGoalieLook(v, false);

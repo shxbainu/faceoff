@@ -17,13 +17,15 @@ World scale: 1 unit ≈ 1 m. X runs along the rink, Z across it, Y up. Rink half
 | Players (6 skaters) | Yes | `buildActors()` | 254–290 | About 17 box meshes each plus an icosahedron helmet: skates, legs, hips, leaning torso, waist band, shoulder pads, arms, gloves, visor, stick shaft and blade. About 2.25 units tall, faces +X, collision radius `SR = 0.7`. | Team colours come from two shared materials per team (`body`, `trim`) recoloured in `setTeams()` (332–341). The GLB must keep a tintable jersey and trim. No skeleton or animation today: the whole body group is tilted for lean, checks, shot wind-up, knockdown and air spin in `frame()` (420–439). |
 | Player stick | Yes, part of the player | `buildActors()` | 265–266, 285–286 | Box shaft 1.5 long and box blade, fixed to the body. | Swap together with the player, or as its own prop if the player model has none. |
 | Player shadow | Yes | `buildActors()` | 267–268, 287 | Flat dark circle under each skater. | Stays procedural. |
-| Goalie | **No** | none | n/a | There is no goalie. By design the deepest defender gets an automatic save reach (DESIGN.md). | Adding a goalie model would change gameplay, so it is out of scope unless you say otherwise. |
+| Goalie | **Yes** | goalie gear on the skater rig | CC-BY 4.0 (Sketchfab) | Real gear models fitted to the skater's bones by `assets/src/skater/import_goalie_gear.py`; shown on goalies only. Credits in the asset table below. | done 2026-11-18 |
 | Puck | Yes | `buildActors()` | 315–319 | 12-sided cylinder, radius 0.32, height 0.16, plus a flat red disc under it. | Four "ghost" pucks for Split Shot reuse the same geometry (320–323). |
 | Rink: ice surface | Yes | `buildRink()` | 88–140 | A flat plane with a 2048×1024 canvas-drawn texture: ice, skate scratches, creases, red and blue lines, faceoff circles, centre logo and wordmark. | Not a model. Candidate for a better ice material (Poly Haven texture) rather than a GLB. |
 | Rink: arena floor | Yes | `buildRink()` | 141–143 | One dark plane, 140×100, under everything. | Stays procedural unless an arena shell is added. |
 | Boards | Yes | `buildRink()` | 145–171 | Three instanced box strips following the rounded outline: white wall (1.1 high), blue cap rail, yellow kick plate. Gaps left for the goal mouths. No glass. | Shape is tied to the sim's rink outline, so a replacement must follow the same outline exactly. |
 | Nets (2) | Yes | `buildRink()` | 173–195 | Red box posts and crossbar, translucent white box panels for the mesh, floor plane, goal lamp (icosahedron). Mouth is 4.2 wide (`GOAL_HALF = 2.1`), 1.5 deep, 1.35 high, recessed into the end boards. | The net group is stretched on X for the goal "bulge" (508–510) and the lamp flashes (511–512). Both must keep working. |
 | Crowd | Yes | `buildCrowd()` | 225–251 | One instanced mesh of plain boxes (0.7×1.0×0.7) in 4 rows around the rink, random colour and height. No seats, stands or people shapes. | Bounces per instance on cheers (514–524). A replacement must stay instanced to hold 60fps. |
+| Goalie pads, blocker, catching glove, goalie stick | https://sketchfab.com/3d-models/5ace50e9a12d4c029614820d3112dcb3 ("True L12.2 CP31 Version") | YeaBoiiiiiiiii | CC-BY 4.0 | 487,601 tris | about 7,100 tris (pads 2x2,500, blocker 1,500, glove 2,200, stick 900); lace curves and small lettering dropped, recoloured to team colours, stick plain dark; in `assets/models/skater.glb` as g_* pieces | **done** 2026-11-18 |
+| Goalie mask | https://sketchfab.com/3d-models/12fe01ffe0d4443b96292815bb79958a ("Hockey Goalie Mask") | matyprokop09 | CC-BY 4.0 | 59,968 tris | 4,200 tris (shell 2,600, cage 1,600), team colour shell, dark cage | **done** 2026-11-18 |
 
 ### Other procedural geometry (not in the request, listed for completeness)
 
@@ -91,7 +93,7 @@ Ice hockey puck, hockey goal and rink boards only turned up on Sketchfab (sign-i
 
 - Licence filter confirmed by the user on 2026-11-15: CC0 and CC-BY are both allowed. CC-BY models need a credit line (kept in this file and to be shown in the game's credits).
 - CLAUDE.md and DESIGN.md still say "procedural only, no external models". They need a one-line update when the first GLB lands.
-- Goalie: not in the game. Skipped unless requested.
+- Goalie: in the game since Phase 1; gear added 2026-11-18 (see the asset table).
 - Players have no skeleton today. Plan is a static posed model tilted by the existing code, so gameplay and feel do not change. Skating animation would be a separate, later decision.
 - Text-to-3D: no Meshy or Tripo connection is set up in this session. Only needed if a model is missing.
 
