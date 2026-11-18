@@ -1,7 +1,47 @@
 # Handoff: skater and goalie model work (2026-11-18)
 
-Latest commits: `467deb0` real goalie gear, `475d6d5` goalie groundwork, `a9b05a5` stick IK, `e77c17f` hits and
-stick drops. Everything is committed and pushed.
+Latest commits:
+- `33f7088`: GitHub Pages deploy.
+- `475361b`: goalie fixes, rounds 2 and 3.
+- `467deb0`: real goalie gear.
+- `475d6d5`: goalie groundwork.
+
+Everything is committed and pushed.
+
+## Next up (user's call, 2026-11-18)
+
+Work on animations and give the game more snap. The goalie model work below is done for now. The Safari bugs below
+are parked; don't start on them unless asked.
+
+## Live build: GitHub Pages
+
+- **Live site:** https://shxbainu.github.io/faceoff/
+- **Repo:** https://github.com/shxbainu/faceoff. It is public; it went public on 2026-11-18 because Pages needs a
+  paid plan for a private repo.
+- **Deploy:** `.github/workflows/pages.yml` type-checks, builds with `--base=/<repo>/`, and deploys on every push to
+  `main`. Local dev and `npm run build` are unchanged (base `/`).
+- **Chromium:** loads into a match in about 1.2 s with no errors.
+
+## Parked: Safari bugs (Safari 26.6, the only browser on the user's Mac)
+
+The game had never been tested in Safari before this.
+
+1. **Black screen on the default WebGPU path.** `?webgl` (forced WebGL2) shows the game.
+   - `View.init` in `src/render.ts` falls back to WebGL2 only if `renderer.init()` throws. Safari starts WebGPU
+     fine, then presumably rejects a TSL shader or pipeline, which leaves a black canvas.
+   - Fix plan: catch WebGPU errors early (the device's `uncapturederror`) and switch to WebGL2 on its own, then find
+     and fix what Safari rejects.
+   - Careful: Chromium also logs harmless "swapchain texture of size 0" errors while its canvas has no size, for
+     example in a hidden pane. Don't treat those as a WebGPU failure.
+2. **Skaters spin constantly on the title screen** (seen in Safari with `?webgl`; not checked on the WebGPU path,
+   which is black).
+   - In Chromium the body yaw holds still on the title screen with both renderers (`__faceoff.body(i).rot`).
+   - Not diagnosed. The yaw smoothing is in `skateFeel` (`src/render.ts`, `f.yaw`).
+3. **To test Safari, one of these is needed.** Neither is set up yet; the user didn't choose.
+   - Playwright WebKit: `npx playwright install webkit`, a download of about 100 MB. Per memory, ask the user before
+     installing.
+   - The user's real Safari: Settings → Advanced → "Show features for web developers", then Develop → "Allow
+     JavaScript from Apple Events", then drive it with `osascript`.
 
 ## How the skater GLB is built (Blender, via the MCP for Blender)
 
