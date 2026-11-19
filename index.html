@@ -119,6 +119,17 @@
   #sprint.gassed i { background: #e5482d; animation: gas .5s ease-in-out infinite alternate; }
   #sprint.gassed s { opacity: 1; }
   @keyframes gas { from { opacity: 1; } to { opacity: .45; } }
+  /* ability chip under your skater: key, name, a cooldown line along its bottom; it steps up once when ready */
+  #abil { position: absolute; transform: translate(-50%, 0); display: none; pointer-events: none; height: 16px;
+    padding: 0 4px 0 0; background: var(--bg); border: 2px solid var(--line); border-radius: 4px; overflow: hidden;
+    font-size: 11px; line-height: 16px; color: var(--dim); white-space: nowrap; }
+  #abil b { display: inline-block; width: 16px; margin-right: 4px; text-align: center; font-weight: 800; background: var(--bg2); color: var(--dim); }
+  #abil i { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--dim); }
+  #abil.ready { border-color: var(--dim); color: var(--text); }
+  #abil.ready b { color: var(--text); background: var(--line); }
+  #abil.live { border-color: var(--text); }
+  #abil.pop { animation: abpop .32s cubic-bezier(.16, 1, .3, 1); }
+  @keyframes abpop { from { transform: translate(-50%, 0) scale(.86); } to { transform: translate(-50%, 0) scale(1); } }
   /* shot wind-up */
   #wind { position: absolute; width: 72px; height: 8px; background: var(--bg); border: 2px solid var(--bg); border-radius: 2px;
     transform: translate(-50%, 0); display: none; overflow: hidden; }
@@ -167,6 +178,7 @@
   <div id="pops"></div>
   <div id="wind"><i></i><u></u></div>
   <div id="sprint"><i></i><s></s></div>
+  <div id="abil"><b>O</b><span></span><i></i></div>
   <div id="you">You</div>
   <div id="heat" class="panel"><div class="row"><span class="lbl">Heat</span><span id="mult">x1</span></div>
     <div id="heatbar"><div id="heatfill"></div><s style="left:25%"></s><s style="left:50%"></s><s style="left:75%"></s></div><div id="buffs">No bonus yet</div><div id="style">Style 0</div></div>

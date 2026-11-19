@@ -2,6 +2,7 @@
 // so the same code can later run on a game server for multiplayer.
 // Feedback (juice) is not in here: gameplay only emits events with an intensity (src/feedback/events.ts) and
 // never reads anything back from the feedback system.
+import { ABILITIES, AbilityId, LOADOUT, ABILITY_AI } from './abilities';
 import type { FxFields } from './feedback/events';
 
 export const L = 40; // half length (x). Was 22: skaters were ~10% of the rink width, the reference is ~3%
@@ -61,6 +62,8 @@ export interface Ctl {
   wrist?: boolean;
   /** poke check only (check is the body check) */
   poke?: boolean;
+  /** active ability (O) */
+  ability?: boolean;
 }
 
 /** Skating model, per skater so roguelite upgrades can raise any of it:
@@ -157,7 +160,8 @@ export const AI = {
 };
 const lerp = (ab: number[], t: number) => ab[0] + (ab[1] - ab[0]) * t;
 
-export const HAND_FORCE = { v: 0 };   // test hook (?hands=r or l): everyone shoots one side
+export const HAND_FORCE = { v: 0 };
+export const ABILITY_FORCE: { v: AbilityId | null } = { v: null };   // test hook (?ability=id): everyone gets this one   // test hook (?hands=r or l): everyone shoots one side
 export function handOf(id: number): 1 | -1 { return HAND_FORCE.v ? (HAND_FORCE.v > 0 ? 1 : -1) : (id * 7 + 3) % 5 < 2 ? 1 : -1; }
 
 export interface Skater {
@@ -208,6 +212,8 @@ export interface Skater {
    *  stick lifted (useless) and knocked aside (out of position) timers; this poke has already made contact */
   bx: number; by: number; pbx: number; pby: number; ba: number; hx: number; hy: number; bOn: boolean;
   liftT: number; tieT: number; tieX: number; tieY: number; pokeHit: boolean; pokeFx: number; pokeFy: number;
+  /** active ability (abilities.ts): which one, cooldown left, time left active, charge has lunged, last press, buffer */
+  ab: AbilityId; abCd: number; abT: number; abLunged: boolean; pAbility: boolean; bAbility: number;
 }
 
 /** goalies stay in their crease and slide along the goal line */
@@ -294,6 +300,7 @@ export class Game {
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
         stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, stickless: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        ab: ABILITY_FORCE.v ?? LOADOUT[slot % LOADOUT.length], abCd: 0, abT: 0, abLunged: false, pAbility: false, bAbility: 0,
         bx: 0, by: 0, pbx: NaN, pby: NaN, ba: 0, hx: 0, hy: 0, bOn: false, liftT: 0, tieT: 0, tieX: 0, tieY: 0, pokeHit: true, pokeFx: 0, pokeFy: 0,
         hand: handOf(sid), bh: 0, bPass: 0, bWrist: 0, bCheck: 0, bPoke: 0, faceMode: 'forward', carveT: 0, bhT: 0,
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
@@ -466,6 +473,7 @@ export class Game {
     this.updateSticks(dt);
     for (const s of this.skaters) {
       const c = s.human && !this.autoplay ? human : this.ai(s, dt);
+      if (!(s.human && !this.autoplay) && this.phase === 'play') c.ability = this.aiAbility(s, dt);
       this.updateSkater(s, c, dt);
     }
     this.collide(dt);
@@ -627,7 +635,7 @@ export class Game {
   }
 
   private updateSkater(s: Skater, c: Ctl, dt: number) {
-    s.checkCd -= dt; s.blockT -= dt; s.pickupCd -= dt; s.calling -= dt;
+    s.checkCd -= dt; s.blockT -= dt; s.pickupCd -= dt; s.calling -= dt; s.abCd -= dt;
     if (s.out > 0) {
       s.out -= dt;
       if (s.out <= 0) {
@@ -764,7 +772,8 @@ export class Game {
       if (s.spinT <= 0) this.endSpin(s);
     }
     if (s.face > Math.PI) s.face -= 2 * Math.PI; else if (s.face < -Math.PI) s.face += 2 * Math.PI;
-    s.stickX = s.x + Math.cos(s.face + s.stickAng) * STICK_R; s.stickY = s.y + Math.sin(s.face + s.stickAng) * STICK_R;
+    const sr = STICK_R * this.reachMult(s);
+    s.stickX = s.x + Math.cos(s.face + s.stickAng) * sr; s.stickY = s.y + Math.sin(s.face + s.stickAng) * sr;
 
     // buttons. Your presses are buffered (MOVE.buffer): one that can't act yet (check on cooldown, pass a moment
     // before the puck reaches you) waits a few frames for the moment it can, instead of being dropped.
@@ -778,6 +787,13 @@ export class Game {
       s.bCheck = checkEdge ? MOVE.buffer : s.bCheck - dt; s.bPoke = pokeEdge ? MOVE.buffer : s.bPoke - dt;
       passEdge = s.bPass > 0; wristEdge = s.bWrist > 0; checkEdge = s.bCheck > 0; pokeEdge = s.bPoke > 0;
     }
+    // ability (O): buffered like the other presses; used the moment it is off cooldown and affordable
+    {
+      const abEdge = !!c.ability && (!s.pAbility || !s.human); s.pAbility = !!c.ability;
+      s.bAbility = abEdge ? MOVE.buffer : s.bAbility - dt;
+      if (s.bAbility > 0 && this.useAbility(s, mx, my)) s.bAbility = 0;
+    }
+    this.tickAbility(s, dt);
     if (has && (c.passTo || passEdge || saucerEdge)) { this.doPass(s, c.passTo || null, mx, my, ml > 0, saucerEdge && !passEdge); s.bPass = 0; }
     else if (has && wristEdge && s.wind < 0) { this.doShot(s, 0.5, false, my, true); s.bWrist = 0; }
     else if (passEdge && p.kind === 'pass' && p.target === s) { s.oneTouch = 0.8; s.otx = mx; s.oty = my; s.bPass = 0; }   // one-touch: it goes straight on when it arrives
@@ -938,7 +954,8 @@ export class Game {
     if (s.tieT > 0) { const k = s.tieT / STICK.tie; x += s.tieX * k; y += s.tieY * k; }   // knocked aside
     // within reach of the body
     let dx = x - s.x, dy = y - s.y, d = Math.hypot(dx, dy);
-    if (d > STICK.reach) { x = s.x + dx / d * STICK.reach; y = s.y + dy / d * STICK.reach; }
+    const rr = STICK.reach * this.reachMult(s);
+    if (d > rr) { x = s.x + dx / d * rr; y = s.y + dy / d * rr; }
     // out of other skaters' bodies (blade), and the shaft can't pass through one either: push the blade clear;
     // then boards and nets. A few passes, since one push can undo another
     const t = this.bladeTmp;
@@ -1056,7 +1073,7 @@ export class Game {
     if (vn >= 0 && bt > 0) return false;   // already moving away from the blade
     const mine = p.kind === 'pass' && s.team === p.lastTeam && s !== p.from;
     const canTake = this.active(s) && s.pickupCd <= 0 && s.checkT <= 0;
-    let trap = mine ? rel < STICK.recvCatch : rel < STICK.catch * (p.kind === 'pass' ? Math.pow(0.5, this.pw(p.lastTeam, 'curve')) : 1) * (s.blockT > 0 ? 1.4 : 1);
+    let trap = mine ? rel < STICK.recvCatch : rel < STICK.catch * (this.abOn(s, 'reach') ? ABILITIES.reach.trap : 1) * (p.kind === 'pass' ? Math.pow(0.5, this.pw(p.lastTeam, 'curve')) : 1) * (s.blockT > 0 ? 1.4 : 1);
     if (p.kind === 'shot') trap = trap && s.team !== p.lastTeam && rel < STICK.catch * 0.6;
     p.x = cx + nx * (STICK.r + PR + 0.01); p.y = cy + ny * (STICK.r + PR + 0.01);
     if (trap && canTake) {
@@ -1088,9 +1105,83 @@ export class Game {
   }
 
   private startPoke(s: Skater, tx: number, ty: number) {
-    const dx = tx - s.x, dy = ty - s.y, d = Math.hypot(dx, dy), r = STICK.poke.reach * (1 + 0.12 * this.pw(s.team, 'magnet'));
+    const dx = tx - s.x, dy = ty - s.y, d = Math.hypot(dx, dy), r = STICK.poke.reach * (1 + 0.12 * this.pw(s.team, 'magnet')) * this.reachMult(s);
     if (d > r) { tx = s.x + dx / d * r; ty = s.y + dy / d * r; }
     s.pokeT = STICK.poke.time; s.pokeX = tx; s.pokeY = ty; s.pokeHit = false;
+  }
+
+  // ------------------------------------------------------------------ abilities (abilities.ts)
+  /** is s's ability `id` active right now */
+  abOn(s: Skater, id: AbilityId) { return s.ab === id && s.abT > 0; }
+  private reachMult(s: Skater) { return this.abOn(s, 'reach') ? ABILITIES.reach.mult : 1; }
+  /** Use s's ability if it is ready and affordable. (mx, my): the held direction (unit or zero). */
+  useAbility(s: Skater, mx: number, my: number): boolean {
+    const d = ABILITIES[s.ab];
+    if (s.abCd > 0 || s.stamina < d.cost || !this.active(s) || s.spinT > 0 || s.checkT > 0) return false;
+    if (s.ab === 'bender' && this.pucks[0].owner !== s) return false;   // a shot needs the puck
+    s.stamina -= d.cost; s.abCd = d.cd; s.abT = d.dur; s.abLunged = false; s.rest = 0;
+    let dx = Math.cos(s.face), dy = Math.sin(s.face);
+    if (Math.hypot(mx, my) > 0.3) { const l = Math.hypot(mx, my); dx = mx / l; dy = my / l; }
+    if (s.ab === 'burst') {
+      const B = ABILITIES.burst;
+      s.vx += dx * B.push; s.vy += dy * B.push;
+      const v = Math.hypot(s.vx, s.vy), cap = this.maxSpeed(s) * B.over;
+      if (v > cap) { s.vx *= cap / v; s.vy *= cap / v; }
+      s.carveT = 0;
+      this.ev({ t: 'lunge', x: s.x, y: s.y });
+    }
+    this.fx({ t: 'ability_used', i: 0.6, tag: s.ab, team: s.team, id: s.id, x: s.x, y: s.y, dx, dy });
+    return true;
+  }
+  /** abilities that play out over time: the charge's crouch, lunge and whiff */
+  private tickAbility(s: Skater, dt: number) {
+    if (s.abT <= 0) return;
+    s.abT -= dt;
+    if (s.ab !== 'charge') return;
+    const C = ABILITIES.charge, el = C.dur - s.abT;
+    if (!s.abLunged && el < C.wind) { const f = Math.exp(-7 * dt); s.vx *= f; s.vy *= f; return; }   // the tell: sinks and slows
+    if (!s.abLunged) {
+      s.abLunged = true;
+      let dx = Math.cos(s.face), dy = Math.sin(s.face), best: Skater | null = null, bd = C.reach;
+      for (const o of this.skaters) {
+        if (o.team === s.team || !this.active(o)) continue;
+        const ox = o.x - s.x, oy = o.y - s.y, d = Math.hypot(ox, oy);
+        if (d > 0.01 && (ox * dx + oy * dy) / d > 0.5 && d < bd) { bd = d; best = o; }
+      }
+      if (best) { const tx = best.x + best.vx * 0.2 - s.x, ty = best.y + best.vy * 0.2 - s.y, l = Math.hypot(tx, ty) || 1; dx = tx / l; dy = ty / l; }
+      const v = Math.max(C.speed, s.vx * dx + s.vy * dy);
+      s.vx = dx * v; s.vy = dy * v; s.face = Math.atan2(dy, dx);
+      s.checkT = C.dur - C.wind; s.checkCd = Math.max(s.checkCd, 0.9); s.blockT = 0.5; s.hits.clear(); s.lungeAt = best; s.wind = -1;
+      this.ev({ t: 'lunge', x: s.x, y: s.y });
+      return;
+    }
+    if (s.abT <= 0 && s.hits.size === 0) { s.slow = Math.max(s.slow, C.whiff); this.ev({ t: 'bump', x: s.x, y: s.y, id: s.id, n: 4, dx: Math.cos(s.face), dy: Math.sin(s.face) }); }   // whiffed: stumbles on
+  }
+  /** a bot's call on its ability this step: only when the moment is right, at a rate set by its skill */
+  private aiAbility(s: Skater, dt: number): boolean {
+    if (s.abCd > 0 || s.abT > 0 || s.stamina < ABILITIES[s.ab].cost + 0.15 || !this.active(s)) return false;
+    const p = this.pucks[0], car = p.owner, skill = s.team === 0 ? AI.mateSkill : this.skillLevel;
+    const [opp, od] = this.nearestOpp(s), gx = s.team === 0 ? GL : -GL;
+    const sp = Math.hypot(s.vx, s.vy), fx = Math.cos(s.face), fy = Math.sin(s.face);
+    let moment = false;
+    switch (s.ab) {
+      case 'burst':   // with the puck, a defender closing: explode past; or a race to a loose puck
+        moment = (car === s && od < 3.5 && (gx - s.x) * fx > 0) || (!car && p.kind === 'loose' && Math.hypot(p.x - s.x, p.y - s.y) > 3 && Math.hypot(p.x - s.x, p.y - s.y) < 9);
+        break;
+      case 'charge': {   // a carrier in front, in range, and we are already moving
+        if (!car || car.team === s.team) break;
+        const dx = car.x - s.x, dy = car.y - s.y, d = Math.hypot(dx, dy);
+        moment = d > 2.5 && d < 6 && (dx * fx + dy * fy) / d > 0.8 && sp > 4;
+        break;
+      }
+      case 'bender':   // in range with a defender in the way
+        moment = car === s && Math.hypot(gx - s.x, s.y) < 18 && !!opp && od < 4;
+        break;
+      case 'reach':    // squared up to a carrier
+        moment = !!car && car.team !== s.team && Math.hypot(car.x - s.x, car.y - s.y) < 5 && !!s.ai.look;
+        break;
+    }
+    return moment && this.rnd() < (ABILITY_AI.rate[0] + (ABILITY_AI.rate[1] - ABILITY_AI.rate[0]) * skill) * dt;
   }
 
   private hitKind(b: Skater, nx: number, ny: number): string {
@@ -1263,7 +1354,14 @@ export class Game {
       b.x = clamp(sx, -L + 0.4, L - 0.4); b.y = sy; b.vx = Math.cos(a) * spd; b.vy = Math.sin(a) * spd;
       b.q = ghost ? q * 0.65 : q; b.oneTimer = oneTimer; b.fire = fire; b.ghost = ghost; b.cc = 0;
       const cl = this.pw(s.team, 'curve');
-      if (cl > 0 && this.pw(s.team, 'split') > 0) { // combo: split pucks curve
+      if (!ghost && this.abOn(s, 'bender')) {
+        // Bender: leaves wide of the corner it was aimed at and curls back onto it (the curve displacement sums to
+        // zero over the flight, so it still arrives where it was aimed)
+        const side = Math.sign(Math.cos(a) * tY) || 1;   // bows out past the side of the net it is aimed at
+        b.cpx = -Math.sin(a) * side; b.cpy = Math.cos(a) * side; b.cc = ABILITIES.bender.bend; b.cT = dist / spd; b.q += ABILITIES.bender.quality;
+        s.abT = 0;
+        this.ev({ t: 'bender', x: sx, y: sy, id: s.id });
+      } else if (cl > 0 && this.pw(s.team, 'split') > 0) { // combo: split pucks curve
         const sd = ghost ? -1 : 1;
         b.cpx = -Math.sin(a) * sd; b.cpy = Math.cos(a) * sd; b.cc = 3 + cl; b.cT = dist / spd; b.q += 0.08;
       }

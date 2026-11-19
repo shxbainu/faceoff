@@ -21,6 +21,7 @@ export type FxName =
   | 'speed_burst'     // the controlled skater kicked into a sprint
   | 'turnover'        // possession changed teams. team: the team that won it. tag: 'pickoff' | 'loose'
   | 'faceoff_won'     // draw won. team: winner
+  | 'ability_used'    // an active ability went off. tag: ability id (burst, charge, bender, reach)
   | 'goal_scored';    // team: scorer. tag list in `text`: 'one_timer', 'ot', 'winner', 'streak'
 
 /** Fields gameplay fills on a feedback event (it travels on the sim's general Ev object). */
@@ -40,4 +41,4 @@ export interface FxFields {
 }
 
 export const FX_NAMES: FxName[] = ['pass_released', 'pass_completed', 'one_touch', 'one_timer', 'streak_end', 'shot_released',
-  'post_hit', 'near_miss', 'save_made', 'check_landed', 'spin_move', 'beat_defender', 'speed_burst', 'turnover', 'faceoff_won', 'goal_scored'];
+  'post_hit', 'near_miss', 'save_made', 'check_landed', 'spin_move', 'beat_defender', 'speed_burst', 'turnover', 'faceoff_won', 'ability_used', 'goal_scored'];
