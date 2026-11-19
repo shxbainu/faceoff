@@ -47,7 +47,7 @@ await run([], 1.0, 'glide', 1);
 await run(['KeyS'], 0.3, 'turn');
 await run(['KeyW'], 1.2, 'back2', 2);
 console.log('errors', errs.length, errs.slice(0, 3));
-await browser.close(); process.kill(-server.pid);
+await browser.close(); try { process.kill(-server.pid); } catch { /* already gone */ }
 // metrics per phase
 const med = a => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : NaN; };
 for (const tag of [...new Set(rows.map(r => r.tag))]) {

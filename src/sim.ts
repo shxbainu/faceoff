@@ -99,7 +99,8 @@ export const STICK_R = 1.3;
  *  it is knocked; shaftR: shaft half-thickness for stick on stick; bodyR: what a blade cannot enter round a skater;
  *  step: swept-test spacing (units) so a fast puck or stick never tunnels; swing: fastest blade speed passed to the puck. */
 export const STICK = { blade: 0.5, r: 0.1, hands: [0.3, 0.28], reach: 2.3, catch: 17, recvCatch: 40, e: 0.35, tip: 0.85,
-  poke: { reach: 2.2, time: 0.26, speed: 8 }, lift: 0.5, tie: 0.35, tieOff: 0.6, shaftR: 0.08, bodyR: 0.45, step: 0.05, swing: 22 };
+  poke: { reach: 2.2, time: 0.26, speed: 8 }, lift: 0.5, tie: 0.35, tieOff: 0.6, shaftR: 0.08, bodyR: 0.45, step: 0.05, swing: 22,
+  rest: [1.55, 0.55] };   // a stick not laid across a lane rests out front on the forehand side (forward, lateral)
 /** shots carry the shooter's skating: this share of his speed along the shot line is added to the puck */
 export const SHOT = { carry: 0.35 };
 /** Where the puck rides on a carrier's blade (sim frame: forward along facing, lateral toward the shot side).
@@ -777,8 +778,12 @@ export class Game {
       if (s.spinT <= 0) this.endSpin(s);
     }
     if (s.face > Math.PI) s.face -= 2 * Math.PI; else if (s.face < -Math.PI) s.face += 2 * Math.PI;
-    const sr = STICK_R * this.reachMult(s);
-    s.stickX = s.x + Math.cos(s.face + s.stickAng) * sr; s.stickY = s.y + Math.sin(s.face + s.stickAng) * sr;
+    // the blade on the ice: across the lane a defender is sealing (stickAng), else resting out front on the forehand
+    // (a stick held straight down in front of the skates read as a cane)
+    const sr = STICK_R * this.reachMult(s), lane = Math.min(1, Math.abs(s.stickAng) / 0.3), cf = Math.cos(s.face), sf = Math.sin(s.face);
+    const rf = STICK.rest[0] * this.reachMult(s), rl = STICK.rest[1] * s.hand;
+    s.stickX = s.x + Math.cos(s.face + s.stickAng) * sr * lane + (cf * rf - sf * rl) * (1 - lane);
+    s.stickY = s.y + Math.sin(s.face + s.stickAng) * sr * lane + (sf * rf + cf * rl) * (1 - lane);
 
     // buttons. Your presses are buffered (MOVE.buffer): one that can't act yet (check on cooldown, pass a moment
     // before the puck reaches you) waits a few frames for the moment it can, instead of being dropped.

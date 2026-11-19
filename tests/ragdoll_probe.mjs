@@ -55,6 +55,6 @@ const st = await page.evaluate(async () => { const f = window.__faceoff, s = f.s
   await new Promise(r => setTimeout(r, 150)); return { rag: f.rag().length, stun: f.snap().skaters.filter(k => k.team === 1 && k.stun > 0).length }; });
 check(st.rag === 0 || st.stun === 0, 'a light hit staggers without a ragdoll', JSON.stringify(st));
 check(errs.length === 0, 'no errors', errs.slice(0, 3).join(' | '));
-await browser.close(); process.kill(-server.pid);
+await browser.close(); try { process.kill(-server.pid); } catch { /* already gone */ }
 console.log(fails ? `${fails} FAILED` : 'all pass');
 process.exit(fails ? 1 : 0);

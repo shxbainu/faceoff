@@ -450,6 +450,7 @@ function perf() {
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
     gait: () => view.gaitState(), feet: (i: number) => view.feet(i), rag: () => view.ragState(),
+    stickPose: (i: number) => view.stickPose(i), puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
     knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
     gearCheck: () => view.gearCheck(),

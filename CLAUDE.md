@@ -59,7 +59,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `32e624bd5f179d1f` since the stick, ragdoll and ability pass of 2026-11-18 (abilities off)),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `f61c6748e2d2584b` since the stick hold pass of 2026-11-18 (resting stick on the forehand side)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -98,8 +98,12 @@
   pose before layering, and `layerSave` remembers what was left. Without it the turns stack on static frames (title,
   pre-game, hit stop, held wind-up) and the head, spine and arms spin (`?nolayerfix` shows the old bug).
 - Bone turns go through `rotWorld`, which is correct under the mirrored (left shot) model.
-- Stick IK: the stick turns in the bottom glove first (`ARM.stickAim`), the arms only make small corrections, and a
-  guard drops the arm part if a hand or elbow would end up inside or behind the torso. `stickFloor` then turns the
+- Stick hold (`stickIK`, `STICK_HOLD`): the blade goes on the ice at its target (puck, lane, or the sim's resting
+  stick on the forehand side, `STICK.rest`), the shaft runs back up toward the top hand's shoulder at the lie angle,
+  the bottom hand goes to its grip by two-bone arm IK (elbows down and out), the stick is turned in that glove onto
+  the target, and last (`topGrip`, after `stickFloor`) the top hand's palm goes onto the knob. Every skater always
+  has a stick target, so the stick never hangs like a cane. `node tests/stick_state_probe.mjs` checks every state
+  (shaft angle, blade height, top hand on the stick, drawn blade vs collider, twist, knockdowns). `stickFloor` then turns the
   stick up in the glove until the blade's heel, middle and toe are on the ice (`?nofloor` turns it off). A carried
   puck is drawn on the blade, so it moves with the stick; the sim's puck stays the truth for play. The sim's `CARRY` point is
   where the clips naturally hold the blade (measure with `?noik`); a target near the feet drags the hands through
@@ -121,8 +125,10 @@
   sway with the pushing legs. `?nogait` restores the old clip playback. Legs, pelvis (incl. its position), spine_01
   and neck are in the layer restore list.
 - Posture is absolute, not added to the clip: hip height (`GAIT.hip`, about a 100-115 degree knee) and torso lean
-  per mode (`GAIT.lean`). The upper body (pelvis yaw, shoulder counter-rotation, arm swing, level head) runs off the
-  same stride phase in `gaitUpper`, calmer with the puck (`puckCalm`). `__faceoff.gait()` reports knee, lean, hip.
+  per mode (`GAIT.lean`, a pure pitch about the side axis). Hip and shoulder counter-rotation come from the stride
+  clip only; the look layer turns mostly the head (`HEAD.chest` is the spine's share). Extra counter-rotation or a
+  bigger chest share twisted the shoulders 30-45 degrees off the hips. `__faceoff.gait()` reports knee, lean, hip,
+  twist (shoulder line vs hip line). `?sidecam` puts the camera beside your skater; `?nolook` turns the look off.
 - No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
 - Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
 
