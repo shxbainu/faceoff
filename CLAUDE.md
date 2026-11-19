@@ -100,10 +100,11 @@
 - Bone turns go through `rotWorld`, which is correct under the mirrored (left shot) model.
 - Stick hold (`stickIK`, `STICK_HOLD`): the blade goes on the ice at its target (puck, lane, or the sim's resting
   stick on the forehand side, `STICK.rest`), the shaft runs back up toward the top hand's shoulder at the lie angle,
-  the bottom hand goes to its grip by two-bone arm IK (elbows down and out), the stick is turned in that glove onto
+  the bottom hand goes to its grip by hinge arm IK (`hingeIK`: the elbow only bends about the clip's own axis, the arm
+  swings from the shoulder, then rolls the elbow down; a free two-bone solve bent the top-hand elbow inward 26% of the time), the stick is turned in that glove onto
   the target, and last (`topGrip`, after `stickFloor`) the top hand's palm goes onto the knob. Every skater always
   has a stick target, so the stick never hangs like a cane. `node tests/stick_state_probe.mjs` checks every state
-  (shaft angle, blade height, top hand on the stick, drawn blade vs collider, twist, knockdowns). `stickFloor` then turns the
+  (shaft angle, blade height, top hand on the stick, drawn blade vs collider, twist, elbows bent the wrong way, knockdowns). `stickFloor` then turns the
   stick up in the glove until the blade's heel, middle and toe are on the ice (`?nofloor` turns it off). A carried
   puck is drawn on the blade, so it moves with the stick; the sim's puck stays the truth for play. The sim's `CARRY` point is
   where the clips naturally hold the blade (measure with `?noik`); a target near the feet drags the hands through

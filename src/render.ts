@@ -43,6 +43,9 @@ interface SkaterView {
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
   ikW?: number; ikT?: THREE.Vector3; palmL?: THREE.Object3D;
+  /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
+   *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
+  armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
   /** the stick prop's resting position in the glove (the IK moves it; restored every frame) */
   stickRest?: THREE.Vector3;
   /** the cloned skater model (mirrored on x for a left shot) */
@@ -88,9 +91,9 @@ export const GAIT = {
   headLevel: 0.85,   // how level the head is held over the stride (the clip itself carries the hip and shoulder counter-rotation)
   glideW: 0.17, readyW: 0.24, stopW: 0.3, backOut: 0.42, crossOut: 0.5, crossOver: 0.28,
 };
-/** How a stick is held (stickIK): shaft angle from vertical (a real lie runs about 45-60 degrees) and how far the
- *  elbows point out to the sides (0 = straight down) */
-export const STICK_HOLD = { lie: 52, elbowOut: 1.3, toTop: 0.8, front: -0.15 };   // toTop: how far the shaft heads toward the top hand's shoulder (0 = chest centre); front: how far in front of that shoulder the knob may go (negative: behind)   // toTop: how far the shaft heads toward the top hand's shoulder (0 = chest centre); front: how far in front of it the knob stays
+/** How a stick is held (stickIK): shaft angle from vertical (a real lie runs about 45-60 degrees); elbowDown: how much
+ *  the elbows are eased downward from the way the clip bends them */
+export const STICK_HOLD = { lie: 52, elbowDown: 0.3, toTop: 0.8, front: -0.15 };   // toTop: how far the shaft heads toward the top hand's shoulder (0 = chest centre); front: how far in front of that shoulder the knob may go (negative: behind)   // toTop: how far the shaft heads toward the top hand's shoulder (0 = chest centre); front: how far in front of it the knob stays
 const ARM = { floor: 0.015 };   // stickFloor: lowest the blade may sit (above the ice)
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
@@ -963,9 +966,9 @@ export class View {
     const hz = this.ikE.set(knob.x - T.x, 0, knob.z - T.z), room = hz.length(); if (room < 1e-6) hz.copy(fwd).negate(); hz.normalize();
     const lie = Math.min(STICK_HOLD.lie * Math.PI / 180, Math.asin(Math.min(1, room / Math.max(0.1, len * g.gripT))));
     const dir = hz.multiplyScalar(Math.sin(lie)).addScaledVector(up, Math.cos(lie));
-    const elbow = (arm: THREE.Object3D) => { const out = arm.getWorldPosition(this.ikG).sub(chest); out.y = 0; return out.normalize().multiplyScalar(STICK_HOLD.elbowOut).addScaledVector(up, -1).addScaledVector(fwd, -0.3); };
+    v.armClip = [this.armBend(A.ua_l, A.la_l, A.h_l, v.armClip?.[0]), this.armBend(A.ua_r, A.la_r, A.h_r, v.armClip?.[1])];   // the clip's elbows, before the IK moves them
     if (g.gripB === undefined) { const hb = A.h_r.getWorldPosition(a), ax = b.copy(g.top).sub(g.blade); g.gripB = Math.max(0.2, Math.min(0.95, st.worldToLocal(hb).sub(g.blade).dot(ax) / ax.lengthSq())); }   // where the clip's bottom hand holds the shaft
-    this.twoBone(A.ua_r, A.la_r, A.h_r, a.copy(T).addScaledVector(dir, len * g.gripB), elbow(A.ua_r), w);
+    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(T).addScaledVector(dir, len * g.gripB), v.armClip[1].n, w);
     this.turnStick(v, st, blade().clone(), T, Math.PI * w);   // shaft from the glove to the blade target
   }
   /** the top hand wraps the shaft at its grip (the palm, not the wrist, on it); runs last, after stickFloor has
@@ -973,13 +976,13 @@ export class View {
   private topGrip(v: SkaterView) {
     const st = v.stick, g = this.stickGeo, A = v.arms, w = v.ikW ?? 0;
     if (!st || !g || !A || g.gripT <= 0 || w < 0.02) return;
-    const grip = this.ikD.copy(g.blade).lerp(g.top, g.gripT).applyMatrix4(st.matrixWorld);
+    if (!v.armClip) return;
     const palm = (v.palmL ??= v.body.getObjectByName('middle_01_l') ?? A.h_l);
-    grip.sub(palm.getWorldPosition(this.ikE).sub(A.h_l.getWorldPosition(this.ikF)));
-    const chest = (v.bones?.sp3 ?? A.ua_r.parent!).getWorldPosition(this.ikC);
-    const out = A.ua_l.getWorldPosition(this.ikG).sub(chest); out.y = 0;
-    out.normalize().multiplyScalar(STICK_HOLD.elbowOut).addScaledVector(this.gW.up, -1);
-    this.twoBone(A.ua_l, A.la_l, A.h_l, grip, out, w);
+    for (let pass = 0; pass < 2; pass++) {   // twice: the arm's roll turns the hand, which moves the palm's offset from the wrist
+      const grip = this.ikD.copy(g.blade).lerp(g.top, g.gripT).applyMatrix4(st.matrixWorld);
+      grip.sub(palm.getWorldPosition(this.ikE).sub(A.h_l.getWorldPosition(this.ikF)));
+      this.hingeIK(A.ua_l, A.la_l, A.h_l, grip, v.armClip[0].n, w);
+    }
   }
   private ikF = new THREE.Vector3(); private ikC = new THREE.Vector3(); private ikD = new THREE.Vector3(); private ikE = new THREE.Vector3(); private ikG = new THREE.Vector3();
 
@@ -1224,6 +1227,54 @@ export class View {
     const ang = hup.angleTo(want) * G.headLevel * w;
     if (ang > 1e-3) this.rotWorld(R.neck, c.crossVectors(hup, want), ang);
   }
+  /** Arm IK that respects the elbow as a hinge. 1: bend or straighten the elbow only about its own bend axis (the
+   *  clip's, kept in the upper arm's frame) to the angle the reach needs; 2: swing the whole arm from the shoulder so
+   *  the hand lands on the target; 3: roll the arm about the shoulder-to-hand line so the elbow hangs down
+   *  (STICK_HOLD.elbowDown). No step can fold the forearm through the joint. (A free two-bone solve with a pole bent
+   *  the top-hand elbow inward, a chicken wing, in up to half the frames.) `nClip` is the clip's bend normal in the
+   *  upper arm's own frame; `w` scales it all. */
+  private hiV = Array.from({ length: 7 }, () => new THREE.Vector3());
+  private hingeIK(upper: THREE.Object3D, lower: THREE.Object3D, end: THREE.Object3D, T: THREE.Vector3, nClip: THREE.Vector3, w: number) {
+    const [H, K, F, u, f, n, t] = this.hiV;
+    upper.getWorldPosition(H); lower.getWorldPosition(K); end.getWorldPosition(F);
+    const la = H.distanceTo(K), lb = K.distanceTo(F), lt = Math.max(Math.abs(la - lb) + 1e-3, Math.min(la + lb - 1e-3, H.distanceTo(T)));
+    // 1. elbow angle, about the clip's hinge axis (stored in the upper arm's frame; mirrored frames flip a cross product)
+    upper.updateWorldMatrix(true, false);
+    n.copy(nClip).transformDirection(upper.matrixWorld);
+    if (upper.matrixWorld.determinant() < 0) n.negate();
+    u.subVectors(K, H); f.subVectors(F, K);
+    const a0 = Math.PI - u.angleTo(f), a1 = Math.acos(Math.max(-1, Math.min(1, (la * la + lb * lb - lt * lt) / (2 * la * lb))));
+    this.rotWorld(lower, n, (a0 - a1) * w);
+    // 2. swing the arm so the hand points at the target
+    end.getWorldPosition(F);
+    u.subVectors(F, H); t.subVectors(T, H);
+    this.rotWorld(upper, f.crossVectors(u, t), u.angleTo(t) * w);
+    // 3. roll about the shoulder-to-hand line so the elbow hangs down (the hand stays put)
+    lower.getWorldPosition(K); end.getWorldPosition(F);
+    const ax = u.subVectors(F, H).normalize();
+    const e = f.subVectors(K, H).addScaledVector(ax, -this.hiV[4].dot(ax)), dn = t.set(0, -1, 0).addScaledVector(ax, ax.y);
+    if (e.lengthSq() > 1e-8 && dn.lengthSq() > 1e-8) {
+      const ang = e.angleTo(dn), sg = Math.sign(n.crossVectors(e, dn).dot(ax)) || 1;
+      this.rotWorld(upper, ax, sg * ang * STICK_HOLD.elbowDown * w);
+    }
+  }
+  /** An arm's bend as posed now: pole (where the elbow sits off the shoulder-to-hand line, world) and the bend
+   *  normal (upper x fore) in the upper arm's own frame, which a correct elbow keeps pointing the same way */
+  private abV = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Matrix4()] as const;
+  private armBend(ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D, out?: { pole: THREE.Vector3; n: THREE.Vector3 }) {
+    const [H, K, F, M] = this.abV, o = out ?? { pole: new THREE.Vector3(), n: new THREE.Vector3() };
+    ua.getWorldPosition(H); la.getWorldPosition(K); h.getWorldPosition(F);
+    const d = this.abW.subVectors(F, H), t = d.lengthSq() > 1e-9 ? this.abX.subVectors(K, H).dot(d) / d.lengthSq() : 0;
+    o.pole.copy(H).addScaledVector(d, t).negate().add(K);   // elbow minus its foot on the shoulder-hand line
+    o.n.crossVectors(this.abX.subVectors(K, H), this.abW.subVectors(F, K));
+    // the hinge belongs to the upper arm: keep its axis in the upper arm's own frame. A cross product flips sign under
+    // a mirror (left-shot models), so undo that when the frame is mirrored
+    ua.updateWorldMatrix(true, false);
+    o.n.transformDirection(M.copy(ua.matrixWorld).invert());
+    if (ua.matrixWorld.determinant() < 0) o.n.negate();
+    return o;
+  }
+  private abW = new THREE.Vector3(); private abX = new THREE.Vector3();
   /** Two-bone IK with a pole (legs and arms): the middle joint goes where the bone lengths put it, bent toward
    *  `pole`; the upper bone is aimed at that point, then the lower bone at the target. `w` scales the turn (0..1). */
   private tbV = Array.from({ length: 8 }, () => new THREE.Vector3());
@@ -1331,6 +1382,13 @@ export class View {
     const grip = g.blade.clone().lerp(g.top, g.gripT).applyMatrix4(m), hl = (v.body.getObjectByName('middle_01_l') ?? v.body.getObjectByName('hand_l')!).getWorldPosition(new THREE.Vector3());   // the palm (knuckles), not the wrist
     const dx = b.x - s.x, dz = b.z - s.y, f = s.face;
     return { shaft: +ang.toFixed(0), bladeY: +this.bladeLow(v.stick).toFixed(2), fwd: +(dx * Math.cos(f) + dz * Math.sin(f)).toFixed(2), lat: +((-dx * Math.sin(f) + dz * Math.cos(f)) * s.hand).toFixed(2),
+      // an elbow bent the wrong way: its bend normal against the clip's, counted only when clearly bent (a nearly
+      // straight arm has no meaningful bend direction)
+      elbowFlip: (v.armClip && v.arms ? [[v.arms.ua_l, v.arms.la_l, v.arms.h_l], [v.arms.ua_r, v.arms.la_r, v.arms.h_r]].map(([u, l, h], k) => {
+        const H = u.getWorldPosition(new THREE.Vector3()), K = l.getWorldPosition(new THREE.Vector3()), F = h.getWorldPosition(new THREE.Vector3());
+        const inner = H.clone().sub(K).angleTo(F.clone().sub(K)) * 180 / Math.PI;
+        return inner < 165 && this.armBend(u, l, h).n.dot(v.armClip![k].n) < 0 ? 1 : 0; }) : [0, 0]),
+      elbows: v.arms ? [[v.arms.ua_l, v.arms.la_l, v.arms.h_l], [v.arms.ua_r, v.arms.la_r, v.arms.h_r]].map(([u, l, h]) => { const H = u.getWorldPosition(new THREE.Vector3()), K = l.getWorldPosition(new THREE.Vector3()), F = h.getWorldPosition(new THREE.Vector3()); return +(H.sub(K).angleTo(F.sub(K)) * 180 / Math.PI).toFixed(0); }) : [],
       topHand: +hl.distanceTo(grip).toFixed(2), toSim: s.bOn ? +Math.hypot(b.x - s.bx, b.z - s.by).toFixed(2) : -1, w: +(v.ikW ?? 0).toFixed(2) };
   }
   /** test hook: knee angles (deg, 180 = straight), torso lean from vertical (deg) and hip height (leg lengths) */

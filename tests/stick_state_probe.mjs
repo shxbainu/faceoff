@@ -54,7 +54,7 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
   const line = `${String(st).padEnd(9)} ${String(R.length).padStart(4)}   ${q(c('shaft'), 0.1)}/${q(c('shaft'), 0.5)}/${q(c('shaft'), 0.9)}`.padEnd(38) +
     `${q(c('bladeY'), 0.9).toFixed(2)}`.padEnd(13) + `${q(c('fwd'), 0.5).toFixed(2)}`.padEnd(9) + `${q(c('lat'), 0.5).toFixed(2)}`.padEnd(10) +
     `${q(c('topHand'), 0.5).toFixed(2)}/${q(c('topHand'), 0.9).toFixed(2)}`.padEnd(11) + `${q(c('toSim'), 0.9).toFixed(2)}`.padEnd(12) +
-    `${q(R.flatMap(r => r.knee ?? []), 0.5)}`.padEnd(10) + `${q(c('lean'), 0.5)}`.padEnd(10) + `${q(c('hip'), 0.5)}`.padEnd(8) + `twist ${q(c('twist'), 0.5)}/${q(c('twist'), 0.9)}  chest ${q(c('chest'), 0.5)}/${q(c('chest'), 0.9)}  hips ${q(c('hips'), 0.5)}/${q(c('hips'), 0.9)}`;
+    `${q(R.flatMap(r => r.knee ?? []), 0.5)}`.padEnd(10) + `${q(c('lean'), 0.5)}`.padEnd(10) + `${q(c('hip'), 0.5)}`.padEnd(8) + `flipL ${(R.filter(r => r.elbowFlip?.[0]).length / R.length * 100).toFixed(0)}% flipR ${(R.filter(r => r.elbowFlip?.[1]).length / R.length * 100).toFixed(0)}%  ` + `twist ${q(c('twist'), 0.5)}/${q(c('twist'), 0.9)}  chest ${q(c('chest'), 0.5)}/${q(c('chest'), 0.9)}  hips ${q(c('hips'), 0.5)}/${q(c('hips'), 0.9)}`;
   console.log(line);
   // skating states: the stick is held (top hand on it), angled like a stick not a cane, blade near the ice
   if (['stride', 'glide', 'cross', 'back', 'ready', 'puck', 'stop'].includes(st)) {
@@ -63,6 +63,7 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
     const bad = q(c('shaft'), 0.5) < 40 || q(c('shaft'), 0.1) < 28 || q(c('topHand'), 0.5) > 0.15 || q(c('topHand'), 0.9) > 0.3 || q(c('bladeY'), 0.9) > 0.35;
     if (bad) { console.log(`FAIL  ${st}: cane-like or loose stick`); fails++; }
     // the body doesn't screw into itself: shoulders within about 30 degrees of the hips (crossovers turn into the turn)
+    if (R.some(r => r.elbowFlip?.[0] || r.elbowFlip?.[1])) { console.log(`FAIL  ${st}: an elbow bends against its natural hinge (chicken wing)`); fails++; }
     if (q(c('twist'), 0.9) > 32) { console.log(`FAIL  ${st}: shoulders twisted off the hips (p90 ${q(c('twist'), 0.9)} deg)`); fails++; }
   }
 }
