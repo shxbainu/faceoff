@@ -1,5 +1,6 @@
-import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT } from './sim';
-import { View } from './render';
+import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT, STICK } from './sim';
+import { View, GAIT } from './render';
+import { RAGDOLL } from './ragdoll';
 import { sfx, unlock, audio } from './audio';
 import { FeedbackSystem } from './feedback/system';
 import { feel, setFeel, FEEL_DEFAULTS } from './feedback/settings';
@@ -97,8 +98,19 @@ function ctl(): Ctl {
   };
 }
 
+/** debug (] key): a big hit on the opponent nearest you, from your side (shift+] for a light, stagger-sized one) */
+function forceRagdoll(imp = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 5 : 15) {
+  const h = game.ctrl, foe = game.skaters.filter(k => k.team === 1 && k.stun <= 0 && k.out <= 0).sort((a, b) => Math.hypot(a.x - h.x, a.y - h.y) - Math.hypot(b.x - h.x, b.y - h.y))[0];
+  if (!foe) return;
+  const dx = foe.x - h.x, dy = foe.y - h.y, d = Math.hypot(dx, dy) || 1;
+  if (imp < 7) handle({ t: 'bump', x: foe.x, y: foe.y, id: foe.id, dx: dx / d, dy: dy / d, n: imp });
+  else game.debugKnock(foe, dx / d, dy / d, imp);
+}
+
 function onPress(code: string) {
   if (code === 'Semicolon') { view.moveDbg = !view.moveDbg; moveDbgEl.style.display = view.moveDbg ? 'block' : 'none'; return; }
+  if (code === 'BracketLeft') { view.colDbg = !view.colDbg; return; }   // stick and body colliders
+  if (code === 'BracketRight' && mode === 'match') { forceRagdoll(); return; }   // debug: flatten the nearest opponent
   const go = code === 'Enter' || code === 'Space' || code === 'KeyJ';
   if (code === 'KeyR' && mode !== 'title') { startRun(); return; }
   if (code === 'KeyC' && mode === 'title') {
@@ -271,6 +283,7 @@ function handle(e: Ev) {
     case 'switch': case 'pickup': sfx.recv(); break;
     case 'poke': if (e.text === 'air') audio.play('stick_whiff'); break;   // a poke at nothing (a landed one is a feedback event)
     case 'pokeTry': audio.play('stick_whiff'); break;
+    case 'stick': if (e.text !== 'body' && e.text !== 'trap') audio.play('stick_clack'); break;   // blade on puck or stick on stick
     case 'stickDrop':
       audio.play('stick_drop');
       if (game.skaters.find(k => k.id === e.id)?.human) pop('Stick down! Skate over it', e.x!, e.y!, true);
@@ -306,7 +319,10 @@ function moveDbgText() {
   const lines = [`you #${h.id}  ${h.hand > 0 ? 'right' : 'left'} shot${h.bh > 0.5 ? ' (backhand)' : ''}`,
     `facing ${deg(h.face)}  skating ${sp > 0.3 ? deg(Math.atan2(h.vy, h.vx)) : '-'}  speed ${sp.toFixed(1)}  ${h.faceMode}`,
     `head yaw ${hs ? deg(hs.twist) : '-'}  (limit ${deg(0.75)})`, ''];
-  for (const k of game.skaters) if (!k.human) lines.push(`#${k.id} ${k.team === 0 ? 'home' : 'away'} ${k.hand > 0 ? 'R' : 'L'} ${k.faceMode.padEnd(7)} ${k.ai.state ?? ''}`);
+  const gs = view.gaitState(), an = view.animStates(), gi = (k: typeof h) => { const i = game.skaters.indexOf(k), q = gs[i];
+    return q ? `${(an[i]?.clip ?? '').padEnd(10)} legs ${q.mode.padEnd(6)} phase ${q.ph.toFixed(2)} stride ${q.amp.toFixed(2)}` : ''; };
+  lines.splice(3, 0, `anim ${gi(h)}`, `stick ${h.bOn ? 'on ice' : 'off'}${h.liftT > 0 ? ' lifted' : ''}${h.tieT > 0 ? ' knocked' : ''}${h.pokeT > 0 ? ' poking' : ''}`);
+  for (const k of game.skaters) if (!k.human) lines.push(`#${k.id} ${k.team === 0 ? 'home' : 'away'} ${k.hand > 0 ? 'R' : 'L'} ${k.faceMode.padEnd(7)} ${gi(k)}  ${k.ai.state ?? ''}`);
   return lines.join('\n');
 }
 
@@ -410,6 +426,8 @@ function perf() {
     perf, resetPerf: () => { frameMs.length = 0; simMs = 0; simN = 0; },
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
+    gait: () => view.gaitState(), feet: (i: number) => view.feet(i), rag: () => view.ragState(),
+    knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
     gearCheck: () => view.gearCheck(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
@@ -422,7 +440,7 @@ function perf() {
     stick: (i: number) => view.stickState(i),
     // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
     skaters: () => game.skaters.map(k => ({ id: k.id, team: k.team, human: k.human, x: k.x, y: k.y, vx: k.vx, vy: k.vy, face: k.face, hand: k.hand, bh: k.bh, mode: k.faceMode, ai: k.ai.state ?? '', stun: k.stun })),
-    tuning: { MOVE, AI, HANDS, CHECK, SHOT },   // live: edits apply on the next step
+    tuning: { MOVE, AI, HANDS, CHECK, SHOT, GAIT, STICK, RAGDOLL },   // live: edits apply on the next step
     stickDebug: (i: number) => view.stickDebug(i),
     blade: (i: number) => { const k = game.skaters[i]; return k ? view.bladeOffset(i, k.face, k.x, k.y) : null; },
     // feedback layer: fire any event at an intensity, read what fired, change settings, run the full sweep

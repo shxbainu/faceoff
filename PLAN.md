@@ -1,3 +1,29 @@
+# Faceoff plan: skating gait, stick physics, ragdolls, abilities (started 2026-11-18, late)
+
+## State before this pass (from git log, HANDOFF.md and the probes)
+
+- Done and live (PR #1, `9b2bf81`): game-feel layer, hockey feel pass (facing, movement, handedness, momentum checks,
+  AI defense, head and arm layering fixes). All probes passed at hand-off.
+- Broken or weak, found again at the start of this pass:
+  - Skating reads as a shimmy. Measured (`tests/gait_probe.mjs --old`): the baked stride clip keeps both skates splayed
+    all the time (median spread 0.84 leg lengths while striding, 0.74 standing), so from the camera the skater is a
+    wide squat whose feet shuffle; cadence is set by clip playback rate, not by the pushes; carriers under 6.5 u/s
+    play the `handle` clip and glide with no stride at all. Blade skid while striding 14-18 degrees.
+  - Sticks have no collision: pokes and lifts resolve instantly on a distance check; pass pickoffs are a dice roll
+    within 0.65 of the blade; nothing stops a blade or a carried puck passing through bodies, boards or nets.
+  - Knockdowns play one fall clip for every hit; the get-up is a 0.15 s crossfade (a pop).
+  - No ability system (O is reserved). `collideNet` pushed a point already inside the net out by only r (bug).
+- Open from earlier: feel tuning by the user; Safari bugs parked; pivots have no animation (now covered by the gait).
+
+## Animation sources (checked first, 2026-11-18)
+
+No free human-made ice hockey skating exists (mocap or keyed): CMU mocap has skateboarding only; Xsens/Movella give
+free speed-skating mocap behind a sign-up; paid hand-keyed packs exist (Unity "Hockey Player Animated" $19, Ice Slyder
+Hockey Pack, Flipped Normals "Ice Hockey" 160 clips), none lists crossovers and all need retargeting to our rig. The
+CC0 Quaternius UAL1 we already have gives the fall (`Death01`) and hit reactions but no get-up; Mixamo has get-up clips
+(needs the user's Adobe account). Decision: procedural legs (speed-matched strides and no skid are things a baked clip
+can't do), get-up = the fall clip backward until a human-made get-up clip is chosen (see "Next ideas").
+
 # Faceoff plan: hockey feel pass (movement, facing, defense, head, stick hand)
 
 Started 2026-11-18 (evening). Goal: play like real hockey and like Tape to Tape, still arcade and rewarding. Fix
