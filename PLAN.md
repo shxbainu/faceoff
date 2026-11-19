@@ -15,6 +15,19 @@
   - No ability system (O is reserved). `collideNet` pushed a point already inside the net out by only r (bug).
 - Open from earlier: feel tuning by the user; Safari bugs parked; pivots have no animation (now covered by the gait).
 
+## Status of this pass (branch `skating-sticks-ragdolls`, not merged)
+
+- [x] Skating gait: procedural legs over the clips (stride, crossover, C-cuts, pivot, hockey stop, glide, ready).
+      gait_probe: stride skid 14-18 deg -> 7 deg; spread now changes with state (glide 0.34, push 0.79 leg lengths).
+- [x] Stick colliders: 22 checks pass (stick_physics_probe), incl. no tunnelling and no blade in a body or a net.
+- [x] Ragdolls: 5 at once at 60 fps, link stretch at most about 6%, everyone back up (ragdoll_probe).
+- [~] Abilities: system and 4 prototypes built, then switched off at the user's request until the skill and passive
+      design (DESIGN.md, from the Tape to Tape study in RESEARCH.md) is chosen.
+- [ ] Tuning by feel (user): stride size and cadence, lean, hockey stop, ragdoll kick, poke and lift reach.
+- Seen, not changed: bots spend about 18% of the time in a real hockey stop (their velocity matching pushes against
+  their own motion); an AI tuning question.
+- A human-made get-up clip (Mixamo needs the user's Adobe login) would replace the reversed fall.
+
 ## Animation sources (checked first, 2026-11-18)
 
 No free human-made ice hockey skating exists (mocap or keyed): CMU mocap has skateboarding only; Xsens/Movella give
