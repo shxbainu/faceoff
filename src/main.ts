@@ -1,12 +1,17 @@
-import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize } from './sim';
+import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT } from './sim';
 import { View } from './render';
 import { sfx, unlock, audio } from './audio';
+import { FeedbackSystem } from './feedback/system';
+import { feel, setFeel, FEEL_DEFAULTS } from './feedback/settings';
+import { FEEDBACK } from './feedback/config';
 import '@fontsource/archivo/latin-500.css';
 import '@fontsource/archivo/latin-800.css';
 
 const $ = (id: string) => document.getElementById(id)!;
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
 const params = new URLSearchParams(location.search);
+if (params.has('hands')) HAND_FORCE.v = params.get('hands') === 'l' ? -1 : 1;   // test: one shot side for everyone
+if (params.has('ai')) AI.difficulty = Math.max(0, Math.min(1, Number(params.get('ai')) || 0));   // bot difficulty 0..1
 
 type Mode = 'title' | 'intro' | 'match' | 'end' | 'pick';
 let mode: Mode = 'title';
@@ -43,11 +48,17 @@ let scheme: Scheme = (() => {
 })();
 const TAP = 0.18;            // simple scheme: a shoot press shorter than this is a wrist shot
 let shootDownAt = -1, wristQueued = false;
+// Input buffer: a press is latched until a sim step has seen it, so a tap during hit stop or slow-mo
+// (when no step may run for a few frames) still lands on the next step instead of being lost.
+const LATCH = new Set(['KeyJ', 'Space', 'KeyK', 'KeyL', 'KeyH', 'KeyU', 'KeyQ', 'KeyI']);
+const latched = new Set<string>();
 window.addEventListener('keydown', e => {
-  if (GAME_KEYS.has(e.code)) e.preventDefault();
+  if (GAME_KEYS.has(e.code) || DEBUG_CODES.has(e.code) || e.code === 'KeyP' || e.code === 'Backquote') e.preventDefault();
   if (e.repeat) return;
   unlock();
+  if (uiKey(e.code)) return;   // feel panel, debug panel, goal skip: these keys never reach the game
   keys.add(e.code);
+  if (LATCH.has(e.code) && !(scheme === 'simple' && e.code === 'KeyK')) latched.add(e.code);
   onPress(e.code);
 });
 window.addEventListener('keyup', e => {
@@ -60,7 +71,7 @@ window.addEventListener('keyup', e => {
 window.addEventListener('blur', () => keys.clear());
 
 function ctl(): Ctl {
-  const k = (...c: string[]) => c.some(x => keys.has(x));
+  const k = (...c: string[]) => c.some(x => keys.has(x) || latched.has(x));
   if (scheme === 'simple') {
     const now = performance.now() / 1000;
     if (keys.has('KeyK') && shootDownAt < 0) shootDownAt = now;
@@ -87,6 +98,7 @@ function ctl(): Ctl {
 }
 
 function onPress(code: string) {
+  if (code === 'Semicolon') { view.moveDbg = !view.moveDbg; moveDbgEl.style.display = view.moveDbg ? 'block' : 'none'; return; }
   const go = code === 'Enter' || code === 'Space' || code === 'KeyJ';
   if (code === 'KeyR' && mode !== 'title') { startRun(); return; }
   if (code === 'KeyC' && mode === 'title') {
@@ -120,6 +132,7 @@ const icon = (id: PowerId) => `<svg viewBox="0 0 24 24" fill="none" stroke="curr
 
 // ---------------------------------------------------------------- flow
 const view = new View();
+const fb = new FeedbackSystem(view, () => game);
 const overlay = $('overlay');
 
 function showOverlay(html: string) { overlay.innerHTML = html; overlay.classList.add('on'); }
@@ -190,6 +203,7 @@ function startRound() {
 
 function beginMatch() {
   mode = 'match'; modeT = 0; overT = 0;
+  fb.reset();
   hideOverlay();
   flash('Faceoff', 'Tap J the instant the puck lands', 1.6);
   sfx.whistle();
@@ -239,24 +253,14 @@ function flash(big: string, small = '', t = 1.2) {
   flashEl.innerHTML = big + (small ? `<small>${small}</small>` : '');
   flashEl.classList.add('on'); flashT = t;
 }
-const pops = $('pops');
-function pop(text: string, x: number, y: number, big: boolean) {
-  if (pops.childElementCount > 14) pops.firstElementChild!.remove();
-  const [sx, sy] = view.project(x, 2.4, y);
-  const el = document.createElement('div');
-  el.className = 'pop' + (big ? ' big' : '');
-  el.textContent = text;
-  el.style.left = Math.max(90, Math.min(window.innerWidth - 90, sx)) + 'px';
-  el.style.top = Math.max(70, sy - pops.childElementCount * 6) + 'px';
-  pops.appendChild(el);
-  setTimeout(() => el.remove(), 950);
-}
+const pop = (text: string, x: number, y: number, big: boolean) => fb.popAt(text, x, y, big);
 
-let slowT = 0, freezeT = 0;
+// Every sim event goes to the renderer (animation, props) and to the feedback system (all game feel).
+// What is left here is HUD text and the sounds that belong to no feedback event.
 function handle(e: Ev) {
   view.handle(e);
+  fb.handle(e);
   switch (e.t) {
-    case 'pop': pop(e.text!, e.x!, e.y!, !!e.big); sfx.tone(e.n || 0); break;
     case 'tier': {
       const n = e.n || 0;
       $('buffs').textContent = n ? `Momentum · shots +${n * 2}% · stamina +${n * 8}%` : 'No bonus yet';
@@ -264,31 +268,20 @@ function handle(e: Ev) {
       if (n < 4) { pop(e.big ? `Heat x${n + 1}` : n ? `Cooling off · x${n + 1}` : 'Heat lost', e.x!, e.y!, !!e.big); e.big ? sfx.tone(4 + n * 2) : sfx.cool(); }
       break;
     }
-    case 'pass': sfx.pass(); break;
-    case 'spin': sfx.pass(); break;
-    case 'deke': sfx.recv(); break;
-    case 'switch': sfx.recv(); break;
-    case 'recv': case 'pickup': sfx.recv(); break;
-    case 'shot': sfx.shot(!!e.big); break;
-    case 'hit': audio.play(e.big ? 'heavy_hit' : 'hit'); break;
-    case 'poke': case 'steal': audio.play('stick_clack'); break;
+    case 'switch': case 'pickup': sfx.recv(); break;
+    case 'poke': if (e.text === 'air') audio.play('stick_whiff'); break;   // a poke at nothing (a landed one is a feedback event)
     case 'pokeTry': audio.play('stick_whiff'); break;
     case 'stickDrop':
       audio.play('stick_drop');
       if (game.skaters.find(k => k.id === e.id)?.human) pop('Stick down! Skate over it', e.x!, e.y!, true);
       break;
     case 'stickPickup': case 'stickSpare': audio.play('stick_pickup'); break;
-    case 'slam': sfx.slam(); break;
-    case 'bump': sfx.board(e.big ? 22 : 10); break;
-    case 'save': case 'catch': sfx.save(); break;
-    case 'post': sfx.post(); break;
+    case 'catch': sfx.save(); break;
     case 'board': sfx.board(e.n || 10); break;
-    case 'slowmo': slowT = Math.max(slowT, e.n || 0.3); break;
-    case 'freeze': freezeT = Math.max(freezeT, e.n || 0.05); break;
     case 'drop': sfx.drop(); flashT = Math.min(flashT, 0.15); break;
     case 'early': flash('Too early', '', 0.5); break;
     case 'faceoff': if (mode === 'match') { flash('Faceoff', 'Tap J on the drop', 1.2); sfx.whistle(); } break;
-    case 'goal': sfx.horn(); flash(e.team === 0 ? 'Goal' : `${opp.code} score`, e.big && e.team === 0 ? 'One-timer' : '', 1.3); break;
+    case 'goal': if (e.team !== 0) flash(`${opp.code} score`, '', 1.0); break;   // our goals get the feedback system's goal card
     case 'fire': sfx.fire(); flash('On fire', 'Big hits launch them over the boards', 1.6); break;
     case 'warn': sfx.warn(); flash(opp.gimmick === 'zamboni' ? 'Ice machine' : 'Frost lane', 'Get out of the lane', 1.1); break;
     case 'lights': if (e.n === 0) { flash('Lights out', '', 1); sfx.warn(); } break;
@@ -301,7 +294,24 @@ const windEl = $('wind'), windFill = windEl.querySelector('u') as HTMLElement;
 const sprintEl = $('sprint'), sprintFill = sprintEl.querySelector('i') as HTMLElement;
 let sprintShow = 0, lastSprintW = -1;
 let lastScore = '', lastClock = '', lastHeat = -1, lastMult = 0, lastStyle = -1;
+// movement debug overlay (; key or ?movedbg): your skater's facing, skating direction, head yaw and shot side,
+// and every bot's AI state; the arrows on the ice are drawn by the view
+const moveDbgEl = Object.assign(document.createElement('pre'), { id: 'movedbg' });
+moveDbgEl.style.cssText = 'position:fixed;left:8px;top:96px;margin:0;padding:8px;background:#14171d;border:2px solid #3a424e;color:#eef1f4;font:500 11px/1.4 Archivo,monospace;z-index:50;pointer-events:none;display:none';
+document.body.appendChild(moveDbgEl);
+if (params.has('movedbg')) moveDbgEl.style.display = 'block';
+const deg = (a: number) => Math.round(a * 180 / Math.PI);
+function moveDbgText() {
+  const h = game.ctrl, sp = Math.hypot(h.vx, h.vy), hs = view.headState(game.skaters.indexOf(h));
+  const lines = [`you #${h.id}  ${h.hand > 0 ? 'right' : 'left'} shot${h.bh > 0.5 ? ' (backhand)' : ''}`,
+    `facing ${deg(h.face)}  skating ${sp > 0.3 ? deg(Math.atan2(h.vy, h.vx)) : '-'}  speed ${sp.toFixed(1)}  ${h.faceMode}`,
+    `head yaw ${hs ? deg(hs.twist) : '-'}  (limit ${deg(0.75)})`, ''];
+  for (const k of game.skaters) if (!k.human) lines.push(`#${k.id} ${k.team === 0 ? 'home' : 'away'} ${k.hand > 0 ? 'R' : 'L'} ${k.faceMode.padEnd(7)} ${k.ai.state ?? ''}`);
+  return lines.join('\n');
+}
+
 function hud() {
+  if (view.moveDbg && game) moveDbgEl.textContent = moveDbgText();
   const sc = game.score.join('-');
   if (sc !== lastScore) { lastScore = sc; $('s0').textContent = '' + game.score[0]; $('s1').textContent = '' + game.score[1]; }
   const c = game.ot ? 'OT' : `${Math.floor(game.clock / 60)}:${String(Math.ceil(game.clock) % 60).padStart(2, '0')}`;
@@ -352,27 +362,28 @@ function tick(now: number) {
   if (last) { frameMs.push(now - last); if (frameMs.length > 900) frameMs.shift(); }
   last = now;
   modeT += rdt;
-  let sdt = 0;
-  if (mode === 'match') {
-    if (freezeT > 0) freezeT -= rdt;
-    else {
-      let scale = 1;
-      if (slowT > 0) { slowT -= rdt; scale = 0.25; }
-      sdt = rdt * scale;
-      acc += sdt;
+  const paused = fb.hud.feelOpen;   // the feel panel pauses play while you tune
+  if (mode === 'match' && !paused) {
+    // hit stop and slow-mo only change how much real time the fixed step is fed: the sim runs the same
+    // steps on the same (latched) inputs either way. In net mode the scale is always 1.
+    acc += rdt * fb.time.simScale();
+    if (acc >= STEP) {
       const input = ctl();
       const t0 = performance.now();
       let n = 0;
       while (acc >= STEP && n < 8) { game.step(STEP, input); acc -= STEP; n++; }
       if (n === 8) acc = 0;
+      latched.clear();
       simMs += performance.now() - t0; simN++;
     }
     for (const e of game.events) handle(e);
     game.events.length = 0;
     if (game.phase === 'over') { overT += rdt; if (overT > 0.9) showEnd(); }
   }
+  debugTick(rdt);
+  fb.update(paused ? 0 : rdt, mode === 'match');
   if (flashT > 0) { flashT -= rdt; if (flashT <= 0) flashEl.classList.remove('on'); }
-  if (game) { hud(); view.frame(game, sdt, rdt); }
+  if (game) { hud(); view.frame(game, mode === 'match' && !paused ? rdt * fb.time.animScale() : 0, rdt); }
 }
 
 function perf() {
@@ -381,7 +392,7 @@ function perf() {
   return {
     backend: view.backend, frames: f.length, fps: +(1000 / avg).toFixed(1), avgMs: +avg.toFixed(2),
     p95Ms: +(f[Math.floor(f.length * 0.95)] || 0).toFixed(2), maxMs: +(f[f.length - 1] || 0).toFixed(2),
-    simMsPerFrame: +(simMs / (simN || 1)).toFixed(3),
+    simMsPerFrame: +(simMs / (simN || 1)).toFixed(3), fxMs: +fb.stats.frameMs.toFixed(3),
   };
 }
 
@@ -406,8 +417,134 @@ function perf() {
     // test rink only: put the loose puck at a point (puck readability probes)
     puckTo: (x: number, y: number) => { if (game.sandbox) { const p = game.pucks[0]; p.owner = null; p.x = x; p.y = y; p.vx = p.vy = 0; } },
     body: (i: number) => view.bodyFrame(i),
+    head: (i: number) => view.headState(i),
+    arms: (i: number) => view.armState(i),
+    stick: (i: number) => view.stickState(i),
+    // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
+    skaters: () => game.skaters.map(k => ({ id: k.id, team: k.team, human: k.human, x: k.x, y: k.y, vx: k.vx, vy: k.vy, face: k.face, hand: k.hand, bh: k.bh, mode: k.faceMode, ai: k.ai.state ?? '', stun: k.stun })),
+    tuning: { MOVE, AI, HANDS, CHECK, SHOT },   // live: edits apply on the next step
     stickDebug: (i: number) => view.stickDebug(i),
     blade: (i: number) => { const k = game.skaters[i]; return k ? view.bladeOffset(i, k.face, k.x, k.y) : null; },
+    // feedback layer: fire any event at an intensity, read what fired, change settings, run the full sweep
+    fx: {
+      fire: (name: string, i: number) => debugFire(name, i),
+      names: () => DEBUG.map(d => d[2]),
+      state: () => fb.snapshot(),
+      set: (p: Partial<typeof feel>) => { setFeel(p); fb.hud.drawFeel(); },
+      sweep: () => startSweep(),
+      sweeping: () => sweep.length > 0,
+      skip: () => fb.skip(),
+      config: FEEDBACK,   // live: edits apply to the next event
+      feelOpen: () => fb.hud.feelOpen,
+    },
   };
+  if (params.has('fxdebug')) { fb.hud.showDbg(true); drawDbg(); }
   requestAnimationFrame(tick);
 })();
+
+
+// ---------------------------------------------------------------- feel panel, debug hotkeys, goal skip
+// Debug: ` opens the panel. In a match the keys below fire every feedback event at the chosen intensity
+// (, low  . medium  / high), and \ fires all of them at all three levels in turn. Debug events go only to the
+// feedback system, never to the sim.
+type DebugEntry = [code: string, label: string, name: string];
+const DEBUG: DebugEntry[] = [
+  ['KeyT', 'T', 'pass_released'], ['Digit1', '1', 'pass_completed'], ['Digit2', '2', 'one_touch'], ['Digit3', '3', 'one_timer'],
+  ['Digit4', '4', 'shot_released'], ['Digit5', '5', 'post_hit'], ['Digit6', '6', 'near_miss'], ['Digit7', '7', 'save_made'],
+  ['Digit8', '8', 'check_landed'], ['Digit9', '9', 'check_board'], ['Digit0', '0', 'got_hit'], ['KeyY', 'Y', 'check_shove'],
+  ['KeyF', 'F', 'check_poke'], ['Minus', '-', 'streak_end'], ['Equal', '=', 'speed_burst'], ['KeyZ', 'Z', 'spin_move'],
+  ['KeyX', 'X', 'beat_defender'], ['KeyC', 'C', 'turnover_won'], ['KeyV', 'V', 'turnover_lost'], ['KeyM', 'M', 'faceoff_won'],
+  ['KeyG', 'G', 'heat_fire'], ['KeyB', 'B', 'goal_scored'], ['KeyN', 'N', 'goal_conceded'],
+];
+const DEBUG_CODES = new Set([...DEBUG.map(d => d[0]), 'Comma', 'Period', 'Slash', 'Backslash']);
+const LEVELS: Record<string, [string, number]> = { Comma: ['low', 0.15], Period: ['medium', 0.55], Slash: ['high', 1] };
+let dbgLevel: [string, number] = LEVELS.Period;
+let dbgStreak = 0;
+const sweep: { name: string; i: number; at: number }[] = [];
+let sweepClock = 0;
+
+/** a synthetic event at your skater (or the net), sent straight to the feedback system */
+function debugFire(name: string, i: number) {
+  const h = game.ctrl, f = h.face, dx = Math.cos(f), dy = Math.sin(f);
+  const foe = game.skaters.filter(k => k.team === 1).sort((a, b) => Math.hypot(a.x - h.x, a.y - h.y) - Math.hypot(b.x - h.x, b.y - h.y))[0];
+  const base: Ev = { t: name, i, x: h.x, y: h.y, team: 0, id: h.id, dx, dy };
+  const netX = 35.6;
+  const e: Ev = (() => {
+    switch (name) {
+      case 'pass_completed': dbgStreak++; return { ...base, n: dbgStreak, vid: h.id, tag: 'tape' };
+      case 'one_touch': dbgStreak++; return { ...base, n: dbgStreak };
+      case 'streak_end': { const n = Math.max(2, dbgStreak); dbgStreak = 0; return { ...base, n, tag: 'broken' }; }
+      case 'shot_released': return { ...base, big: i > 0.7, tag: 'slap', n: 30 + 30 * i };
+      case 'post_hit': return { ...base, x: netX, y: 2.1 };
+      case 'near_miss': return { ...base, x: netX, y: 2.6 };
+      case 'save_made': return { ...base, team: 1, x: netX - 1.5, y: 0.6, big: i > 0.7, tag: 'glove', dx: 1, dy: 0 };
+      case 'check_landed': return { ...base, vid: foe?.id, tag: i > 0.8 ? 'big' : 'hit', timed: i > 0.9 };
+      case 'check_board': return { ...base, t: 'check_landed', vid: foe?.id, tag: 'hit', board: true };
+      case 'got_hit': return { ...base, t: 'check_landed', team: 1, id: foe?.id, vid: h.id, tag: 'hit', dx: -dx, dy: -dy };
+      case 'check_shove': return { ...base, t: 'check_landed', vid: foe?.id, tag: 'shove' };
+      case 'check_poke': return { ...base, t: 'check_landed', vid: foe?.id, tag: 'poke' };
+      case 'turnover_won': return { ...base, t: 'turnover', tag: 'pickoff' };
+      case 'turnover_lost': return { ...base, t: 'turnover', team: 1, id: foe?.id };
+      case 'beat_defender': return { ...base, vid: foe?.id, tag: 'spin' };
+      case 'heat_fire': return { ...base, t: 'fire' };
+      case 'goal_scored': return { ...base, x: netX + 0.3, y: 0.4, n: i > 0.5 ? 3 : 0, text: i > 0.8 ? 'one_timer winner streak' : '' };
+      case 'goal_conceded': return { ...base, t: 'goal_scored', team: 1, x: -netX - 0.3, y: 0 };
+      default: return base;
+    }
+  })();
+  if (name === 'goal_scored' || name === 'goal_conceded') view.netGoal(e.team ?? 0);
+  fb.handle(e, true);
+}
+
+function startSweep() {
+  sweep.length = 0; sweepClock = 0;
+  let at = 0.2;
+  for (const [, , name] of DEBUG) for (const i of [0.15, 0.55, 1]) {
+    sweep.push({ name, i, at });
+    at += name.startsWith('goal') ? 2.6 : name === 'heat_fire' || name.includes('check') || name === 'one_timer' ? 0.9 : 0.5;
+  }
+}
+function debugTick(rdt: number) {
+  if (!sweep.length || mode !== 'match') return;
+  sweepClock += rdt;
+  while (sweep.length && sweep[0].at <= sweepClock) { const s = sweep.shift()!; debugFire(s.name, s.i); }
+  if (fb.hud.dbgOpen) drawDbg();
+}
+function drawDbg() {
+  const st = fb.snapshot();
+  const fired = Object.entries(st.fired).map(([k, v]) => `${k} ${v} (i ${st.lastI[k] ?? '-'})`).join('\n');
+  fb.hud.drawDbg(DEBUG.map(d => [d[1], d[2].replace(/_/g, ' ')]), dbgLevel[0],
+    `flow ${st.flow.rank} ${st.flow.pts} · streak ${st.streak} · particles ${st.particles} · voices ${st.voices}${st.net ? ' · net mode' : ''}\n${fired}`);
+}
+
+/** keys for the panels and the goal skip; true when the key was used up here */
+function uiKey(code: string): boolean {
+  if (code === 'KeyP') { fb.hud.showFeel(!fb.hud.feelOpen); keys.clear(); return true; }
+  if (fb.hud.feelOpen) {
+    const n = fb.hud.feelRows.length;
+    if (code === 'KeyW' || code === 'ArrowUp') fb.hud.feelSel = (fb.hud.feelSel + n - 1) % n;
+    else if (code === 'KeyS' || code === 'ArrowDown') fb.hud.feelSel = (fb.hud.feelSel + 1) % n;
+    else if (['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Enter', 'Space'].includes(code)) {
+      const d = code === 'KeyA' || code === 'ArrowLeft' ? -1 : 1, r = fb.hud.feelSel;
+      if (r === 0) setFeel({ intensity: feel.intensity + d * 0.1 });
+      else if (r === 1) setFeel({ shake: !feel.shake });
+      else if (r === 2) setFeel({ flashes: !feel.flashes });
+      else if (r === 3) setFeel({ slowmo: !feel.slowmo });
+      else if (r === 4) setFeel({ chroma: !feel.chroma });
+      else setFeel({ ...FEEL_DEFAULTS });
+    } else if (code === 'Escape') fb.hud.showFeel(false);
+    fb.hud.drawFeel();
+    return true;
+  }
+  if (code === 'Backquote') { fb.hud.showDbg(!fb.hud.dbgOpen); if (fb.hud.dbgOpen) drawDbg(); return true; }
+  if (fb.hud.dbgOpen && mode === 'match' && DEBUG_CODES.has(code)) {
+    if (LEVELS[code]) dbgLevel = LEVELS[code];
+    else if (code === 'Backslash') startSweep();
+    else { const d = DEBUG.find(x => x[0] === code); if (d) debugFire(d[2], dbgLevel[1]); }
+    drawDbg();
+    return true;
+  }
+  // goal celebration: J, Space, Enter or K cuts it short (only once it has had a moment to land)
+  if (mode === 'match' && fb.celebrating && ['KeyJ', 'Space', 'Enter', 'KeyK'].includes(code)) return fb.skip();
+  return false;
+}

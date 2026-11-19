@@ -2,7 +2,8 @@ import { FollowCam } from './camera';
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute, float, step } from 'three/tsl';
+import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute, float, step, pass, uniform } from 'three/tsl';
+import { rgbShift } from 'three/addons/tsl/display/RGBShiftNode.js';
 import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater, PR } from './sim';
 
 // GLB assets (see assets/PLAN.md). Each one replaces a procedural model after it loads;
@@ -35,10 +36,19 @@ interface SkaterView {
   gear?: THREE.Object3D[]; skaterKit?: THREE.Object3D[]; goalieLook?: boolean; outfit?: THREE.SkinnedMesh;
   gsave?: { clip: string; t: number; len: number };
   /** hit impact: a quick squash and lurch along the hit, so the contact lands with weight */
-  crunch?: { t: number; len: number; dx: number; dy: number };
+  /** squash and stretch from the feedback system: a > 0 squashes and lurches along (dx, dy), a < 0 stretches */
+  crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
   ikW?: number; ikT?: THREE.Vector3;
+  /** test: how many frames the arm-clip guard had to drop the arm IK */
+  ikGuard?: number;
+  /** the stick prop's resting position in the glove (the IK moves it; restored every frame) */
+  stickRest?: THREE.Vector3;
+  /** the cloned skater model (mirrored on x for a left shot) */
+  model?: THREE.Object3D;
+  /** bones the upper-body layer and stick IK turn: the clip's pose for each, and what the layers left last frame */
+  layer?: { bones: THREE.Object3D[]; base: THREE.Quaternion[]; out: THREE.Quaternion[]; ready: boolean };
 }
 /** locomotion loops and the phase (0..1) at which the left skate's push peaks in each, for phase-synced blends */
 /** height the IK aims the blade's lowest band at: just above the ice, so the blade sits on it rather than in it */
@@ -46,11 +56,20 @@ const IK_Y = 0.12;
 const LOCO: Record<string, number> = { stride: 0, cross_r: 0, cross_l: 0.5, back: 0 };
 /** ground covered per clip cycle (sim units), for distance matching: play rate = speed x duration / distance */
 const CYCLE_DIST: Record<string, number> = { stride: 6.7, cross_r: 5.2, cross_l: 5.2, back: 4.2 };
-const wrapA = (a: number) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+const wrapA = (a: number) => { if (!Number.isFinite(a)) return 0; while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+/** Head and chest look (upper-body layer): gain on the angle to the puck, the yaw limit off the body (rad, split
+ *  over spine and head), how fast it follows (per s), a deadzone against jitter at rest, and the angle past which
+ *  the puck counts as behind (the head keeps the side it already looks over instead of whipping across). */
+const HEAD = { gain: 0.55, max: 0.75, rate: 6, dead: 0.02, behind: 2.4 };
+/** Stick IK limits (rad from the clip pose). The stick turns in the bottom glove first (stickAim); the arms only
+ *  correct what is left, and are dropped if they would end up inside or behind the torso: torsoHalf is the torso's
+ *  half width and chestFront how far in front of the chest centre a hand must stay (model metres), slack the margin. */
+const ARM = { floor: 0.015, stickAim: 1.0, hand: 0.35, elbow: 0.3, shoulder: 0.3, topElbow: 0.5, topShoulder: 0.4, torsoHalf: 0.2, chestFront: 0.08, slack: 0.01 };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
 // ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
 const DBG = new URLSearchParams(location.search);
+const PMAX = 900, PF = 12;
 const INK = 0x2a3140, INK_W = 0.014, SKATER_SCALE = 1.4;
 
 function roundedOutline(off: number, seg = 10): [number, number][] {
@@ -90,9 +109,22 @@ export class View {
   camState() { return { ...this.cam.last, x: this.cam.x, z: this.cam.z, dist: this.cam.dist }; }
   private gems: THREE.Mesh[] = [];
   private parts!: THREE.InstancedMesh;
-  private pp = new Float32Array(400 * 8); // x y z vx vy vz life size
+  /** pooled particles, PF floats each: x y z vx vy vz life size kind gravity maxLife drag */
+  private pp = new Float32Array(PMAX * PF);
   private pcol: THREE.Color[] = [];
-  private pn = 0;
+  private pn = 0; private pSteal = 0;
+  /** particle budget (the feedback config can lower it) */
+  pBudget = PMAX;
+  /** ring pulses on the ice (catch pulse, release ring, impact ring) */
+  private rings: { m: THREE.Mesh; t: number; life: number; r0: number; r1: number }[] = [];
+  private ringI = 0;
+  /** puck release snap: stretched along its path for a moment */
+  private snapT = 0; private snapA = 0;
+  /** camera offsets the feedback system writes every frame (shake, kick, punch, roll, fov) */
+  fxCam = { ox: 0, oz: 0, roll: 0, fov: 0, punch: 0 };
+  /** chromatic pulse: amount and direction; the post pass only runs while it is non-zero */
+  private chromaAmt = uniform(0); private chromaAng = uniform(0);
+  private post: THREE.RenderPipeline | null = null; private postWarm = 0;
   private decals: THREE.Mesh[] = []; private decalI = 0;
   private nets: THREE.Group[] = []; private lamps: THREE.MeshBasicMaterial[] = [];
   private bulge = [0, 0]; private lampT = [0, 0];
@@ -114,8 +146,7 @@ export class View {
   private zam!: THREE.Group;
   private shockMesh!: THREE.Mesh; private shockT = 0; private shockR = 1;
   private pow!: THREE.Group; private powT = 0; private powS = 1;
-  private punch = 0; private kickX = 0; private kickZ = 0;
-  private camX = 0; private shake = 0; private t = 0;
+  private camX = 0; private t = 0;
   private dummy = new THREE.Object3D();
   private v3 = new THREE.Vector3();
 
@@ -135,6 +166,15 @@ export class View {
     this.buildActors();
     // assets load in the background so the game still starts at once
     if (assetMode !== 'off') this.assetsReady = this.loadAssets(assetMode === 'break');
+    // chromatic pulse: a post pass used only while a pulse is running (plain render otherwise)
+    if (!DBG.has('nopost')) {
+      try {
+        this.post = new THREE.RenderPipeline(this.renderer);
+        this.post.outputNode = rgbShift(pass(this.scene, this.camera), this.chromaAmt, this.chromaAng);
+        this.postWarm = 2;   // compile it on the first frames, not in the middle of the first goal
+        this.assetsReady.then(() => { this.postWarm = 2; });
+      } catch { this.post = null; }
+    }
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -594,7 +634,7 @@ export class View {
       model.rotation.y = Math.PI / 2; model.scale.setScalar(SKATER_SCALE);
       model.position.y = 0.02;   // blades sit exactly on the ice in Blender; a hair above stops them flickering into it
       for (const c of v.body.children) c.visible = false;
-      v.body.add(model);
+      v.body.add(model); v.model = model;
       // goalie gear (g_* pieces) vs the skater's helmet, visor and stick: one or the other is shown
       v.gear = []; v.skaterKit = [];
       model.traverse(o => {
@@ -619,7 +659,7 @@ export class View {
   /** The stick's blade and the bottom hand's grip, in the stick mesh's own space. Found once from the geometry in
    *  the first animated pose (lowest vertices = blade; the point on the shaft nearest the left hand = grip), so it
    *  does not depend on how the exporter laid out the mesh. */
-  private stickGeo: { blade: THREE.Vector3; top: THREE.Vector3; gripT: number } | null = null;
+  private stickGeo: { blade: THREE.Vector3; top: THREE.Vector3; gripT: number; band?: THREE.Vector3[] } | null = null;
   private stickOf(v: SkaterView) {
     // the stick node (a group of wood and tape meshes, parented to the top hand)
     if (!v.stick) v.body.traverse(o => { if (!v.stick && o.name === 'stick' && o.parent?.name === 'hand_r') v.stick = o; });
@@ -639,7 +679,10 @@ export class View {
       const n = Math.max(3, Math.floor(all.length * 0.08)), blade = new THREE.Vector3();
       for (let i = 0; i < n; i++) blade.add(all[i]); blade.divideScalar(n);
       const top = all.reduce((b, a) => a.distanceTo(blade) > b.distanceTo(blade) ? a : b, blade).clone();
-      this.stickGeo = { blade, top, gripT: -1 };
+      // heel and toe: the two ends of the blade's bottom band (keeping the whole blade above the ice, not just its middle)
+      const low = all.slice(0, n), heel = low.reduce((b, a) => a.distanceTo(blade) > b.distanceTo(blade) ? a : b, blade).clone();
+      const toe = low.reduce((b, a) => a.distanceTo(heel) > b.distanceTo(heel) ? a : b, heel).clone();
+      this.stickGeo = { blade, top, gripT: -1, band: [blade, heel, toe] };
     }
     if (this.stickGeo.gripT < 0 && v.anim && v.anim.cur !== 'idle') {
       // where the other (top) hand holds the shaft, read once from a real pose with the stick pointing down
@@ -668,6 +711,125 @@ export class View {
     return { meshes, info, lowestWorld: r(lo), gripT: +this.stickGeo.gripT.toFixed(2), bladeL: r(this.stickGeo.blade), topL: r(this.stickGeo.top), blade: r(wb), top: r(wt), handL: r(hl), handR: r(hr), root: r(v.root.position) };
   }
 
+  /** The upper-body layer and the stick IK turn bones on top of the clip pose. three.js's mixer only writes a bone
+   *  when its clip value changed since last frame, so on a frame where the pose is static (title screen and
+   *  pre-game run the clips at dt 0, hit stop, a held wind-up, any scrubbed clip) the bone still holds last frame's
+   *  layered rotation, and turning it again would stack: the head, spine and arms spin. So before layering, a bone
+   *  the mixer left alone is put back to its clip pose, and the clip pose is remembered whenever the mixer wrote. */
+  private layerBones(v: SkaterView) {
+    if (v.layer) return v.layer;
+    const bones = ['spine_02', 'spine_03', 'Head', 'upperarm_r', 'lowerarm_r', 'hand_r', 'upperarm_l', 'lowerarm_l', 'hand_l']
+      .map(n => v.body.getObjectByName(n)).filter((b): b is THREE.Object3D => !!b);
+    const st = this.stickOf(v);   // the stick prop is never animated, so its turn in the glove would stack too
+    if (st) { bones.push(st); v.stickRest = st.position.clone(); }
+    return (v.layer = { bones, base: bones.map(() => new THREE.Quaternion()), out: bones.map(() => new THREE.Quaternion()), ready: false });
+  }
+  private layerRestore(v: SkaterView) {
+    const L = this.layerBones(v);
+    if (v.stick && v.stickRest) v.stick.position.copy(v.stickRest);
+    L.bones.forEach((b, i) => {
+      if (L.ready && b.quaternion.equals(L.out[i])) { if (!DBG.has('nolayerfix')) b.quaternion.copy(L.base[i]); }   // mixer skipped it: back to the clip pose (?nolayerfix shows the old bug)
+      else L.base[i].copy(b.quaternion);   // the mixer wrote a fresh clip pose
+    });
+  }
+  private layerSave(v: SkaterView) {
+    const L = this.layerBones(v);
+    L.bones.forEach((b, i) => L.out[i].copy(b.quaternion));
+    L.ready = true;
+  }
+
+  /** test hook: upper-body look (twist) and how far each layered bone sits from its clip pose (rad). Bounded when
+   *  the layer is healthy; it grows without limit if layered rotations stack (the old spinning-head bug). */
+  headState(i: number) {
+    const v = this.skaters[i], L = v?.layer; if (!v || !L || !L.ready) return null;
+    const dev = L.bones.map((b, k) => b.quaternion.angleTo(L.base[k]));
+    const bad = L.bones.some(b => !Number.isFinite(b.quaternion.x + b.quaternion.y + b.quaternion.z + b.quaternion.w));
+    return { twist: v.mb?.twist ?? 0, head: dev[2] ?? 0, spine: Math.max(dev[0] ?? 0, dev[1] ?? 0), arms: Math.max(0, ...dev.slice(3)), nan: bad, mirrored: (v.model?.scale.x ?? 1) < 0 };
+  }
+
+  /** test hook: arm clipping. Closest distance (model units, 1 = skater height / 1.8 m) from each elbow and hand to the
+   *  torso's centre line (pelvis to neck), and where the blade is relative to the puck target. */
+  armState(i: number) {
+    const v = this.skaters[i]; if (!v?.model) return null;
+    v.root.updateMatrixWorld(true);
+    const P = (n: string) => { const o = v.body.getObjectByName(n); return o ? o.getWorldPosition(new THREE.Vector3()) : null; };
+    const a = P('pelvis'), b = P('neck_01'); if (!a || !b) return null;
+    const seg = (q: THREE.Vector3) => { const ab = b.clone().sub(a), t = Math.max(0, Math.min(1, q.clone().sub(a).dot(ab) / ab.lengthSq())); return q.distanceTo(a.clone().addScaledVector(ab, t)) / SKATER_SCALE; };
+    const r: Record<string, number> = {};
+    for (const n of ['lowerarm_r', 'hand_r', 'lowerarm_l', 'hand_l']) { const q = P(n); if (q) r[n] = +seg(q).toFixed(3); }
+    return { ...r, ikW: +(v.ikW ?? 0).toFixed(2), clip: v.anim?.cur, guard: v.ikGuard ?? 0 };
+  }
+
+  /** test hook: lowest point of skater i's stick blade (world height, ice = 0) and, for the carrier, how far the
+   *  drawn puck is from the drawn blade, and the puck's side offset toward the shot side */
+  stickState(i: number) {
+    const v = this.skaters[i], st = v ? this.stickOf(v) : null, g = this.stickGeo; if (!v || !st || !g || !st.visible) return null;
+    st.updateWorldMatrix(true, false);
+    const low = this.bladeLow(st), bw = g.blade.clone().applyMatrix4(st.matrixWorld);
+    const s = this.game?.skaters[i], p = this.game?.pucks[0];
+    if (!s || !p || p.owner !== s) return { low };
+    const px = this.puck.position.x, pz = this.puck.position.z;
+    return { low, gap: Math.hypot(bw.x - px, bw.z - pz), lat: (-Math.sin(s.face) * (px - s.x) + Math.cos(s.face) * (pz - s.y)) * s.hand };
+  }
+
+  /** debug overlay (; key or ?movedbg): white arrow = facing, yellow = skating direction and speed */
+  moveDbg = DBG.has('movedbg');
+  private dbgArrows: THREE.ArrowHelper[][] = [];
+  private drawMoveDbg(i: number, s: Skater) {
+    const a = this.dbgArrows[i] ??= [0xffffff, 0xffd400].map(c => { const h = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 1, c, 0.45, 0.3); this.scene.add(h); return h; });
+    const sp = Math.hypot(s.vx, s.vy);
+    a[0].visible = s.out <= 0; a[0].position.set(s.x, 0.2, s.y); a[0].setDirection(new THREE.Vector3(Math.cos(s.face), 0, Math.sin(s.face))); a[0].setLength(2.2, 0.45, 0.3);
+    a[1].position.set(s.x, 0.25, s.y); a[1].visible = sp > 0.3 && s.out <= 0;
+    if (sp > 0.3) { a[1].setDirection(new THREE.Vector3(s.vx / sp, 0, s.vy / sp)); a[1].setLength(0.6 + sp * 0.22, 0.4, 0.28); }
+  }
+
+  /** turn the stick in the bottom glove, about the glove, so `from` (a point on the stick) heads toward `to` */
+  private tsA = new THREE.Vector3(); private tsB = new THREE.Vector3();
+  private turnStick(v: SkaterView, st: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, lim: number) {
+    const glove = v.arms?.h_r ?? st.parent!, a = glove.getWorldPosition(this.tsA);
+    const e = from.sub(a), t = to.clone().sub(a);
+    if (e.lengthSq() < 1e-6 || t.lengthSq() < 1e-6) return;
+    const ang = Math.min(lim, e.angleTo(t)); if (!(ang >= 1e-4)) return;
+    const pivL = st.worldToLocal(a.clone());
+    this.rotWorld(st, this.tsB.crossVectors(e, t), ang);
+    const moved = st.localToWorld(pivL);   // keep the glove's grip point where it was
+    st.position.add(st.parent!.worldToLocal(a.clone()).sub(st.parent!.worldToLocal(moved)));
+    st.updateMatrixWorld(true);
+  }
+
+  /** Keep the whole blade (heel, middle, toe) on or above the ice: the clips swing it through the floor on the
+   *  stride and the IK can aim a little low, so after both the stick turns up in the glove until it clears. */
+  private stickFloor(v: SkaterView) {
+    const st = v.stick, g = this.stickGeo; if (!st || !g || !st.visible) return;
+    st.updateWorldMatrix(true, false);
+    for (let it = 0; it < 6; it++) {
+      const low = this.bladeLow(st); if (low >= ARM.floor) return;
+      const c = g.blade.clone().applyMatrix4(st.matrixWorld);
+      this.turnStick(v, st, c.clone(), c.clone().setY(c.y + (ARM.floor - low) + 0.01), 0.8);
+    }
+  }
+
+  /** lowest world height of the blade: its centre and the two ends of the bottom band (heel and toe) */
+  private bladeLow(st: THREE.Object3D): number {
+    const g = this.stickGeo!; let m = 1e9; const q = new THREE.Vector3();
+    for (const pt of g.band ?? [g.blade]) m = Math.min(m, q.copy(pt).applyMatrix4(st.matrixWorld).y);
+    return m;
+  }
+
+  /** Turn a bone by `ang` about a world-space axis. A left shot's model is mirrored (negative x scale), and a
+   *  rotation seen through a mirror turns the other way about the mirrored axis, so the axis and angle are taken
+   *  through the parent's full transform, reflection included (decompose puts the reflection on x). */
+  private rwP = new THREE.Vector3(); private rwS = new THREE.Vector3(); private rwQ = new THREE.Quaternion(); private rwD = new THREE.Quaternion(); private rwA = new THREE.Vector3();
+  private rotWorld(bone: THREE.Object3D, axis: THREE.Vector3, ang: number) {
+    if (!(Math.abs(ang) > 1e-5) || !(axis.lengthSq() > 1e-10)) return;   // also rejects NaN
+    bone.parent!.updateWorldMatrix(true, false);
+    bone.parent!.matrixWorld.decompose(this.rwP, this.rwQ, this.rwS);
+    const ax = this.rwA.copy(axis).normalize().applyQuaternion(this.rwQ.invert());   // scratch vector: called ~30x per skater per frame
+    if (this.rwS.x < 0) { ax.x = -ax.x; ang = -ang; }
+    bone.quaternion.premultiply(this.rwD.setFromAxisAngle(ax.normalize(), ang));
+    bone.updateMatrixWorld(true);
+  }
+
   /** Stick IK, applied after the clip and the upper-body layer each frame.
    *  The stick is held by the right (bottom) hand. CCD (cyclic coordinate descent) turns hand_r, lowerarm_r and
    *  upperarm_r, each a little per pass and within a limit from the animated pose, so the blade lands on its target;
@@ -694,12 +856,14 @@ export class View {
       else if (p.owner === s) { want = 1; T.set(p.x, IK_Y, p.y); }
       else if (p.kind === 'pass' && p.target === s && d < 5) { want = 0.85; T.set(p.x + p.vx * 0.08, IK_Y, p.y + p.vy * 0.08); }
       else if (!p.owner && d < 2.6) { want = 0.7; T.set(p.x, IK_Y, p.y); }
+      // defending, squared to the carrier: blade flat on the ice in the passing lane the sim has it sealing
+      else if ((s.faceMode === 'back' || s.faceMode === 'square') && p.owner && p.owner.team !== s.team) { want = 0.75; T.set(s.stickX, IK_Y, s.stickY); }
     }
     v.ikW = (v.ikW ?? 0) + (want - (v.ikW ?? 0)) * Math.min(1, rdt * (want > (v.ikW ?? 0) ? 14 : 6));
     const w = v.ikW;
     if (w < 0.02) return;
     v.root.updateMatrixWorld(true);
-    const { a, b, c, q, pq, bq } = this.ikV;
+    const { a, b, c } = this.ikV;
     const blade = () => c.copy(g.blade).applyMatrix4(st.matrixWorld);
     // one CCD step on a bone: turn it so (effector - joint) points at (target - joint), by at most `step`,
     // and never further than `limit` from where the clip put it
@@ -708,24 +872,46 @@ export class View {
       const e = eff.clone().sub(a), t = tgt.clone().sub(a);
       if (e.lengthSq() < 1e-6 || t.lengthSq() < 1e-6) return;
       e.normalize(); t.normalize();
-      const ang = Math.min(step, e.angleTo(t)) * w; if (ang < 1e-4) return;
-      q.setFromAxisAngle(b.crossVectors(e, t).normalize(), ang);
-      bone.parent!.getWorldQuaternion(pq); bone.getWorldQuaternion(bq);
-      bone.quaternion.copy(pq.invert().multiply(q).multiply(bq));
-      if (bone.quaternion.angleTo(orig) > limit) bone.quaternion.copy(orig).rotateTowards(bone.quaternion, limit);
-      bone.updateMatrixWorld(true);
+      const ang = Math.min(step, e.angleTo(t)) * w; if (!(ang >= 1e-4)) return;
+      this.rotWorld(bone, b.crossVectors(e, t), ang);   // no-op when e and t are parallel (zero axis)
+      if (bone.quaternion.angleTo(orig) > limit) { bone.quaternion.copy(orig).rotateTowards(bone.quaternion, limit); bone.updateMatrixWorld(true); }
     };
-    // bottom (right) arm drives the blade to the target
-    const R: [THREE.Object3D, number, number][] = [[A.h_r, 0.35, 0.9], [A.la_r, 0.3, 0.8], [A.ua_r, 0.25, 0.8]];
+    // How far behind the chest each hand and elbow sits, inside the torso's width (0 = clear). The clip pose is
+    // the reference: the IK may never push an arm further into or behind the body than the clip had it.
+    const chest = new THREE.Vector3(), fwd = new THREE.Vector3(Math.cos(s.face), 0, Math.sin(s.face)), side = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    const inside = () => {
+      (v.bones?.sp3 ?? A.ua_r.parent!).getWorldPosition(chest);   // upper spine: chest height and centre
+      let worst = 0; const q = new THREE.Vector3();
+      for (const bn of [A.h_r, A.la_r, A.h_l, A.la_l]) {
+        bn.getWorldPosition(q).sub(chest);
+        const lat = Math.abs(q.dot(side)) / SKATER_SCALE, f = q.dot(fwd) / SKATER_SCALE;
+        if (lat < ARM.torsoHalf) worst = Math.max(worst, (ARM.chestFront - f) * (1 - lat / ARM.torsoHalf));
+      }
+      return worst;
+    };
+    const before = inside();
+    const armBones = [A.h_r, A.la_r, A.ua_r, A.la_l, A.ua_l], clipPose = armBones.map(bn => bn.quaternion.clone());
+    // 1. turn the stick in the bottom glove, about the glove, toward the target: no arm moves, nothing can clip
+    const aim = (lim: number) => this.turnStick(v, st, blade().clone(), T, lim * w);
+    aim(ARM.stickAim);
+    // 2. the bottom arm makes the rest up, in small turns
+    const R: [THREE.Object3D, number, number][] = [[A.h_r, 0.15, ARM.hand], [A.la_r, 0.12, ARM.elbow], [A.ua_r, 0.1, ARM.shoulder]];
     const origR = R.map(([bn]) => bn.quaternion.clone());
-    for (let it = 0; it < 6; it++) R.forEach(([bn, step, lim], i) => turn(bn, blade().clone(), T, step, origR[i], lim));
-    // top (left) hand back onto the shaft at its grip
+    for (let it = 0; it < 4; it++) R.forEach(([bn, step, lim], i) => turn(bn, blade().clone(), T, step, origR[i], lim));
+    aim(ARM.stickAim * 0.5);
+    // 3. top hand back onto the shaft at its grip
     if (g.gripT > 0) {
       const grip = g.blade.clone().lerp(g.top, g.gripT).applyMatrix4(st.matrixWorld);
-      const Lc: [THREE.Object3D, number, number][] = [[A.la_l, 0.4, 1.1], [A.ua_l, 0.35, 1.0]];
+      const Lc: [THREE.Object3D, number, number][] = [[A.la_l, 0.2, ARM.topElbow], [A.ua_l, 0.15, ARM.topShoulder]];
       const origL = Lc.map(([bn]) => bn.quaternion.clone());
       const hand = new THREE.Vector3();
-      for (let it = 0; it < 6; it++) Lc.forEach(([bn, step, lim], i) => { A.h_l.getWorldPosition(hand); turn(bn, hand, grip, step, origL[i], lim); });
+      for (let it = 0; it < 4; it++) Lc.forEach(([bn, step, lim], i) => { A.h_l.getWorldPosition(hand); turn(bn, hand, grip, step, origL[i], lim); });
+    }
+    // 4. guard: if the arms ended up deeper in or behind the body than the clip had them, drop the arm part and
+    // keep only the stick turn (the blade lands a little off the puck rather than a glove coming out the back)
+    if (inside() > Math.max(before, 0) + ARM.slack) {
+      armBones.forEach((bn, i) => { bn.quaternion.copy(clipPose[i]); bn.updateMatrixWorld(true); });
+      v.ikGuard = (v.ikGuard ?? 0) + 1;
     }
   }
 
@@ -781,7 +967,9 @@ export class View {
       }
       f.stopT -= dt;
     }
-    f.yaw = wrapA(f.yaw + wrapA(-s.face - f.yaw) * Math.min(1, rdt * 14));
+    // shooting: the body comes round to the net with the shot instead of easing round after it
+    const shooting = (v.anim?.shotT ?? 0) > 0 || (s.wind >= 0 && this.game?.pucks[0].owner === s);
+    f.yaw = wrapA(f.yaw + wrapA(-s.face - f.yaw) * Math.min(1, rdt * (shooting ? 40 : 14)));
     const st = f.stopT > 0 ? Math.sin(Math.PI * Math.min(1, (0.45 - f.stopT) / 0.45)) : 0;
     v.body.rotation.order = 'YXZ';
     v.body.rotation.y = f.yaw;   // the facing itself turns through the stop: no extra spin on top
@@ -871,7 +1059,7 @@ export class View {
         // short, quick pushes while building speed; longer, slower strides once at speed.
         // a hard carve at speed switches to crossovers, stepping the outside skate over the inside one
         const e = v.feel?.effort ?? 0, tr = v.feel?.turn ?? 0;
-        const cx = tr > 0 ? 'cross_r' : 'cross_l';   // sim facing grows clockwise on screen: tr > 0 is a right turn
+        const cx = (tr > 0) === (s.hand > 0) ? 'cross_r' : 'cross_l';   // sim facing grows clockwise on screen: tr > 0 is a right turn; a mirrored (left shot) model plays the other clip
         const cross = !!a.acts[cx] && Math.abs(tr) > 1.6 && sp > 5;
         const act = play(cross ? cx : 'stride', 0.12);
         // distance matching: cadence follows ground speed, so pushes look like they produce the speed; building speed
@@ -892,25 +1080,24 @@ export class View {
    *  - each skater carries his own posture (more or less hunched) and a slow weight shift with his own phase
    *  Rotations are built about world axes converted into each bone's parent space, so they don't depend on
    *  how the rig's bones happen to be oriented. */
-  private mbQ = new THREE.Quaternion(); private mbP = new THREE.Quaternion(); private mbA = new THREE.Vector3();
+  private mbA = new THREE.Vector3();
   private microBlend(v: SkaterView, s: Skater, p: { x: number; y: number }, rdt: number) {
     const b = v.bones, m = v.mb; if (!b || !m || !v.anim) return;
     const busy = ['wrist_shot', 'slapshot', 'check', 'fall'].includes(v.anim.cur);
     const dx = p.x - s.x, dy = p.y - s.y, d = Math.hypot(dx, dy);
     // sim angles grow from +x toward +y, which is a negative turn about world +Y
-    const rel = d > 0.8 ? wrapA(Math.atan2(dy, dx) - s.face) : 0;
-    const want = busy ? 0 : Math.max(-0.75, Math.min(0.75, rel * 0.55)) * Math.min(1, d / 3) * (d < 22 ? 1 : 0);
-    m.twist += (want - m.twist) * Math.min(1, rdt * 6);
+    let rel = d > 0.8 ? wrapA(Math.atan2(dy, dx) - s.face) : 0;
+    // puck behind him: keep looking over the shoulder he already uses; the old clamp flipped +max to -max as he
+    // turned through it, whipping the head across on every turn
+    if (Math.abs(rel) > HEAD.behind && Math.abs(m.twist) > 0.05) rel = Math.sign(m.twist) * Math.abs(rel);
+    let want = busy ? 0 : Math.max(-HEAD.max, Math.min(HEAD.max, rel * HEAD.gain)) * Math.min(1, d / 3) * (d < 22 ? 1 : 0);
+    if (!Number.isFinite(want)) want = 0;
+    if (Math.abs(want - m.twist) > HEAD.dead || want === 0) m.twist += (want - m.twist) * Math.min(1, rdt * HEAD.rate);
+    if (!Number.isFinite(m.twist)) m.twist = 0;
     const t = this.t * m.sway + m.phase, shift = Math.sin(t) * 0.035, nod = Math.sin(t * 1.7 + 1) * 0.02;
     v.root.updateMatrixWorld(true);
     const fwd = this.mbA;
-    const rot = (bone: THREE.Object3D, axis: THREE.Vector3, ang: number) => {
-      if (Math.abs(ang) < 1e-4) return;
-      bone.parent!.getWorldQuaternion(this.mbP).invert();
-      const ax = axis.clone().applyQuaternion(this.mbP).normalize();
-      bone.quaternion.premultiply(this.mbQ.setFromAxisAngle(ax, ang));
-      bone.updateMatrixWorld(true);
-    };
+    const rot = (bone: THREE.Object3D, axis: THREE.Vector3, ang: number) => this.rotWorld(bone, axis, ang);
     const up = new THREE.Vector3(0, 1, 0);
     fwd.set(Math.cos(s.face), 0, Math.sin(s.face));
     const side = new THREE.Vector3().crossVectors(up, fwd).normalize();
@@ -1084,11 +1271,17 @@ export class View {
       gp.visible = false; this.scene.add(gp); this.ghosts.push(gp);
     }
     // particles
-    this.parts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), 400);
+    this.parts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial(), PMAX);
     const c = new THREE.Color(1, 1, 1);
-    for (let i = 0; i < 400; i++) { this.parts.setColorAt(i, c); this.pcol.push(new THREE.Color()); }
+    for (let i = 0; i < PMAX; i++) { this.parts.setColorAt(i, c); this.pcol.push(new THREE.Color()); }
     this.parts.count = 0; this.parts.frustumCulled = false;
     this.scene.add(this.parts);
+    const ringGeo = new THREE.RingGeometry(0.82, 1, 48);
+    for (let i = 0; i < 10; i++) {
+      const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false }));
+      m.rotation.x = -Math.PI / 2; m.visible = false; m.renderOrder = 2; this.scene.add(m);
+      this.rings.push({ m, t: 0, life: 1, r0: 0.3, r1: 2 });
+    }
   }
 
   setTeams(home: TeamDef, away: TeamDef, gemColors: number[]) {
@@ -1105,31 +1298,63 @@ export class View {
     });
     for (const d of this.decals) d.visible = false;
     this.pn = 0; this.lightK = 1; this.bulge = [0, 0]; this.lampT = [0, 0];
+    for (const r of this.rings) { r.t = 0; r.m.visible = false; }
   }
 
   // ------------------------------------------------------------ effects
-  burst(x: number, y: number, n: number, color: number, speed: number, up = 4, size = 0.14, h = 0.3) {
-    for (let i = 0; i < n && this.pn < 400; i++) {
-      const o = this.pn * 8, a = Math.random() * 6.283, s = speed * (0.3 + Math.random() * 0.7);
-      this.pp[o] = x; this.pp[o + 1] = h; this.pp[o + 2] = y;
-      this.pp[o + 3] = Math.cos(a) * s; this.pp[o + 4] = up * (0.4 + Math.random()); this.pp[o + 5] = Math.sin(a) * s;
-      this.pp[o + 6] = 0.35 + Math.random() * 0.5; this.pp[o + 7] = size * (0.6 + Math.random() * 0.8);
-      this.pcol[this.pn].setHex(color);
-      this.pn++;
+  /** a pool slot: the next free one, or (budget full) an old one is recycled so big moments always show */
+  private slot(): number {
+    if (this.pn < this.pBudget) return this.pn++;
+    return (this.pSteal = (this.pSteal + 7) % this.pn);
+  }
+  get particleCount() { return this.pn; }
+
+  /** Pooled particles. kind: 0 chunk (gravity), 1 spark (stretched along its path, light gravity),
+   *  2 confetti (flat, flutters down slowly), 3 speed line (no gravity), 4 trail (stays put and shrinks) */
+  emit(kind: number, x: number, y: number, n: number, color: number | number[], speed: number,
+    o: { up?: number; size?: number; life?: number; h?: number; dx?: number; dy?: number; spread?: number; vx?: number; vy?: number } = {}) {
+    const up = o.up ?? 4, size = o.size ?? 0.14, h = o.h ?? 0.3, life = o.life ?? 0.6;
+    const dir = o.dx !== undefined || o.dy !== undefined ? Math.atan2(o.dy ?? 0, o.dx ?? 0) : null;
+    const G = [18, 7, 2.2, 0, 0][kind] ?? 18, drag = [0, 1.2, 1.8, 0, 0][kind] ?? 0;
+    for (let i = 0; i < n; i++) {
+      const k = this.slot(), b = k * PF;
+      const a = dir === null ? Math.random() * 6.283 : dir + (Math.random() - 0.5) * (o.spread ?? 1.1);
+      const sp = speed * (0.3 + Math.random() * 0.7);
+      this.pp[b] = x; this.pp[b + 1] = h + (kind === 2 ? Math.random() * 1.5 : 0); this.pp[b + 2] = y;
+      this.pp[b + 3] = Math.cos(a) * sp + (o.vx ?? 0); this.pp[b + 4] = kind >= 3 ? 0 : up * (0.4 + Math.random()); this.pp[b + 5] = Math.sin(a) * sp + (o.vy ?? 0);
+      const l = life * (0.6 + Math.random() * 0.8);
+      this.pp[b + 6] = l; this.pp[b + 7] = size * (0.6 + Math.random() * 0.8);
+      this.pp[b + 8] = kind; this.pp[b + 9] = G; this.pp[b + 10] = l; this.pp[b + 11] = drag;
+      this.pcol[k].setHex(Array.isArray(color) ? color[(Math.random() * color.length) | 0] : color);
     }
   }
-
+  burst(x: number, y: number, n: number, color: number, speed: number, up = 4, size = 0.14, h = 0.3) {
+    this.emit(0, x, y, n, color, speed, { up, size, h, life: 0.6 });
+  }
   /** directional ice spray along a hit */
   spray(x: number, y: number, dx: number, dy: number, n: number, color: number, speed: number) {
-    for (let i = 0; i < n && this.pn < 400; i++) {
-      const o = this.pn * 8, a = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.1, s = speed * (0.35 + Math.random() * 0.65);
-      this.pp[o] = x; this.pp[o + 1] = 0.4; this.pp[o + 2] = y;
-      this.pp[o + 3] = Math.cos(a) * s; this.pp[o + 4] = 2 + Math.random() * 5; this.pp[o + 5] = Math.sin(a) * s;
-      this.pp[o + 6] = 0.4 + Math.random() * 0.5; this.pp[o + 7] = 0.1 + Math.random() * 0.14;
-      this.pcol[this.pn].setHex(color);
-      this.pn++;
-    }
+    this.emit(0, x, y, n, color, speed, { dx, dy, up: 4.5, size: 0.17, h: 0.4, life: 0.65 });
   }
+  /** a flat ring pulse on the ice: grows from r0 to r1 and fades */
+  ringPulse(x: number, y: number, color: number, r0: number, r1: number, life = 0.28) {
+    const r = this.rings[this.ringI++ % this.rings.length];
+    r.t = life; r.life = life; r.r0 = r0; r.r1 = r1;
+    r.m.position.set(x, 0.07, y); (r.m.material as THREE.MeshBasicMaterial).color.setHex(color); r.m.visible = true;
+  }
+  /** squash (a > 0) or stretch (a < 0) a skater by id for len seconds */
+  squash(id: number, a: number, dx = 0, dy = 0, len = 0.18) {
+    const vi = this.game?.skaters.findIndex(k => k.id === id) ?? -1;
+    const v = vi >= 0 ? this.skaters[vi] : null;
+    if (v) v.crunch = { t: len, len, dx, dy, a };
+  }
+  /** where the camera is looking (feedback scales far-away events down) */
+  camCenter(): [number, number] { return [this.camX, this.camZ]; }
+  puckSnap(a: number) { this.snapT = 0.12; this.snapA = a; }
+  setChroma(amount: number, angle: number) { this.chromaAmt.value = amount; this.chromaAng.value = angle; }
+  /** goal: net bulge, lamp and crowd (the rest of the goal moment is the feedback system's) */
+  netGoal(team: number) { const i = team === 0 ? 1 : 0; this.bulge[i] = 1; this.lampT[i] = 2.2; this.cheer = 2; }
+  /** world position of the net a team attacks */
+  netPos(team: number): [number, number] { return [team === 0 ? GL + NET_DEPTH * 0.5 : -GL - NET_DEPTH * 0.5, 0]; }
 
   private scuff(x: number, y: number, r: number) {
     const d = this.decals[this.decalI++ % this.decals.length];
@@ -1137,48 +1362,22 @@ export class View {
     d.rotation.z = Math.random() * 3; (d.material as THREE.MeshBasicMaterial).opacity = 0.16;
   }
 
+  /** Sim events that drive animation and physical props. All game-feel effects (particles, camera, flashes,
+   *  sound) come from the feedback system (src/feedback/system.ts), not from here. */
   handle(e: Ev) {
     const x = e.x ?? 0, y = e.y ?? 0;
     switch (e.t) {
-      case 'hit': {
-        const dx = e.dx ?? 0, dy = e.dy ?? 0;
-        if (e.id !== undefined) { const vi = this.game?.skaters.findIndex(k => k.id === e.id) ?? -1; if (vi >= 0 && this.skaters[vi]) this.skaters[vi].crunch = { t: e.big ? 0.22 : 0.15, len: e.big ? 0.22 : 0.15, dx, dy }; }
-        this.burst(x, y, e.big ? 44 : 20, 0xffffff, e.big ? 12 : 7, 6, e.big ? 0.22 : 0.16);
-        this.spray(x, y, dx, dy, e.big ? 40 : 16, 0xdff2ff, e.big ? 20 : 12);
-        this.scuff(x, y, e.big ? 1.0 : 0.6);
-        this.powT = e.big ? 0.3 : 0.2; this.powS = e.big ? 3.2 : 1.8;
-        this.pow.position.set(x, 0.05, y);
-        this.punch = Math.max(this.punch, e.big ? 1 : 0.4);
-        this.kickX += dx * (e.big ? 1.6 : 0.6); this.kickZ += dy * (e.big ? 1.6 : 0.6);
-        if (e.big) this.cheer = Math.max(this.cheer, 0.9);
-        break;
-      }
-      case 'bump': this.burst(x, y, e.big ? 12 : 5, 0xffffff, e.big ? 6 : 3.5, 2, 0.1); break;
+      case 'hit': this.scuff(x, y, e.big ? 1.0 : 0.6); if (e.big) this.cheer = Math.max(this.cheer, 0.9); break;   // a mark left on the ice
       // goalie read the shot: start the save so its reach meets the puck; a save or catch without a read starts it now
       case 'gread': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, e.n ?? 0); break;
-      case 'slam': this.burst(x, y, 14, 0xffffff, 6, 5, 0.14); this.kickX += Math.sign(x) * 0.3; break;
-      case 'shake': this.shake = Math.max(this.shake, e.n ?? 0.3); break;
-      case 'shot': this.burst(x, y, e.big ? 12 : 6, 0xdff2ff, 5, 3, 0.1); break;
-      case 'save': this.burst(x, y, 14, 0x9fd0ff, 7, 4, 0.12); if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;
-      case 'catch': this.burst(x, y, 18, 0xffffff, 5, 3, 0.12); this.punch = Math.max(this.punch, 0.35); if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;   // glove snaps shut
-      case 'post': this.burst(x, y, 10, 0xff5555, 6, 5, 0.1); break;
-      case 'poke': case 'steal': this.burst(x, y, 9, 0xffffff, 5, 2.5, 0.08); this.burst(x, y, 4, 0xffe9a8, 3, 2, 0.06); break;   // stick on stick: a white crack and a few wood chips
+      case 'save': case 'catch': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;
       case 'stickDrop': this.burst(x, y, 10, 0xd9c9a3, 5, 4, 0.1); this.spray(x, y, e.dx ?? 0, e.dy ?? 0, 10, 0xe8f4ff, 6); break;
-      case 'spin': this.burst(x, y, 10, 0xe8f4ff, 4, 1.5, 0.1); break;
-      case 'deke': this.burst(x, y, 8, 0x7fd8ff, 5, 3, 0.12); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;
       case 'poof': this.burst(x, y, 8, 0x9a6dff, 4, 3, 0.1); break;
       case 'crowd': this.burst(x, y, 24, 0xffb400, 6, 8, 0.2, 2); this.cheer = Math.max(this.cheer, 0.8); break;
       case 'shock': this.shockT = 0.4; this.shockR = e.n ?? 3; this.shockMesh.position.set(x, 0.06, y); break;
-      case 'fire': this.burst(x, y, 40, 0xff7a1e, 10, 8, 0.2); this.cheer = 1.2; break;
-      case 'goal': {
-        const i = e.team === 0 ? 1 : 0;
-        this.bulge[i] = 1; this.lampT[i] = 2.2; this.cheer = 2;
-        const cols = [0xffb400, 0xffffff, 0x1e90ff, 0xff3d6e];
-        for (const c of cols) this.burst(x, y, 22, c, 11, 9, 0.18, 0.8);
-        this.shake = Math.max(this.shake, 0.45);
-        break;
-      }
+      case 'fire': this.cheer = 1.2; break;
+      case 'goal': this.netGoal(e.team ?? 0); break;
     }
   }
 
@@ -1213,16 +1412,20 @@ export class View {
       }
       if (v.anim) {
         v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
+        if (v.model) v.model.scale.x = SKATER_SCALE * s.hand;   // a left shot is the mirror image: stick, clips and IK follow
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
+        this.layerRestore(v);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
         if (s.stun <= 0 && !s.air) this.microBlend(v, s, p, rdt);
         if (v.stick) v.stick.visible = s.stickless <= 0;
-        if (s.stickless <= 0) this.stickIK(v, s, p, rdt);
-        if (v.crunch) {   // hit impact: squash and lurch along the hit, then spring back
-          const c = v.crunch; c.t -= rdt;
-          const k = c.t > 0 ? Math.sin(Math.PI * (1 - c.t / c.len)) : 0;
-          v.body.scale.set(1 + 0.1 * k, 1 - 0.16 * k, 1 + 0.1 * k);
-          v.body.position.x = c.dx * 0.35 * k; v.body.position.z = c.dy * 0.35 * k;
+        if (s.stickless <= 0 && !DBG.has('noik')) this.stickIK(v, s, p, rdt);
+        if (s.stickless <= 0 && !DBG.has('nofloor')) this.stickFloor(v);
+        this.layerSave(v);
+        if (v.crunch) {   // impact: squash and lurch along the hit (or a stretch on a catch), then spring back
+          const c = v.crunch; c.t -= rdt;   // real time: the squash plays through the hit stop, so the freeze shows the impact
+          const u = 1 - c.t / c.len, k = c.t > 0 ? (u < 0.25 ? u / 0.25 : Math.sin(Math.PI * 0.5 * (1 - (u - 0.25) / 0.75))) * c.a : 0;
+          v.body.scale.set(1 + 0.6 * k, 1 - k, 1 + 0.6 * k);
+          v.body.position.x = c.dx * 2.2 * Math.max(0, k); v.body.position.z = c.dy * 2.2 * Math.max(0, k);
           if (c.t <= 0) { v.crunch = undefined; v.body.scale.set(1, 1, 1); v.body.position.x = v.body.position.z = 0; }
         }
         if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is
@@ -1233,10 +1436,14 @@ export class View {
             v.bladeDbg.position.copy(this.stickGeo.blade).applyMatrix4(st.matrixWorld);
           }
         }
+        // knocked flying: the slide throws ice the whole way, so how far a hit sent him reads at a glance
+        if (s.stun > 0 && dt > 0) { const sp = Math.hypot(s.vx, s.vy); if (sp > 3 && Math.random() < 0.1 + sp * 0.03) this.spray(s.x, s.y, s.vx / sp, s.vy / sp, 2, 0xe8f4ff, 3 + sp * 0.3); }
         // sprinting: each hard push kicks a little ice back off the skates
         if (s.sprint && !s.air && dt > 0 && Math.random() < 0.35) { const sp = Math.hypot(s.vx, s.vy) || 1; this.spray(s.x, s.y, -s.vx / sp, -s.vy / sp, 2, 0xe8f4ff, 4); }
       } else v.body.rotation.z = s.checkT > 0 ? -0.55 : s.wind >= 0 && p.owner === s ? 0.18 : -0.08 - Math.min(0.2, Math.hypot(s.vx, s.vy) * 0.02);
       v.root.scale.setScalar(boxed ? 0.6 : 1);
+      if (this.moveDbg) this.drawMoveDbg(i, s);
+      else if (this.dbgArrows[i]) this.dbgArrows[i].forEach(h => h.visible = false);
     }
     // goalie views with no goalie behind them (test rink) stay hidden
     for (let i = g.skaters.length + g.goalies.length; i < this.skaters.length; i++) this.skaters[i].root.visible = this.skaters[i].shadow.visible = false;
@@ -1292,13 +1499,22 @@ export class View {
     let pkx = p.x, pkz = p.y;
     if (p.owner && !p.held) {
       const oi = g.skaters.indexOf(p.owner), ov = oi >= 0 ? this.skaters[oi] : null, ost = ov ? ov.stick : null;
-      if (ov && ost && this.stickGeo && (ov.ikW ?? 0) > 0.5) {
+      if (ov && ost && ost.visible && this.stickGeo && (ov.ikW ?? 0) > 0.3) {
+        // the puck lives on the blade while carried: stickhandling and the stride move it with the stick (the sim's
+        // puck stays the truth for play; this is only where it is drawn, and only within a stick's reach of it)
         const bw = this.stickGeo.blade.clone().applyMatrix4(ost.matrixWorld);
         const gap = Math.hypot(bw.x - p.x, bw.z - p.y);
-        if (gap < 0.6) { const k = Math.min(1, (ov.ikW! - 0.5) * 2); pkx = p.x + (bw.x - p.x) * k; pkz = p.y + (bw.z - p.y) * k; }
+        const k = Math.min(1, (ov.ikW! - 0.3) / 0.4) * (gap < 1.0 ? 1 : Math.max(0, 1 - (gap - 1.0) / 0.5));
+        pkx = p.x + (bw.x - p.x) * k; pkz = p.y + (bw.z - p.y) * k;
       }
     }
     this.puck.position.set(pkx, 0.05 + dropH + lift, pkz);
+    if (this.snapT > 0) {   // release snap: the puck stretches along its path, then settles
+      this.snapT -= rdt;
+      const k = Math.max(0, this.snapT / 0.12) * this.snapA;
+      this.puck.rotation.y = -Math.atan2(p.vy, p.vx);
+      this.puck.scale.set(1 + 0.9 * k, 1 - 0.35 * k, 1 - 0.3 * k);
+    } else this.puck.scale.set(1, 1, 1);
     this.puck.visible = !p.held;   // in the goalie's glove
     this.puckGlow.position.set(pkx, 0.03, pkz);
     this.puckRing.position.set(pkx, 0.025, pkz); this.puckRing.visible = dropH === 0;
@@ -1348,22 +1564,45 @@ export class View {
     // particles
     const P = this.pp;
     for (let i = 0; i < this.pn;) {
-      const o = i * 8;
+      const o = i * PF;
       P[o + 6] -= dt;
       if (P[o + 6] <= 0) {
         this.pn--;
-        const l = this.pn * 8;
-        for (let k = 0; k < 8; k++) P[o + k] = P[l + k];
+        const l = this.pn * PF;
+        for (let k = 0; k < PF; k++) P[o + k] = P[l + k];
         this.pcol[i].copy(this.pcol[this.pn]);
         continue;
       }
-      P[o + 4] -= 18 * dt;
+      const kind = P[o + 8], drag = P[o + 11];
+      P[o + 4] -= P[o + 9] * dt;
+      if (drag > 0) { const f = Math.exp(-drag * dt); P[o + 3] *= f; P[o + 5] *= f; if (kind === 2) P[o + 4] = Math.max(P[o + 4], -1.6); }
       P[o] += P[o + 3] * dt; P[o + 1] += P[o + 4] * dt; P[o + 2] += P[o + 5] * dt;
       if (P[o + 1] < 0.05) { P[o + 1] = 0.05; P[o + 4] *= -0.3; P[o + 3] *= 0.7; P[o + 5] *= 0.7; }
-      const sc = P[o + 7] * Math.min(1, P[o + 6] * 4);
-      this.dummy.position.set(P[o], P[o + 1], P[o + 2]); this.dummy.rotation.set(i, i * 2, 0); this.dummy.scale.setScalar(sc);
+      const lf = P[o + 6] / P[o + 10];
+      const sz = P[o + 7] * (kind === 4 ? lf : Math.min(1, P[o + 6] * 4));
+      this.dummy.position.set(P[o], P[o + 1], P[o + 2]);
+      if (kind === 1 || kind === 3) {   // sparks and speed lines: thin streaks along their velocity
+        const vx = P[o + 3], vy = P[o + 4], vz = P[o + 5], hv = Math.hypot(vx, vz);
+        this.dummy.rotation.set(0, -Math.atan2(vz, vx), Math.atan2(vy, hv));
+        const len = kind === 3 ? P[o + 7] * 10 * Math.min(1, lf * 2) : Math.max(sz, Math.min(0.9, Math.hypot(hv, vy) * 0.045));
+        this.dummy.scale.set(len, sz * 0.35, sz * 0.35);
+      } else if (kind === 2) {          // confetti: flat chips that tumble
+        const tt = this.t * 9 + i;
+        this.dummy.rotation.set(Math.sin(tt) * 1.2, i, Math.cos(tt * 0.7));
+        this.dummy.scale.set(sz, sz * 0.12, sz * 0.7);
+        P[o + 3] += Math.sin(tt) * 2 * dt; P[o + 5] += Math.cos(tt * 1.3) * 2 * dt;
+      } else { this.dummy.rotation.set(i, i * 2, 0); this.dummy.scale.setScalar(sz); }
       this.dummy.updateMatrix(); this.parts.setMatrixAt(i, this.dummy.matrix); this.parts.setColorAt(i, this.pcol[i]);
       i++;
+    }
+    // ring pulses (real time: they read through hit stop as the impact itself)
+    for (const r of this.rings) {
+      if (r.t <= 0) continue;
+      r.t -= dt > 0 ? rdt : rdt * 0.25;
+      const k = 1 - Math.max(0, r.t) / r.life, e = 1 - Math.pow(1 - k, 3);
+      r.m.scale.setScalar(r.r0 + (r.r1 - r.r0) * e);
+      (r.m.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - k);
+      if (r.t <= 0) r.m.visible = false;
     }
     this.parts.count = this.pn;
     this.parts.instanceMatrix.needsUpdate = true;
@@ -1374,7 +1613,7 @@ export class View {
       this.bulge[i] = Math.max(0, this.bulge[i] - rdt * 3);
       this.nets[i].scale.x = (i === 0 ? -1 : 1) * (1 + this.bulge[i] * 0.45);
       this.lampT[i] = Math.max(0, this.lampT[i] - rdt);
-      this.lamps[i].color.setHex(this.lampT[i] > 0 && Math.sin(this.t * 30) > 0 ? 0xff2222 : 0x551111);
+      this.lamps[i].color.setHex(this.lampT[i] > 0 && Math.sin(this.t * 16) > 0 ? 0xff2222 : 0x551111);   // about 2.5 flashes a second (photosensitivity limit is 3)
     }
     // crowd bounce
     if (this.cheer > 0) {
@@ -1396,8 +1635,6 @@ export class View {
       this.pow.scale.setScalar(this.powS * (1 - 0.75 * k));
       ((this.pow.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.9 * k;
     }
-    this.punch = Math.max(0, this.punch - rdt * 4);
-    const kd = Math.exp(-rdt * 9); this.kickX *= kd; this.kickZ *= kd;
     // shockwave ring
     if (this.shockT > 0) {
       this.shockT -= rdt;
@@ -1439,12 +1676,16 @@ export class View {
     }, aspect < 1.6 ? (1.6 / aspect) ** 0.5 : 1);
     this.camX = cam.x; this.camZ = cam.z; this.camD = cam.dist;
     const dist = this.camD;
-    this.shake = Math.max(0, this.shake - rdt * 3);
-    const sx = (Math.random() - 0.5) * this.shake * 1.3 + this.kickX, sz = (Math.random() - 0.5) * this.shake * 1.3 + this.kickZ;
-    const pd = dist * (1 - 0.07 * this.punch);
-    const tx = this.camX + sx, tz = this.camZ + sz;
+    // feedback camera: trauma shake, directional kick, zoom punch, roll and fov kick (src/feedback/system.ts)
+    const F = this.fxCam;
+    const pd = dist * (1 - F.punch);
+    const tx = this.camX + F.ox, tz = this.camZ + F.oz;
     this.camera.position.set(tx - Math.cos(CAM_EL) * pd, Math.sin(CAM_EL) * pd, tz);
     this.camera.lookAt(tx, 0, tz);
-    this.renderer.render(this.scene, this.camera);
+    if (F.roll) this.camera.rotateZ(F.roll);
+    const fov = 38 + F.fov;
+    if (Math.abs(this.camera.fov - fov) > 1e-3) { this.camera.fov = fov; this.camera.updateProjectionMatrix(); }
+    if (this.post && (this.chromaAmt.value > 1e-4 || this.postWarm > 0)) { this.postWarm = Math.max(0, this.postWarm - 1); this.post.render(); }
+    else this.renderer.render(this.scene, this.camera);
   }
 }

@@ -1,4 +1,34 @@
-# Handoff: skater and goalie model work (2026-11-18)
+# Handoff: game-feel layer and hockey feel pass (2026-11-18)
+
+## State
+
+- **Committed on branch `hockey-feel`** (feedback layer plus the hockey feel pass: head/arm/stick fixes, facing,
+  movement, handedness, momentum checks, AI defense). See PLAN.md for the pass and CLAUDE.md for how it works.
+  Sim fingerprint now `a4e21c0c016c58d4` (gameplay changed on purpose). Next: the user's feel tuning.
+- Files: `src/feedback/` (events.ts, config.ts, settings.ts, time.ts, system.ts, hud.ts), edits to `src/sim.ts`
+  (event emits only), `src/render.ts` (fx API, particles, rings, chroma pass), `src/main.ts` (wiring, input latch,
+  P feel panel, backtick debug panel), `src/audio.ts` (voice pool, cues), `index.html` (HUD styles), new
+  `PLAN.md`, `tests/fx_probe.mjs`, `tests/fx_determinism.mjs`, `tests/fx_hitch.mjs`. CLAUDE.md has a section on
+  how the system works and how to add an event.
+
+## Verified
+
+- `npm run build` passes. `node tests/fx_probe.mjs`: 22 of 22 pass (every event at 3 levels, 60 fps with worst frame
+  16.8 ms through five max goals, toggles, live config, goal skip, input buffer, net mode, real play).
+- `node tests/fx_determinism.mjs`: the feedback layer left the fingerprint unchanged (`a03d0311ac598cbb`); the later hockey pass changed it to `a4e21c0c016c58d4`.
+- Playbot clean, no console errors.
+
+## Next
+
+- Tune by feel from the user's playtest: all numbers live in `src/feedback/config.ts`. Don't change the sim.
+- Open questions for the playtest: hit-stop length, goal slow-mo on repeat goals, wind-up hum and vignette,
+  top-speed lines, how quiet getting hit is, flow rank pace, streak pitch, shake vs puck readability.
+- Known, not from this work: a ~300 ms frame when a round starts (same on the previous commit).
+- Placeholders to replace later (synth sounds, box particles, plain rings, text-only goal card) are listed in PLAN.md.
+
+---
+
+# Earlier handoff: skater and goalie model work (2026-11-18)
 
 Latest commits:
 - `33f7088`: GitHub Pages deploy.
