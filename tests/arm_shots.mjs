@@ -20,14 +20,15 @@ const shots = [['1_sprint', 1], ['2_glide', -1], ['3_tight_turn', 1], ['4_backwa
 const got = [];
 for (const [name, hand] of shots) {
   let hit = null;
-  for (let n = 0; n < 1200 && !hit; n++) {
+  for (let n = 0; n < 3000 && !hit; n++) {
     hit = await page.evaluate(([name, hand, late]) => {
       const f = window.__faceoff, k = f.skaters(), g = f.gait(), a = f.anims(), own = f.puckOwner(), s = f.snap();
       if (s.phase !== 'play') return null;
       for (let i = 0; i < k.length; i++) {
         const c = k[i], sp = Math.hypot(c.vx, c.vy), m = g[i]?.mode, clip = a[i]?.clip;
         if (c.stun > 0 || (!late && c.hand !== hand)) continue;
-        if (!late && name !== '1_sprint' && Math.cos(c.face) > -0.2) continue;   // facing the camera (arms in view), except the sprint, shot from behind as in play
+        if (!late && name !== '1_sprint' && Math.cos(c.face) > -0.2) continue;
+        if (!late && k.some((o, j) => j !== i && Math.hypot(o.x - c.x, o.y - c.y) < 2.5)) continue;   // nobody close enough to block the view   // facing the camera (arms in view), except the sprint, shot from behind as in play
         const ok = name === '1_sprint' ? m === 'stride' && sp > 7.5 && own !== i
           : name === '2_glide' ? m === 'glide' && sp > 3 && own !== i
           : name === '3_tight_turn' ? m === 'cross'
@@ -37,7 +38,7 @@ for (const [name, hand] of shots) {
         if (ok) { f.freeze(true); f.closeCam(i, 5.5); return { i, hand: c.hand, speed: +sp.toFixed(1), mode: m, clip, bh: +c.bh.toFixed(2) }; }
       }
       return null;
-    }, [name, hand, n > 600]);
+    }, [name, hand, n > 900]);
     if (!hit) await page.waitForTimeout(25);
   }
   if (!hit) { console.log(`MISS  ${name}`); continue; }

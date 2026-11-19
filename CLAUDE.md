@@ -59,7 +59,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `a3c0e80fd8d4e3c9` since the arm and stick hold fix of 2026-11-19 (resting stick 1.85 ahead on the forehand side)),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `8f6475929cc84fc5` since the proportions fix of 2026-11-19 (resting stick `STICK.rest` 1.7 ahead, 0.45 to the forehand side)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -106,10 +106,17 @@
   the upper arm's frame, sign-corrected under the left-shot mirror), the arm swings from the shoulder onto the target,
   then rolls until the elbow points where the clip had it. Earlier versions (a free two-bone solve, a chosen knob
   spot, a fixed elbow pole, a wrist wrap) each bent the top-hand elbow inward, swung it back or cranked the wrist.
-  Arms and head are judged against anatomy, not the clip (`ANAT` in render.ts): elbows pointed down and back,
-  wrists within 28 deg of the bind pose, the top hand's spot in front of the belly, the head looking at the ice
-  `ANAT.gaze` m ahead, level, yaw capped (`headGaze`; `?noanat` turns the head layer off). Shots keep the clip's arms.
-  `node tests/arm_shots.mjs verify/roundN` renders the 6 review shots; an independent reviewer judges them (verify/VERDICT.md).
+  Proportions: the drawn stick is shortened to `STICK_HOLD.len` (0.9: to the chin) and the arms lengthened by
+  `ANAT.arm` (1.12, joints moved, nothing scaled; `?noarmlen`); with the model's own (91% stick, short arms) both
+  hands could not hold the stick below the chest with the blade on the ice.
+  Arms and head are judged against anatomy, not the clip (`ANAT` in render.ts): the stick is fitted between the blade
+  target and the top hand (in front of the belly, `ANAT.clear` off the spine, under the shoulder); the bottom hand
+  grips at `STICK_HOLD.bottom` and its collarbone drops (`ANAT.shrug`) if out of reach; elbows point down and back;
+  wrists within 28 deg of the bind pose; the head's axes come from the helmet and visor meshes (the bind pose's were
+  70-100 deg off) and it looks at the ice `ANAT.gaze` ahead (`visorTilt` calibrated by review), level, yaw capped
+  (`?noanat` turns the head layer off). Shots keep the clip's arms.
+  Verify poses with `node tests/arm_shots.mjs verify/roundN` (6 shots at the game camera) and a fresh subagent that
+  sees only the images and the anatomy rules (verify/VERDICT.md); numeric probes are a secondary check.
   Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
   `node tests/stick_state_probe.mjs` (and with `&noik` for the clip's own values) checks every state: shaft angle,
   blade height, top hand on the shaft, drawn blade vs collider, twist, inverted elbows, elbows swung behind the clip's,

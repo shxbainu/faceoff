@@ -21,12 +21,12 @@ const rows = await page.evaluate(async () => {
   const f = window.__faceoff, out = [];
   for (let n = 0; n < 160; n++) {
     await new Promise(r => setTimeout(r, 50));
-    const s = f.snap(), g = f.gait(), a = f.anims();
+    const s = f.snap(), g = f.gait(), a = f.anims(), sk = f.skaters();
     s.skaters.forEach((k, i) => {
       if (!k.ok && k.stun <= 0) return;
       const sp = f.stickPose(i); if (!sp) return;
-      const clip = a[i]?.clip, st = k.stun > 0 ? 'down' : ['wrist_shot', 'slapshot', 'check'].includes(clip) ? clip : f.puckOwner?.() === i ? 'puck' : g[i]?.mode;
-      out.push({ st, ...sp, efL: sp.elbowFwd?.[0], efR: sp.elbowFwd?.[1], wrL: sp.wristDev?.[0], wrR: sp.wristDev?.[1], euL: sp.elbowUp?.[0], euR: sp.elbowUp?.[1], hp: sp.headPitch, hr: Math.abs(sp.headRoll), knee: g[i]?.knee, lean: g[i]?.lean, hip: g[i]?.hip, twist: g[i]?.twist, chest: Math.abs(g[i]?.chestOff ?? NaN), hips: Math.abs(g[i]?.hipsOff ?? NaN), stickless: k.stickless > 0 });
+      const clip = a[i]?.clip, st = k.stun > 0 ? 'down' : ['wrist_shot', 'slapshot', 'check'].includes(clip) ? clip : f.puckOwner?.() === i ? (sk[i].bh > 0.5 ? 'backhand' : 'puck') : g[i]?.mode;
+      out.push({ st, ...sp, efL: sp.elbowFwd?.[0], efR: sp.elbowFwd?.[1], wrL: sp.wristDev?.[0], wrR: sp.wristDev?.[1], euL: sp.elbowUp?.[0], euR: sp.elbowUp?.[1], hp: sp.headPitch, huL: sp.handUp?.[0], huR: sp.handUp?.[1], hh: sp.handHead, bm: sp.botMiss, tl: sp.handLat?.[0], bl: sp.handLat?.[1], hand: sk[i].hand, kb: sp.knobBody, hy: sp.headYaw, hr: Math.abs(sp.headRoll), knee: g[i]?.knee, lean: g[i]?.lean, hip: g[i]?.hip, twist: g[i]?.twist, chest: Math.abs(g[i]?.chestOff ?? NaN), hips: Math.abs(g[i]?.hipsOff ?? NaN), stickless: k.stickless > 0 });
     });
   }
   // knocked down and getting up (big hits on two opponents), and the faceoff stance after a goal-free reset
@@ -56,8 +56,9 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
     `${q(c('topHand'), 0.5).toFixed(2)}/${q(c('topHand'), 0.9).toFixed(2)}`.padEnd(11) + `${q(c('toSim'), 0.9).toFixed(2)}`.padEnd(12) +
     `${q(R.flatMap(r => r.knee ?? []), 0.5)}`.padEnd(10) + `${q(c('lean'), 0.5)}`.padEnd(10) + `${q(c('hip'), 0.5)}`.padEnd(8) + `elbowFwd L ${q(c('efL'), 0.1)}/${q(c('efL'), 0.5)} R ${q(c('efR'), 0.1)}/${q(c('efR'), 0.5)}  wrist L ${q(c('wrL'), 0.5)}/${q(c('wrL'), 0.9)} R ${q(c('wrR'), 0.5)}/${q(c('wrR'), 0.9)}  head pitch ${q(c('hp'), 0.1)}/${q(c('hp'), 0.5)}/${q(c('hp'), 0.9)} roll p90 ${q(c('hr'), 0.9)}  elbowUp max L ${Math.max(...c('euL').filter(Number.isFinite))} R ${Math.max(...c('euR').filter(Number.isFinite))}  ` + `flipL ${(R.filter(r => r.elbowFlip?.[0]).length / R.length * 100).toFixed(0)}% flipR ${(R.filter(r => r.elbowFlip?.[1]).length / R.length * 100).toFixed(0)}%  ` + `twist ${q(c('twist'), 0.5)}/${q(c('twist'), 0.9)}  chest ${q(c('chest'), 0.5)}/${q(c('chest'), 0.9)}  hips ${q(c('hips'), 0.5)}/${q(c('hips'), 0.9)}`;
   console.log(line);
+  console.log(`          hands above shoulder p90 L ${q(c('huL'), 0.9)} R ${q(c('huR'), 0.9)}  hand-head min ${Math.min(...c('hh').filter(Number.isFinite))} p10 ${q(c('hh'), 0.1)}  knob-spine p10 ${q(c('kb'), 0.1)}  head yaw p90 ${q(c('hy'), 0.9)}  bottom-hand miss med ${q(c('bm'), 0.5)} p90 ${q(c('bm'), 0.9)}  lat top/bottom R-shots ${q(R.filter(r => r.hand > 0).map(r => r.tl), 0.5)}/${q(R.filter(r => r.hand > 0).map(r => r.bl), 0.5)} L-shots ${q(R.filter(r => r.hand < 0).map(r => r.tl), 0.5)}/${q(R.filter(r => r.hand < 0).map(r => r.bl), 0.5)}`);
   // skating states: the stick is held (top hand on it), angled like a stick not a cane, blade near the ice
-  if (['stride', 'glide', 'cross', 'back', 'ready', 'puck', 'stop'].includes(st)) {
+  if (['stride', 'glide', 'cross', 'back', 'ready', 'puck', 'backhand', 'stop'].includes(st)) {
     // top hand: the knuckles sit about 0.1 off the shaft line in a closed fist; a glove is about 0.15 across
     // the cane this probe was written for measured a median shaft of 29-32 deg; a held stick runs 40-60
     const bad = q(c('shaft'), 0.5) < 36 || q(c('shaft'), 0.1) < 25 || q(c('topHand'), 0.5) > 0.15 || q(c('topHand'), 0.9) > 0.3 || q(c('bladeY'), 0.9) > (st === 'stop' ? 0.45 : 0.35);   // a hard stop lifts the blade a little, as players do
@@ -70,6 +71,7 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
     if (q(c('efL'), 0.1) < -0.85 || q(c('efR'), 0.1) < -0.85) { console.log(`FAIL  ${st}: an elbow swung back behind the body`); fails++; }
     // head: eyes on the ice a few metres ahead (about 10-35 deg below level), not rolled onto a shoulder
     if (q(c('hp'), 0.1) < 5 || q(c('hp'), 0.9) > 45 || q(c('hr'), 0.9) > 10) { console.log(`FAIL  ${st}: head not looking at the ice ahead, or rolled`); fails++; }
+    if (q(c('kb'), 0.1) < 0.4) { console.log(`FAIL  ${st}: the knob comes into the torso (p10 ${q(c('kb'), 0.1)} from the spine line)`); fails++; }
     if (Math.max(...c('wrL'), ...c('wrR')) > 30) { console.log(`FAIL  ${st}: a wrist bent more than 30 deg`); fails++; }
     if (q(c('twist'), 0.9) > 32) { console.log(`FAIL  ${st}: shoulders twisted off the hips (p90 ${q(c('twist'), 0.9)} deg)`); fails++; }
   }
