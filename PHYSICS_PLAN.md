@@ -78,3 +78,30 @@ around Rapier in this spike. Step cost is 0.024-0.033 ms in every engine.
 
 Verdict: step cost, init and determinism (all three browser engines) pass. Load size is the one cost: about 1 MB gzip more, loaded alongside
 the 5.5 MB skater GLB.
+
+## Step 1 results (2026-11-19): rink and puck, behind `?rapier`
+
+`src/physics/rink.ts` holds the boards (2-unit solid boxes outside the rounded rectangle; corner boxes run 1 unit
+past their ends so a puck pushed in leaves through the inner face), and the nets (sides and back, open mouth). It
+also has one CCD puck body that moves each free puck a step (`puckStep`, damping 0.4, restitution 0.55 boards and
+0.4 net, as before). The puck's state stays on the `Puck`, so the world keeps no game state. `puckOut` moves a puck
+that game code left inside a wall (a blade deflection, a carry) to the wall surface; it runs once per puck at the end
+of the play step. Rapier loads as its own chunk only with `?rapier`, in parallel with the renderer.
+
+`node tests/rapier_compare.mjs` (8 bot matches, old against Rapier, Node):
+
+| | old | Rapier |
+|---|---|---|
+| goals / shots / saves | 25 / 91 / 60 | 28 / 82 / 61 |
+| board hits / posts | 60 / 1 | 55 / 3 |
+| steps with the puck outside the rink | 0 | 0 |
+| deterministic (two runs) | | yes |
+
+A single bounce (sides, ends, 45 degrees, corner, back of the net) leaves at the same speed within 0.1 u/s. The
+average speed off the boards in matches (19.7 old, 14.9 Rapier) differs because the two count different light
+contacts, not because bounces are weaker. Browser: 60 fps either way; the sim costs 0.21 ms a frame with Rapier
+against 0.15 without; ready in 0.9 s against 0.66 s (localhost). With the flag off the fingerprint is unchanged
+(`8f6475929cc84fc5`).
+
+Found on the way: the old carry path never kept a carried puck inside the boards when the blade collider was off.
+The end-of-step `puckOut` covers it under Rapier.

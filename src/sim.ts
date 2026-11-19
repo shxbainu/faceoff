@@ -4,6 +4,7 @@
 // never reads anything back from the feedback system.
 import { ABILITIES, AbilityId, LOADOUT, ABILITY_AI } from './abilities';
 import type { FxFields } from './feedback/events';
+import { PHYS, puckStep, puckOut } from './physics/rink';
 
 export const L = 40; // half length (x). Was 22: skaters were ~10% of the rink width, the reference is ~3%
 export const W = 19; // half width (y, screen-down is +y)
@@ -485,6 +486,8 @@ export class Game {
     for (const s of this.skaters) this.placeBlade(s, dt);
     for (const s of this.skaters) if (s.pokeT > -dt && !s.pokeHit) this.pokeContact(s, dt);
     for (const p of this.pucks) if (p.alive) this.updatePuck(p, dt);
+    // ?rapier: blades, carries and pickups can leave a puck inside the boards; Rapier puts it back on the surface
+    if (PHYS.rapier && this.phase === 'play') for (const p of this.pucks) if (p.alive && !p.held) puckOut(p);
     for (let i = this.pucks.length - 1; i >= 1; i--) if (!this.pucks[i].alive) this.pucks.splice(i, 1);
     const o = this.pucks[0].owner;
     if (o) this.stats.attack[o.team] += dt;
@@ -1602,12 +1605,13 @@ export class Game {
       return;
     }
     p.age += dt;
-    const f = Math.exp(-0.4 * dt); p.vx *= f; p.vy *= f;
-    const x0 = p.x, y0 = p.y;
-    p.x += p.vx * dt; p.y += p.vy * dt;
-    if (p.cc > 0 && p.age < p.cT) {
-      const k = p.cc * (1 - (2 * p.age) / p.cT) * dt;
-      p.x += p.cpx * k; p.y += p.cpy * k;
+    const x0 = p.x, y0 = p.y, ck = p.cc > 0 && p.age < p.cT ? p.cc * (1 - (2 * p.age) / p.cT) * dt : 0;
+    // ?rapier: Rapier moves the puck through the boards and nets (CCD); otherwise the hand-written step below
+    const rHit = PHYS.rapier ? puckStep(p, dt, p.cpx * ck, p.cpy * ck) : null;
+    if (!rHit) {
+      const f = Math.exp(-0.4 * dt); p.vx *= f; p.vy *= f;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (ck) { p.x += p.cpx * ck; p.y += p.cpy * ck; }
     }
     // tape to tape: a pass bends gently toward its receiver as he moves (not for curve passes mid-bend)
     if (p.kind === 'pass' && p.target && this.active(p.target) && !(p.cc > 0 && p.age < p.cT)) {
@@ -1628,8 +1632,8 @@ export class Game {
     if (Math.abs(p.x) >= GL && Math.abs(x0) < GL && x0 * gs > 0 && Math.abs(p.y) < GOAL_HALF - PR * 0.5) { this.goal(p); return; }
     if (p.kind === 'shot' && !p.ghost && Math.abs(p.x) >= GL && Math.abs(x0) < GL && x0 * gs > 0 && Math.abs(p.y) > GOAL_HALF + 0.25 && Math.abs(p.y) < GOAL_HALF + 1.4)
       this.fx({ t: 'near_miss', i: clamp(1 - (Math.abs(p.y) - GOAL_HALF - 0.25) / 1.15, 0, 1), team: p.lastTeam, id: p.shooter?.id, x: p.x, y: p.y });
-    let bounced = collideBoards(p, PR, 0.55, true);
-    if (collideNet(p, PR, 0.4, true)) { bounced = true; if (Math.abs(p.y) > GOAL_HALF - 0.3 && Math.abs(p.y) < GOAL_HALF + 0.4) this.ev({ t: 'post', x: p.x, y: p.y }); if (p.kind === 'shot') this.fx({ t: 'post_hit', i: clamp(Math.hypot(p.vx, p.vy) / 40, 0.3, 1), team: p.lastTeam, id: p.shooter?.id, x: p.x, y: p.y }); }
+    let bounced = rHit ? rHit.board || rHit.net : collideBoards(p, PR, 0.55, true);
+    if (rHit ? rHit.net : collideNet(p, PR, 0.4, true)) { bounced = true; if (Math.abs(p.y) > GOAL_HALF - 0.3 && Math.abs(p.y) < GOAL_HALF + 0.4) this.ev({ t: 'post', x: p.x, y: p.y }); if (p.kind === 'shot') this.fx({ t: 'post_hit', i: clamp(Math.hypot(p.vx, p.vy) / 40, 0.3, 1), team: p.lastTeam, id: p.shooter?.id, x: p.x, y: p.y }); }
     if (bounced) {
       if (p.ghost) { p.alive = false; return; }
       this.ev({ t: 'board', x: p.x, y: p.y, n: Math.hypot(p.vx, p.vy) });

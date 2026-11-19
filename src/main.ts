@@ -1,3 +1,4 @@
+import { PHYS, initPhysics } from './physics/rink';
 import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT, STICK, ABILITY_FORCE, ABILITY_ON } from './sim';
 import { View, GAIT } from './render';
 import { RAGDOLL } from './ragdoll';
@@ -438,7 +439,11 @@ function perf() {
 
 (async () => {
   setTeamSize(params.get('team') === '3' ? 3 : 5);
+  PHYS.rapier = params.has('rapier');   // PHYSICS_PLAN.md: Rapier puck, boards and nets
+  // loads alongside the renderer and its assets; if it fails, play on the old physics instead of hanging
+  const physReady = PHYS.rapier ? initPhysics().catch(e => { console.warn('Rapier failed, old physics', e); PHYS.rapier = false; }) : null;
   await view.init($('gl') as HTMLCanvasElement, params.has('webgl'), params.has('noassets') ? 'off' : params.has('breakassets') ? 'break' : 'on');
+  await physReady;
   opp = OPPONENTS[0];
   game = new Game(1, opp, powers, 1);
   game.events.length = 0;
