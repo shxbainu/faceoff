@@ -58,7 +58,8 @@ interface SkaterView {
   stag?: { t: number; dx: number; dy: number; a: number };
   gait?: { mode: string; ph: number; amp: number; w: number; turn: number; tgt: number[][]; rig?: GaitRig; contact: boolean[] };
 }
-interface GaitRig { leg: number; footY: number; bones: { th: THREE.Object3D; ca: THREE.Object3D; ft: THREE.Object3D; r: boolean }[]; pelvis: THREE.Object3D; sp1: THREE.Object3D; sp3: THREE.Object3D }
+interface GaitRig { leg: number; footY: number; bones: { th: THREE.Object3D; ca: THREE.Object3D; ft: THREE.Object3D; r: boolean }[]; pelvis: THREE.Object3D; sp1: THREE.Object3D; sp3: THREE.Object3D;
+  neck: THREE.Object3D; head: THREE.Object3D; ua: THREE.Object3D[]; la: THREE.Object3D[] }
 /** locomotion loops and the phase (0..1) at which the left skate's push peaks in each, for phase-synced blends */
 /** height the IK aims the blade's lowest band at: just above the ice, so the blade sits on it rather than in it */
 const IK_Y = 0.12;
@@ -78,9 +79,17 @@ const HEAD = { gain: 0.55, max: 0.75, rate: 6, dead: 0.02, behind: 2.4 };
  *  extra at speed; sway: hips over the gliding skate; lean: forward chest lean at top speed (rad); toeMax: most toe-out
  *  on a push (rad); blend: how fast the legs ease between states (per s); glideW/readyW: stance half widths. */
 export const GAIT = {
-  cycle: [3.0, 7.0], effortShort: 0.4, minHz: 1.3, maxHz: 2.4, push: 0.56,
-  out: [0.3, 0.7], inW: 0.1, set: 0.18, back: [0.12, 0.42], lift: 0.16,
-  crouch: [0.07, 0.11], sway: 0.35, lean: 0.32, toeMax: 0.75, blend: 14,
+  cycle: [3.0, 7.0], effortShort: 0.4, minHz: 1.3, maxHz: 2.4, push: 0.58,
+  // push path: diagonally out and back, sized so the leg ends just short of straight at the hip height below
+  out: [0.25, 0.56], inW: 0.09, set: 0.16, back: [0.18, 0.46], lift: 0.06,
+  // hip (thigh joint) height above the blade, in leg lengths: about a 115 degree knee standing or gliding, about
+  // 100 degrees at full speed; dips a little as each push extends. Absolute, so the clip's own crouch can't stack.
+  hip: [0.86, 0.79], hipDip: 0.025, sway: 0.4, toeMax: 0.7, blend: 14,
+  // torso lean from vertical (rad, pelvis to neck): ready, glide, stride at a crawl and at top speed, backward, stop
+  lean: { ready: 0.22, glide: 0.33, stride: [0.42, 0.64], back: 0.3, stop: 0.2, cross: 0.55 },
+  // upper body from the same stride phase: pelvis yaw, shoulder counter-rotation, arm swing (free arm and the stick
+  // arm), how much calmer it all is with the puck, how level the head is held (1 = fully)
+  pelvisYaw: 0.12, shoulders: 0.2, armFree: 0.55, armStick: 0.22, puckCalm: 0.45, headLevel: 0.85,
   glideW: 0.17, readyW: 0.24, stopW: 0.3, backOut: 0.42, crossOut: 0.5, crossOver: 0.28,
 };
 /** Stick IK limits (rad from the clip pose). The stick turns in the bottom glove first (stickAim); the arms only
@@ -1085,9 +1094,11 @@ export class View {
           const latV = (out - G.inW) * 2 * u / P * hz * leg, fwdV = sp - (G.set + back) * 2 * u / P * hz * leg;
           return Math.min(G.toeMax, Math.atan2(latV, Math.max(0.6, fwdV)));
         };
-        if (ps < P) { const u = ps / P, e = u * u; return [sg * (G.inW + (out - G.inW) * e), G.set - (G.set + back) * e, 0, sg * toe(u)]; }
-        const u = (ps - P) / (1 - P), e = sm(u);
-        return [sg * (out + (G.inW - out) * e), -back + (G.set + back) * e, G.lift * (0.4 + 0.6 * A) * Math.sin(Math.PI * u), sg * toe(1) * (1 - e)];
+        // push: glides first, then drives out and back, fastest at the end (a smooth u^1.6 arc, no snap at the turn)
+        if (ps < P) { const u = ps / P, e = Math.pow(u, 1.6); return [sg * (G.inW + (out - G.inW) * e), G.set - (G.set + back) * e, 0, sg * toe(u)]; }
+        // recovery: comes in under the hips first (lateral leads), then forward to set down, low over the ice
+        const u = (ps - P) / (1 - P), eL = sm(Math.min(1, u * 1.4)), eF = sm(u);
+        return [sg * (out + (G.inW - out) * eL), -back + (G.set + back) * eF, G.lift * (0.5 + 0.5 * A) * Math.sin(Math.PI * u), sg * toe(1) * (1 - eL)];
       }
       case 'cross': {
         // outward from the turn, in side-axis terms: a positive path turn bends toward -side
@@ -1131,8 +1142,9 @@ export class View {
     v.root.updateMatrixWorld(true);
     if (!g.rig) {
       const B = (n: string) => v.body.getObjectByName(n);
-      const pelvis = B('pelvis'), sp1 = B('spine_01'), sp3 = B('spine_03');
-      if (!pelvis || !sp1 || !sp3) return;
+      const pelvis = B('pelvis'), sp1 = B('spine_01'), sp3 = B('spine_03'), neck = B('neck_01'), head = B('Head');
+      const ua = [B('upperarm_l'), B('upperarm_r')], la = [B('lowerarm_l'), B('lowerarm_r')];
+      if (!pelvis || !sp1 || !sp3 || !neck || !head || ua.some(b => !b) || la.some(b => !b)) return;
       const bones = (['l', 'r'] as const).map(x => ({ th: B('thigh_' + x)!, ca: B('calf_' + x)!, ft: B('foot_' + x)!, r: x === 'r' }));
       if (bones.some(b => !b.th || !b.ca || !b.ft)) return;
       const th = bones[0].th.getWorldPosition(W.a), ca = bones[0].ca.getWorldPosition(W.b), ft = bones[0].ft.getWorldPosition(W.c);
@@ -1144,7 +1156,7 @@ export class View {
         const e = b.ft.matrixWorld.elements;
         (b as any).ax = [new THREE.Vector3(e[0], e[1], e[2]).normalize().transformDirection(inv), new THREE.Vector3(e[4], e[5], e[6]).normalize().transformDirection(inv)];
       }
-      g.rig = { leg, footY, bones, pelvis, sp1, sp3 };
+      g.rig = { leg, footY, bones, pelvis, sp1, sp3, neck, head, ua: ua as THREE.Object3D[], la: la as THREE.Object3D[] };
     }
     const R = g.rig!, leg = R.leg;
     g.w += ((g.mode === 'off' ? 0 : 1) - g.w) * Math.min(1, rdt * 8);
@@ -1165,15 +1177,20 @@ export class View {
       for (let j = 0; j < 4; j++) cur[j] += (t[j] - cur[j]) * (g.mode === 'stride' || g.mode === 'back' || g.mode === 'cross' ? Math.max(ease, 0.5) : ease);
       g.contact[i] = cur[2] < 0.01;
     });
-    // hips: drop with speed, sway over the gliding skate (away from the pushing one); chest leans in with speed
-    const latMean = (g.tgt[0][0] + g.tgt[1][0]) * 0.5;
-    const drop = leg * (GAIT.crouch[0] + (GAIT.crouch[1] - GAIT.crouch[0]) * k + (g.mode === 'stop' ? 0.05 : 0)) * g.w;
+    // hips: set to an absolute height (athletic stance, not the clip's squat), dipping as each push extends, and
+    // swayed over the gliding skate (away from the pushing one)
+    const latMean = (g.tgt[0][0] + g.tgt[1][0]) * 0.5, stepping = g.mode === 'stride' || g.mode === 'cross' || g.mode === 'back';
+    const pushX = stepping ? Math.max(Math.abs(g.tgt[0][0]), Math.abs(g.tgt[1][0])) / Math.max(0.01, GAIT.out[1]) : 0;
+    const hipH = (GAIT.hip[0] + (GAIT.hip[1] - GAIT.hip[0]) * (stepping ? k : 0.3 * k) - GAIT.hipDip * pushX * g.amp - (g.mode === 'stop' ? 0.05 : 0)) * leg;
+    const hipNow = (R.bones[0].th.getWorldPosition(W.a).y + R.bones[1].th.getWorldPosition(W.b).y) / 2 - v.root.position.y - R.footY;
     const pel = R.pelvis, pw = pel.getWorldPosition(W.a);
-    pw.addScaledVector(side, -GAIT.sway * latMean * leg * g.w).addScaledVector(up, -drop);
+    pw.addScaledVector(side, -GAIT.sway * latMean * leg * g.w).addScaledVector(up, (hipH - hipNow) * g.w);
     pel.parent!.updateWorldMatrix(true, false); pel.position.copy(pel.parent!.worldToLocal(pw)); pel.updateMatrixWorld(true);
-    const lean = GAIT.lean * k * g.w * (g.mode === 'back' ? 0.2 : g.mode === 'stop' ? -0.3 : 1);
-    const r = R.sp3.getWorldPosition(W.b).sub(R.sp1.getWorldPosition(W.c));
-    this.rotWorld(R.sp1, W.c.crossVectors(r, fwd), lean);
+    // torso: lean to an absolute angle from vertical for the mode and speed (the clip's own lean doesn't stack)
+    const L = GAIT.lean, leanWant = g.mode === 'stride' ? L.stride[0] + (L.stride[1] - L.stride[0]) * k : g.mode === 'cross' ? L.cross
+      : g.mode === 'back' ? L.back : g.mode === 'stop' ? L.stop : g.mode === 'glide' ? L.glide : L.ready;
+    const r = R.neck.getWorldPosition(W.b).sub(R.pelvis.getWorldPosition(W.c)), leanNow = Math.atan2(r.dot(fwd), r.y);
+    this.rotWorld(R.sp1, W.c.crossVectors(r, fwd), (leanWant - leanNow) * g.w);
     // legs
     R.bones.forEach((b, i) => {
       const [lat, fore, lift, yaw] = g.tgt[i];
@@ -1209,8 +1226,46 @@ export class View {
       const p2 = c2.addScaledVector(u1, -c2.dot(u1)), q2 = u2.addScaledVector(u1, -u2.dot(u1));
       if (p2.lengthSq() > 1e-8 && q2.lengthSq() > 1e-8) this.rotWorld(b.ft, W.c.crossVectors(p2, q2), p2.angleTo(q2) * g.w);
     });
+    this.gaitUpper(v, s, g, R, fwd);
     // a hockey stop keeps throwing ice off both blades until it is done
     if (g.mode === 'stop' && s.skid && dt > 0 && sp > 2 && Math.random() < 0.6) this.spray(s.x, s.y, s.vx / sp, s.vy / sp, 3, 0xe8f4ff, 4 + sp * 0.4);
+  }
+  /** Upper body from the same stride phase as the legs, so they can't drift apart: the pelvis yaws with the push,
+   *  the shoulders counter-rotate, the free (top-hand) arm swings opposite the pushing leg and the stick arm a little
+   *  less, all calmer with the puck; then the head is levelled (pitch and roll) so it rides smooth over the stride. */
+  private guV = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  private gaitUpper(v: SkaterView, s: Skater, g: NonNullable<SkaterView['gait']>, R: GaitRig, fwd: THREE.Vector3) {
+    const G = GAIT, [a, b, c, d] = this.guV, up = this.gW.up, w = g.w;
+    const stepping = g.mode === 'stride' || g.mode === 'cross' || g.mode === 'back';
+    const carrying = this.game?.pucks[0].owner === s;
+    const amt = (stepping ? 0.4 + 0.6 * g.amp : 0) * (carrying ? G.puckCalm : 1) * w;
+    if (amt > 0.01) {
+      // +1 at the left skate's mid push, -1 at the right's (the left skate's phase is g.ph, its push ends at G.push)
+      const drive = Math.sin(2 * Math.PI * (g.ph - G.push * 0.5) + Math.PI / 2);
+      // yaw a bone about world up so that point p (relative to the bone's pivot) moves toward fwd by `ang`
+      const yawTo = (bone: THREE.Object3D, p: THREE.Vector3, ang: number) => {
+        const sg = Math.sign(c.crossVectors(up, p).dot(fwd)) || 1;
+        this.rotWorld(bone, up, sg * ang);
+      };
+      // pelvis: the pushing hip goes back; shoulders turn the other way (left shoulder forward while left skate pushes)
+      const hipL = R.bones[0].th.getWorldPosition(a).sub(R.pelvis.getWorldPosition(b));
+      yawTo(R.pelvis, hipL, -G.pelvisYaw * amt * drive);
+      const shL = R.ua[0].getWorldPosition(a).sub(R.sp3.getWorldPosition(b));
+      yawTo(R.sp3, shL, G.shoulders * amt * drive);
+      // arms swing fore and aft (about the body's side axis): left arm forward while the left skate pushes
+      const ik = v.ikW ?? 0;
+      R.ua.forEach((arm, i) => {
+        const free = i === 0;   // hand_l is the top hand; the stick is in hand_r
+        const k = (free ? G.armFree : G.armStick) * amt * (1 - 0.85 * ik) * (i === 0 ? drive : -drive);
+        const dn = R.la[i].getWorldPosition(a).sub(arm.getWorldPosition(b));
+        this.rotWorld(arm, d.crossVectors(dn, fwd), k);
+      });
+    }
+    // head: level its pitch and roll (keep the yaw the look layer sets), so it glides over the stride
+    const hup = R.head.getWorldPosition(a).sub(R.neck.getWorldPosition(d)).normalize();   // the neck's line (rig-axis free)
+    const want = b.copy(up).addScaledVector(fwd, 0.25).normalize();   // carried a little forward, eyes up the ice
+    const ang = hup.angleTo(want) * G.headLevel * w;
+    if (ang > 1e-3) this.rotWorld(R.neck, c.crossVectors(hup, want), ang);
   }
   /** +1 if a positive turn about world up swings the forward axis toward the side axis */
   private gYS = new THREE.Vector3();
@@ -1283,7 +1338,18 @@ export class View {
   /** test hook: gait state per skater (mode, phase, stride size, eased foot targets, which skates are on the ice) */
   gaitState() {
     return this.skaters.map(v => v.gait ? { mode: v.gait.mode, ph: +v.gait.ph.toFixed(3), amp: +v.gait.amp.toFixed(2), w: +v.gait.w.toFixed(2), leg: +(v.gait.rig?.leg ?? 0).toFixed(3),
-      feet: v.gait.tgt.map(t => t.map(x => +x.toFixed(3))), contact: v.gait.contact } : null);
+      feet: v.gait.tgt.map(t => t.map(x => +x.toFixed(3))), contact: v.gait.contact, ...this.postureOf(v) } : null);
+  }
+  /** test hook: knee angles (deg, 180 = straight), torso lean from vertical (deg) and hip height (leg lengths) */
+  private postureOf(v: SkaterView) {
+    const R = v.gait?.rig; if (!R) return {};
+    v.root.updateMatrixWorld(true);
+    const P = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3());
+    const knee = R.bones.map(b => { const h = P(b.th), k = P(b.ca), f = P(b.ft); return +(h.sub(k).angleTo(f.sub(k)) * 180 / Math.PI).toFixed(0); });
+    const face = -v.body.rotation.y, r = P(R.neck).sub(P(R.pelvis));
+    const lean = Math.atan2(r.x * Math.cos(face) + r.z * Math.sin(face), r.y) * 180 / Math.PI;
+    const hip = ((P(R.bones[0].th).y + P(R.bones[1].th).y) / 2 - v.root.position.y - R.footY) / R.leg;
+    return { knee, lean: +lean.toFixed(0), hip: +hip.toFixed(2) };
   }
   /** test hook: world positions of the two blades (foot bones) and the body's facing, for foot-slide checks */
   feet(i: number) {

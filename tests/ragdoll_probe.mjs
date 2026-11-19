@@ -31,6 +31,8 @@ check(all.every(r => r.finite), 'ragdolls stay finite (no exploding limbs)');
 check(Math.max(...all.map(r => r.stretch)) < 0.08, 'rigid links stay near rest length', `worst stretch ${(Math.max(...all.map(r => r.stretch)) * 100).toFixed(1)}%`);
 check(Math.min(...all.map(r => r.low)) > 0.05, 'nothing sinks into the ice', `lowest particle ${Math.min(...all.map(r => r.low)).toFixed(3)}`);
 check(Math.min(...all.map(r => r.up)) < 0.35, 'big hits put them on the ice (torso near flat)', `flattest torso ${Math.min(...all.map(r => r.up)).toFixed(2)} (1 upright, 0 flat)`);
+check(Math.max(...all.map(r => r.rise)) > 0.6 && Math.max(...all.map(r => r.rise)) < 3, 'big hits launch them (hips rise off the ice, not to the rafters)', `highest hip rise ${Math.max(...all.map(r => r.rise)).toFixed(2)} units`);
+// limbs never fold into a pile: the torso stays torso-shaped and limbs stay apart (no particle within 0.1 of another)
 const fr = samples.slice(5).map(s => s.ms).sort((a, b) => a - b);
 const avg = fr.reduce((a, b) => a + b, 0) / fr.length;
 check(1000 / avg > 55, 'frame rate with five ragdolls', `${(1000 / avg).toFixed(1)} fps, p95 ${fr[Math.floor(fr.length * 0.95)].toFixed(1)} ms, worst ${fr.at(-1).toFixed(1)} ms`);

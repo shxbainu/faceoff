@@ -165,3 +165,17 @@ here to learn what works; Faceoff keeps its own names, effects and art.
   counterplay, the same rules for bots, feedback through the existing juice layer. Four abilities were prototyped
   (Burst skates, Shoulder charge, Bender, Long stick). At the user's request they are **switched off** (`?abilities`
   turns them on) while the skill and passive design is reworked from the Tape to Tape study above (DESIGN.md).
+
+## Forward stride breakdown (2026-11-18, for the gait rebuild)
+The real-skater reference links failed to download (YouTube 403, Vimeo needs a login), so this rests on standard
+skating biomechanics and the Tape to Tape frames studied earlier. Targets used in `GAIT` (render.ts):
+1. Stance: knees bent about 100 degrees at speed, 115 gliding; hips about 0.8 leg lengths above the blade. Not a squat.
+2. Torso: about 40 degrees forward at speed, 20-30 gliding, upright-ish in the ready stance; back flat, head up.
+3. Glide: the new skate sets down under the hips, a little ahead, and the body rides it while weight comes over.
+4. Push: the skate drives out to the side and back at roughly 45 degrees on its inside edge, accelerating, until
+   the leg is fully extended (knee about 170 degrees); the toe turns out so the blade runs along its own path.
+5. Recovery: the skate comes back in under the hips first, then forward, low over the ice (a few cm), toe forward.
+6. Hips sway over the gliding leg and dip slightly as each push extends.
+7. Pelvis rotates with the pushing hip going back; shoulders counter-rotate; the free arm swings forward with
+   the opposite push (like running), the stick arm less; with the puck both hands stay on and the motion calms.
+8. Rate: about 1.3-2.4 strides per second per leg pair; long glides at cruise, short choppy pushes when accelerating.

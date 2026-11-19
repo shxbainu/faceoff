@@ -69,5 +69,13 @@ for (const tag of [...new Set(rows.map(r => r.tag))]) {
     });
   });
   const modes = {}; R.forEach(r => { const m = r.g?.mode ?? r.clip; modes[m] = (modes[m] || 0) + 1; });
+  // posture: athletic stance, not a squat (knee 90-120 on the supporting leg, 160+ at full push, lean by mode)
+  const kn = R.flatMap(r => r.g?.knee ?? []), le = R.map(r => r.g?.lean).filter(x => x !== undefined), hp = R.map(r => r.g?.hip).filter(x => x !== undefined);
+  if (!OLD && kn.length) {
+    const mn = Math.min(...kn), mx = Math.max(...kn), lmax = Math.max(...le), hmin = Math.min(...hp);
+    const ok = tag === 'sprint' || tag === 'cruise' ? mn >= 85 && mx >= 160 && lmax >= 30 && lmax <= 50 && hmin >= 0.72
+      : tag === 'ready' || tag === 'glide' ? med(kn) >= 100 && med(le) <= 35 && med(hp) >= 0.8 : true;   // medians: these windows open mid-transition
+    console.log(`${ok ? 'pass' : 'FAIL'}  posture ${tag}: knee ${mn}-${mx} (median ${med(kn)}), lean up to ${lmax} (median ${med(le)}), hip from ${hmin}`); if (!ok) process.exitCode = 1;
+  }
   console.log(`${TAG} ${tag.padEnd(7)} sp ${med(R.map(r => r.sp)).toFixed(1).padStart(5)}  spread max ${spread.toFixed(2)} med ${med(spreads).toFixed(2)}  alt ${(alt / Math.max(1, R.length)).toFixed(2)}  skid ${med(skid).toFixed(0).padStart(3)}deg (n ${skid.length})  modes ${JSON.stringify(modes)}`);
 }

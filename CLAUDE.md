@@ -120,6 +120,9 @@
 - The upper-body clip (stride, crossover, back) is scrubbed to the same phase (`scrubLoop`), so the chest and stick
   sway with the pushing legs. `?nogait` restores the old clip playback. Legs, pelvis (incl. its position), spine_01
   and neck are in the layer restore list.
+- Posture is absolute, not added to the clip: hip height (`GAIT.hip`, about a 100-115 degree knee) and torso lean
+  per mode (`GAIT.lean`). The upper body (pelvis yaw, shoulder counter-rotation, arm swing, level head) runs off the
+  same stride phase in `gaitUpper`, calmer with the puck (`puckCalm`). `__faceoff.gait()` reports knee, lean, hip.
 - No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
 - Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
 
@@ -141,6 +144,9 @@
 
 ## Ragdolls and staggers (ragdoll.ts, render.ts ragApply; RAGDOLL config)
 - The sim is the truth (knockdown, slide, stun, puck and stick drops, juice events); the ragdoll is display only.
+- Big hits launch: upward speed (`RAGDOLL.up`), push away (`launch`) and a tumble (`spin`, `twist`) scaled by the
+  hit value up to `hitTop`, shaped by the hit kind. Partly active: limbs spring toward their pose in the torso frame
+  (`stiff`), so they flail without folding. `friction` sets the slide on landing; `getup` the get-up time.
   A `hit` event with value `n >= RAGDOLL.min` starts a 13-particle verlet ragdoll from the skater's current bone
   positions (no pop), kicked by the hit kind the sim reports (`text`: open, hip, board), carried by the sim's slide.
   Its particles become bone rotations (pelvis frame, then aim per limb), blended by a weight that eases in on impact
