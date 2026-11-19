@@ -8,10 +8,14 @@ import { tmpdir } from 'node:os';
 const out = mkdtempSync(tmpdir() + '/abil-') + '/sim.mjs';
 await build({ entryPoints: ['src/sim.ts'], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' });
 const S = await import(pathToFileURL(out).href);
-const A = (await import(pathToFileURL(out).href)).ABILITY_FORCE;
+
 const P = Object.fromEntries(S.POWERS.map(p => [p.id, 0]));
 const NO = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
 const DT = 1 / 120;
+// abilities are off by default (ABILITY_ON); prove that, then switch them on for the rest
+{ const g = new S.Game(1, S.OPPONENTS[0], P, 9); g.phase = 'play'; const s = g.ctrl; s.abCd = 0; s.stamina = 1;
+  const ok = g.useAbility(s, 0, 0); console.log(`${ok ? 'FAIL' : 'pass'}  abilities are off unless ?abilities`); if (ok) process.exitCode = 1; }
+S.ABILITY_ON.v = true;
 let fails = 0;
 const check = (ok, name, info = '') => { console.log(`${ok ? 'pass' : 'FAIL'}  ${name}${info ? '  ' + info : ''}`); if (!ok) fails++; };
 
@@ -50,6 +54,14 @@ const run = (g, c, n) => { for (let i = 0; i < n; i++) g.step(DT, { ...NO, ...c 
   const [g2, [m]] = scene([0, { x: 0, y: 0, face: 0, ab: 'charge' }]); g2.setCtrl(m);
   run(g2, { ability: true }, 1); run(g2, NO, Math.round(0.7 / DT));
   check(m.slow > 0 || m.abT <= 0 && m.hits.size === 0, 'charge: a whiff leaves him stumbling', `slow ${m.slow.toFixed(2)}`);
+}
+// a charge interrupted by a hit does not fire after the get-up
+{
+  const [g, [h, o]] = scene([0, { x: 0, y: 0, face: 0, ab: 'charge' }], [6, { x: 6, y: 0, face: Math.PI }]); g.setCtrl(h);
+  run(g, { ability: true }, 1); run(g, NO, 6);
+  g.debugKnock(h, -1, 0, 10);   // flattened mid-crouch
+  let lunge = false; for (let i = 0; i < Math.round(3 / DT); i++) { g.step(DT, NO); lunge ||= h.checkT > 0; }
+  check(!lunge && h.abT <= 0, 'charge: a hit during the crouch cancels it (no lunge after getting up)');
 }
 // bender: the shot bows out and comes back to the corner it was aimed at
 {

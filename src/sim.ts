@@ -160,8 +160,11 @@ export const AI = {
 };
 const lerp = (ab: number[], t: number) => ab[0] + (ab[1] - ab[0]) * t;
 
-export const HAND_FORCE = { v: 0 };
-export const ABILITY_FORCE: { v: AbilityId | null } = { v: null };   // test hook (?ability=id): everyone gets this one   // test hook (?hands=r or l): everyone shoots one side
+export const HAND_FORCE = { v: 0 };   // test hook (?hands=r or l): everyone shoots one side
+export const ABILITY_FORCE: { v: AbilityId | null } = { v: null };   // test hook (?ability=id): everyone gets this one
+/** Abilities are built but off for now (design is being reworked from Tape to Tape's skills and talents, see
+ *  DESIGN.md); ?abilities (or ?ability=id) turns them on. Off: O does nothing and bots never use one. */
+export const ABILITY_ON = { v: false };
 export function handOf(id: number): 1 | -1 { return HAND_FORCE.v ? (HAND_FORCE.v > 0 ? 1 : -1) : (id * 7 + 3) % 5 < 2 ? 1 : -1; }
 
 export interface Skater {
@@ -173,6 +176,7 @@ export interface Skater {
   sprint: boolean; gassed: boolean; rest: number;   // sprint bar: sprinting now; emptied it (locked out until it refills a bit); time since last sprint
   slow: number; settle: number; // slowed by a standing check; just-received grace against pokes
   drive: number;               // display: 1 while pushing to skate (input held, not skidding), 0 coasting or stopping
+  skid: boolean;               // display: in a hockey stop (pushing against his own motion at speed)
   /** time spent in contact with an opponent; when beaten from behind; stay off the carrier for a moment */
   tangle: number; beaten: number; disengage: number;
   /** skating stats (upgradable): see SKATE_BASE */
@@ -211,7 +215,7 @@ export interface Skater {
   /** stick collider (STICK): blade centre now and last step, blade direction, hands (shaft top), blade on the ice;
    *  stick lifted (useless) and knocked aside (out of position) timers; this poke has already made contact */
   bx: number; by: number; pbx: number; pby: number; ba: number; hx: number; hy: number; bOn: boolean;
-  liftT: number; tieT: number; tieX: number; tieY: number; pokeHit: boolean; pokeFx: number; pokeFy: number;
+  liftT: number; tieT: number; tieX: number; tieY: number; pokeHit: boolean;
   /** active ability (abilities.ts): which one, cooldown left, time left active, charge has lunged, last press, buffer */
   ab: AbilityId; abCd: number; abT: number; abLunged: boolean; pAbility: boolean; bAbility: number;
 }
@@ -299,9 +303,9 @@ export class Game {
         x: 0, y: 0, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI,
         stun: 0, air: false, z: 0, vz: 0, out: 0, boxed: 0,
         wind: -1, checkT: 0, checkCd: 0, blockT: 0, pickupCd: 0,
-        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, stickless: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
+        stamina: 1, calling: 0, frost: false, sprint: false, gassed: false, rest: 1, spinT: 0, spinCd: 0, spinDir: 1, spinFace: 0, spinFoe: null, oneTouch: 0, otx: 0, oty: 0, stickAng: 0, stickX: 0, stickY: 0, recvT: 0, dangle: 0, stickless: 0, pokeT: 0, pokeX: 0, pokeY: 0, slow: 0, settle: 0, drive: 0, skid: false, tangle: 0, beaten: 0, disengage: 0, move: { ...SKATE_BASE },
         ab: ABILITY_FORCE.v ?? LOADOUT[slot % LOADOUT.length], abCd: 0, abT: 0, abLunged: false, pAbility: false, bAbility: 0,
-        bx: 0, by: 0, pbx: NaN, pby: NaN, ba: 0, hx: 0, hy: 0, bOn: false, liftT: 0, tieT: 0, tieX: 0, tieY: 0, pokeHit: true, pokeFx: 0, pokeFy: 0,
+        bx: 0, by: 0, pbx: NaN, pby: NaN, ba: 0, hx: 0, hy: 0, bOn: false, liftT: 0, tieT: 0, tieX: 0, tieY: 0, pokeHit: true,
         hand: handOf(sid), bh: 0, bPass: 0, bWrist: 0, bCheck: 0, bPoke: 0, faceMode: 'forward', carveT: 0, bhT: 0,
         pPass: false, pShoot: false, pCheck: false, pSaucer: false, pWrist: false, pPoke: false,
         hits: new Set(), lungeAt: null,
@@ -374,7 +378,7 @@ export class Game {
       else { s.x = d * 13 * KX; s.y = -d * side * 3 * KY; }
       s.vx = s.vy = 0; s.face = d < 0 ? 0 : Math.PI;
       s.stun = 0; s.air = false; s.z = 0; s.out = 0; s.wind = -1; s.checkT = 0; s.checkCd = 0.3; s.pickupCd = 0; s.bOn = false; s.liftT = s.tieT = 0; s.pokeT = 0; s.pokeHit = true;
-      s.tangle = 0; s.beaten = 0; s.disengage = 0; s.bPass = s.bWrist = s.bCheck = s.bPoke = 0; s.carveT = 0; s.bh = 0; s.bhT = 0;
+      s.tangle = 0; s.beaten = 0; s.disengage = 0; s.bPass = s.bWrist = s.bCheck = s.bPoke = 0; s.carveT = 0; s.bh = 0; s.bhT = 0; s.abT = 0; s.abLunged = false; s.bAbility = 0;
       s.calling = 0; s.ai.hold = 0; s.slow = 0; s.settle = 0; s.stamina = Math.max(s.stamina, 0.6); s.gassed = false; s.sprint = false;
       if (s.boxed > 0) s.boxed = 0;
     }
@@ -473,12 +477,12 @@ export class Game {
     this.updateSticks(dt);
     for (const s of this.skaters) {
       const c = s.human && !this.autoplay ? human : this.ai(s, dt);
-      if (!(s.human && !this.autoplay) && this.phase === 'play') c.ability = this.aiAbility(s, dt);
+      if (ABILITY_ON.v && !(s.human && !this.autoplay) && this.phase === 'play') c.ability = this.aiAbility(s, dt);
       this.updateSkater(s, c, dt);
     }
     this.collide(dt);
     for (const s of this.skaters) this.placeBlade(s, dt);
-    for (const s of this.skaters) if (s.pokeT > -dt && !s.pokeHit) this.pokeContact(s);
+    for (const s of this.skaters) if (s.pokeT > -dt && !s.pokeHit) this.pokeContact(s, dt);
     for (const p of this.pucks) if (p.alive) this.updatePuck(p, dt);
     for (let i = this.pucks.length - 1; i >= 1; i--) if (!this.pucks[i].alive) this.pucks.splice(i, 1);
     const o = this.pucks[0].owner;
@@ -636,6 +640,7 @@ export class Game {
 
   private updateSkater(s: Skater, c: Ctl, dt: number) {
     s.checkCd -= dt; s.blockT -= dt; s.pickupCd -= dt; s.calling -= dt; s.abCd -= dt;
+    if (s.stun > 0 || s.air || s.out > 0 || s.boxed > 0) { s.abT = 0; s.bAbility = 0; s.pokeT = 0; s.pokeHit = true; }   // knocked out of an ability or a poke: it doesn't resume on getting up
     if (s.out > 0) {
       s.out -= dt;
       if (s.out <= 0) {
@@ -739,7 +744,7 @@ export class Game {
           else sp += acc * 0.35 * dt * clamp(max - sp, 0, 1);   // pushing sideways while turning: some drive
         }
       } else sp *= Math.exp(-(mv.glide + 2.2 * clamp(1 - sp / 2.5, 0, 1)) * dt);   // glide; dig in and settle once slow
-      s.drive = ml > 0 && !skid ? 1 : 0;
+      s.drive = ml > 0 && !skid ? 1 : 0; s.skid = skid;
       if (sp > max) sp = max + (sp - max) * Math.exp(-3 * dt);   // over the cap (knockback, boost): bleed back down
       s.vx = Math.cos(hd) * sp; s.vy = Math.sin(hd) * sp;
     }
@@ -988,7 +993,7 @@ export class Game {
   /** A poke or lift in flight: its blade is swept from last step to this one and acts on what it actually touches.
    *  The carrier's puck: knocked loose along the poke. His shaft from behind or alongside: stick lifted, the puck sits
    *  there. His shaft or blade from the front: knocked aside (tied up), the puck pops loose if the poke was moving fast. */
-  private pokeContact(s: Skater) {
+  private pokeContact(s: Skater, dt: number) {
     if (!s.bOn || !Number.isFinite(s.pbx)) { if (s.pokeT <= 0) s.pokeHit = true; return; }
     const p = this.pucks[0], car = p.owner;
     const vx = s.bx - s.pbx, vy = s.by - s.pby, vl = Math.hypot(vx, vy);
@@ -1002,9 +1007,8 @@ export class Game {
       if (this.toBlade(s, p.x, p.y, bx, by)[0] < STICK.r + PR + 0.05) {
         s.pokeHit = true;
         if (car.settle > 0 || car.spinT > 0) { this.ev({ t: 'bump', x: p.x, y: p.y }); return; }   // a just-settled puck and a spin are protected
-        const dl = vl || 1, a = Math.atan2(vy, vx);
+        const a = Math.atan2(vy, vx);
         this.dropPuck(car, car.vx * 0.3 + Math.cos(a) * STICK.poke.speed, car.vy * 0.3 + Math.sin(a) * STICK.poke.speed);
-        void dl;
         car.pickupCd = 0.55; s.checkCd = 0.5;
         if (s.team === 0) this.addHeat(50, 'Poke check', car.x, car.y);
         this.ev({ t: 'poke', x: car.x, y: car.y }); this.ev({ t: 'stick', text: 'poke', x: p.x, y: p.y });
@@ -1031,8 +1035,8 @@ export class Game {
           car.tieT = STICK.tie; car.tieX = vx * k; car.tieY = vy * k;
           this.ev({ t: 'stick', text: 'tie', x: sx, y: sy });
           const low = Math.hypot(sx - car.hx, sy - car.hy) > 0.5 * Math.hypot(car.bx - car.hx, car.by - car.hy);   // hit low on his stick, near the blade
-          if (low && vl / (1 / 120) > 9 && car.settle <= 0 && car.spinT <= 0) {
-            this.dropPuck(car, car.vx * 0.5 + vx * 120 * 0.4, car.vy * 0.5 + vy * 120 * 0.4); car.pickupCd = 0.35;
+          if (low && vl / dt > 9 && car.settle <= 0 && car.spinT <= 0) {
+            this.dropPuck(car, car.vx * 0.5 + vx / dt * 0.4, car.vy * 0.5 + vy / dt * 0.4); car.pickupCd = 0.35;
             if (s.team === 0) this.addHeat(50, 'Stick check', car.x, car.y);
             this.fx({ t: 'check_landed', i: 0.2, tag: 'poke', team: s.team, id: s.id, vid: car.id, x: car.x, y: car.y });
           }
@@ -1048,11 +1052,16 @@ export class Game {
    *  enough (a pass's receiver almost always; anyone else only below STICK.catch); anything harder deflects off it:
    *  a shot tipped by a teammate stays a shot, a pass knocked down by a defender's lane stick goes loose. */
   private bladeSweep(p: Puck, x0: number, y0: number, dt: number): boolean {
-    if (p.lifted) return false;   // a saucer pass sails over the sticks
+    if (p.lifted) {   // a saucer pass sails over the sticks: Heat for each one it clears (as before the stick colliders)
+      if (p.kind === 'pass' && p.lastTeam === 0)
+        for (const s of this.skaters) if (s.team !== p.lastTeam && s.bOn && !p.checked.has(s.id) && this.toBlade(s, p.x, p.y)[0] < 0.65) { p.checked.add(s.id); this.addHeat(100, 'Saucer pass', s.x, s.y); }
+      return false;
+    }
     const mx = p.x - x0, my = p.y - y0;
     let best: Skater | null = null, bt = 2, bqx = 0, bqy = 0;
     for (const s of this.skaters) {
       if (!s.bOn || !Number.isFinite(s.pbx) || s === p.owner) continue;
+      if (s.pickupCd > 0 && p.kind === 'loose' && p.age < 0.15) continue;   // just knocked off this blade: let it leave
       if ((s === p.shooter || s === p.from) && p.age < 0.2) continue;   // off his own blade
       if (p.checked.has(s.id) && s.team !== p.lastTeam) continue;
       const bmx = s.bx - s.pbx, bmy = s.by - s.pby;
@@ -1065,12 +1074,13 @@ export class Game {
     }
     if (!best) return false;
     const s = best, cx = x0 + mx * bt, cy = y0 + my * bt;
+    if (p.ghost) { p.alive = false; this.ev({ t: 'poof', x: cx, y: cy }); return true; }   // a Split ghost dies on any stick
     let nx = cx - bqx, ny = cy - bqy; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
     // the blade's own speed (capped: a blade that jumps between spots in one step is not a swing)
     let bvx = (s.bx - s.pbx) / dt, bvy = (s.by - s.pby) / dt; const bv = Math.hypot(bvx, bvy);
     if (bv > STICK.swing) { bvx *= STICK.swing / bv; bvy *= STICK.swing / bv; }
     const rvx = p.vx - bvx, rvy = p.vy - bvy, vn = rvx * nx + rvy * ny, rel = Math.hypot(rvx, rvy);
-    if (vn >= 0 && bt > 0) return false;   // already moving away from the blade
+    if (vn >= 0) return false;   // already moving away from the blade (or starting the step on it): no bounce
     const mine = p.kind === 'pass' && s.team === p.lastTeam && s !== p.from;
     const canTake = this.active(s) && s.pickupCd <= 0 && s.checkT <= 0;
     let trap = mine ? rel < STICK.recvCatch : rel < STICK.catch * (this.abOn(s, 'reach') ? ABILITIES.reach.trap : 1) * (p.kind === 'pass' ? Math.pow(0.5, this.pw(p.lastTeam, 'curve')) : 1) * (s.blockT > 0 ? 1.4 : 1);
@@ -1117,7 +1127,7 @@ export class Game {
   /** Use s's ability if it is ready and affordable. (mx, my): the held direction (unit or zero). */
   useAbility(s: Skater, mx: number, my: number): boolean {
     const d = ABILITIES[s.ab];
-    if (s.abCd > 0 || s.stamina < d.cost || !this.active(s) || s.spinT > 0 || s.checkT > 0) return false;
+    if (!ABILITY_ON.v || s.abCd > 0 || s.stamina < d.cost || !this.active(s) || s.spinT > 0 || s.checkT > 0) return false;
     if (s.ab === 'bender' && this.pucks[0].owner !== s) return false;   // a shot needs the puck
     s.stamina -= d.cost; s.abCd = d.cd; s.abT = d.dur; s.abLunged = false; s.rest = 0;
     let dx = Math.cos(s.face), dy = Math.sin(s.face);

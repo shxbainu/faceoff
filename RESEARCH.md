@@ -76,6 +76,82 @@ Where a claim rests on press or community sources rather than the developers, it
   copies the telegraph idea.
 - **Lethal League:** the ball gets faster with every hit, so rallies escalate. A candidate for a later gimmick team.
 
+## Tape to Tape's own skills, talents and artefacts (from the community wiki, 2026-11-18)
+
+Source: the fan wiki ([Skills](https://tapetotape.miraheze.org/wiki/Skills), [Talents](https://tapetotape.miraheze.org/wiki/Talents),
+[Artefacts](https://tapetotape.miraheze.org/wiki/Artefacts), [Superstars](https://tapetotape.miraheze.org/wiki/Superstars),
+[Power-up combinations](https://tapetotape.miraheze.org/wiki/Power-Up_Combinations)). The wiki gives names and
+one-line effects, no cooldowns or numbers for skills; the numbers below are the wiki's. Their content is studied
+here to learn what works; Faceoff keeps its own names, effects and art.
+
+### The three layers
+- **Skills (active, 17, one per player, one button).** Dash, Jump (charge by holding; a jump shot in the offensive
+  zone), Spin-O-Rama (blocks checks and steals briefly), Magnet, Yo-Yo (shoot the puck out, call it back), Mega-Sauce
+  (huge clear), Slowmo, and a lot of slapstick area effects: Dragon Shout and Gas (knock back everyone near),
+  Kazoo (nearby opponents lose the puck), Yeet (launch players), Tomahawk and Mjolnir (throw the stick), Grappling
+  Hook, Head Smasher, Headshot Redirect, Disco Dance.
+- **Talents (passive, 67, up to three per skater; in a run earned from challenges and elite teams and assigned to
+  any skater).** They fall into clear families:
+  - *Stat trades with a cost:* Heavy Helmet (+100 checking, -30 speed), Iron Helmet, Propeller Helmet (+40 speed,
+    -40 accuracy), Glass Cannon (+50 shot power, half the shots break the stick), Rocket Skates (speed for agility).
+  - *Situational triggers:* Blue Line Boost (burst crossing a blue line), Breakaway Boost (+50 overall on a
+    breakaway), Retro Rocket (+50 speed skating backward), Enraged (+50 overall for a while after being knocked
+    down), Pressure Cooker (+40 until you score), Point Sniper (accuracy from the blue line).
+  - *Chain triggers off another play:* Power Transfer (a pass gives the receiver shot power), Speed Transfer,
+    Slapshart (shooting propels you), Pass Puncher and Puck Puncher (when knocked out, the puck still goes somewhere
+    useful).
+  - *Puck rule-benders:* Curve Ball, Changeup, Trickshot, X-Ray Shot, Express Delivery, Flawless Feeder (passes
+    can't be intercepted), Mega Deflect, Bouncy McBounce, Mega Rebound, Rebound Magnet.
+  - *Behaviour (AI role) talents:* Ball Chaser, Cherry Picker, Homewrecker and Marauder (hunt puckless opponents in
+    one zone), Human Shield, Safety First, Redirector (stands in front to tip shots).
+  - *Run growth:* Cannon Arm, Growing Anger, Momentum, Target Practice: +5 to a stat for every game won.
+  - *Area knock effects:* Chexsplosion, Sonic Slap, The Howitzer, Wind Up, Spiked Armor.
+- **Artefacts (team relics, one at the start of a run plus up to five from elite and boss wins).** Mostly
+  conditional and score-state rules: +overall in a given period, Tribal Mask (+25 while losing), Last Minute,
+  Buzzer Beater (goals in the final minute count double), Rare Berry (+20 for 15 s after a faceoff win), Lucky Molar
+  (speed after a successful check), Lifeless Branch (get up twice as fast), plus bench buffs.
+- **Superstars** read through stat extremes plus one skill and a couple of talents: Kelly Jelly 81 speed and 0
+  checking with Spin-O-Rama and Puckless Rocket; Sergei Lancelov 120 checking with Iron Helmet; Frank Furter 80
+  power and 5 accuracy.
+
+### What makes them effective
+1. **Identity through a trade-off.** The memorable talents cost something (Heavy Helmet, Glass Cannon, Propeller
+   Helmet). A skater becomes a character, and the player plans around his weakness.
+2. **Power tied to a hockey situation.** Blue Line Boost, Breakaway Boost, Retro Rocket and Point Sniper don't
+   give power, they give a reason to make a certain play: attack the blue line with speed, defend skating backward,
+   shoot from the point. The player learns to create the situation.
+3. **Chains reward team play.** Power Transfer and Speed Transfer pay off a pass, not a solo run.
+4. **Teammate roles fix the AI.** Behaviour talents (Redirector, Human Shield, Cherry Picker) turn bots into
+   teammates with a job you can play with. Reviews name weak AI teammates as the game's main fault, and this is the
+   game's own patch for it.
+5. **Run growth.** Per-win +5 talents make early picks an investment.
+6. **Spectacle.** Many skills are slapstick (Gas, Yeet, Dragon Shout). They read instantly and make clips, but
+   they are also the least hockey.
+
+### Where they fall short (what to improve)
+- **No counterplay on several.** Flawless Feeder (passes can't be intercepted), X-Ray Shot (through players),
+  Unhittable and Spiked Armor remove the other side's answer. Several were removed or restricted later
+  (Unhittable, Intimidator, Speed Transfer, Puck Repellent...), which suggests balance trouble.
+- **Randomness over skill.** Wild Shot, Random Skill, Glass Cannon's 50% stick break: outcomes the player doesn't
+  control.
+- **Area effects skip hockey.** Kazoo, Dragon Shout and Gas win the puck without positioning, timing or a stick.
+- **Stats as flat numbers.** "+50 overall" is invisible in play; the player can't feel which part changed.
+
+### How Faceoff should copy and improve them
+- **Skills:** keep one active per skater on one key, but make each a hockey verb with a tell or a commitment and a
+  physical result through our systems (stick colliders, momentum checks, gait). Prefer Dash, Jump-style charged
+  moves, Spin-O-Rama, Magnet and Yo-Yo-style puck control over area knockbacks. Where we keep a big slapstick one,
+  give it a clear tell and a cost.
+- **Talents (our passives):** build three families first: (a) trade-offs that show on the ice (a heavier skater
+  hits harder and visibly turns wider), (b) situational triggers that teach a play (blue-line burst, backward-skating
+  speed, point shot), (c) chains that pay off passing (receiver's next shot or stride gets a boost). Add behaviour
+  talents for bot teammates; they are the cheapest fix for weak AI. Every rule-bender keeps counterplay (a
+  "can't be intercepted" pass becomes "clears the first stick it meets").
+- **Artefacts:** our power cards already fill this role. Add score-state and timing relics (comeback when trailing,
+  last-minute, after a faceoff win) that make the match's moments matter.
+- **Numbers you can see:** every bonus has a visible tell on the skater (stride, lean, puck trail, ring), not just
+  a stat.
+
 ## What makes players invent their own plays (the common thread)
 1. **Consistent physics with a few verbs.** Players can't invent plays in a system they can't predict.
 2. **Visible, learnable counterplay.** A telegraph, a cooldown, a cost: both players can read the moment.
@@ -86,5 +162,6 @@ Where a claim rests on press or community sources rather than the developers, it
 ## What this changed in Faceoff (this pass)
 - Physical sticks (tips, deflections, lifts, lane blocks) for Rocket League-style emergent plays.
 - An ability system built on these rules: one key, a cooldown and a sprint-bar cost, a tell or a commitment for
-  counterplay, the same rules for bots, feedback through the existing juice layer.
-- Four abilities built (Burst skates, Shoulder charge, Bender, Long stick); the rest are a backlog in DESIGN.md.
+  counterplay, the same rules for bots, feedback through the existing juice layer. Four abilities were prototyped
+  (Burst skates, Shoulder charge, Bender, Long stick). At the user's request they are **switched off** (`?abilities`
+  turns them on) while the skill and passive design is reworked from the Tape to Tape study above (DESIGN.md).

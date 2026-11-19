@@ -11,7 +11,7 @@ import { collideBoards } from './sim';
  *  iters: constraint passes per step; ground friction per step; r: particle radius off the ice; max: most ragdolls
  *  simulated at once (older ones fall back to the clip). */
 export const RAGDOLL = { min: 9, stagger: 2.5, kick: 0.45, kickMin: 3, kickMax: 9, inT: 0.05, outT: 0.35, getup: 0.75,
-  gravity: 24, iters: 6, friction: 0.82, r: 0.09, max: 6, step: 1 / 120 };
+  gravity: 24, iters: 8, friction: 0.82, r: 0.09, max: 6, step: 1 / 120 };
 
 /** particle order and the bone each one starts from */
 export const RAG_BONES = ['thigh_l', 'thigh_r', 'upperarm_l', 'upperarm_r', 'Head', 'calf_l', 'calf_r', 'foot_l', 'foot_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r'] as const;
@@ -67,15 +67,7 @@ export class Ragdoll {
         const j = i * 3;
         for (let c = 0; c < 3; c++) { const v = P[j + c] - Q[j + c]; Q[j + c] = P[j + c]; P[j + c] += v * 0.995 - (c === 1 ? g : 0); }
       }
-      for (let it = 0; it < RAGDOLL.iters; it++) {
-        LINKS.forEach(([a, b, slack], li) => {
-          const ja = a * 3, jb = b * 3, ex = P[jb] - P[ja], ey = P[jb + 1] - P[ja + 1], ez = P[jb + 2] - P[ja + 2];
-          const d = Math.hypot(ex, ey, ez) || 1e-6, r = this.rest[li];
-          const lo = r * (1 - slack);
-          if (d >= lo && d <= r) return;
-          const k = ((d < lo ? lo : r) - d) / d * 0.5;
-          P[ja] -= ex * k; P[ja + 1] -= ey * k; P[ja + 2] -= ez * k; P[jb] += ex * k; P[jb + 1] += ey * k; P[jb + 2] += ez * k;
-        });
+      const collide = () => {
         for (let i = 0; i < n; i++) {   // ice (with friction) and boards
           const j = i * 3;
           if (P[j + 1] < R) {
@@ -84,10 +76,24 @@ export class Ragdoll {
             if (Q[j + 1] < P[j + 1]) Q[j + 1] = P[j + 1];
           }
           o.x = P[j]; o.y = P[j + 2]; o.vx = o.vy = 0;
-          if (collideBoards(o, R + 0.05, 0, false)) { /* moved below */ }
+          collideBoards(o, R + 0.05, 0, false);
           if (o.x !== P[j] || o.y !== P[j + 2]) { P[j] = o.x; P[j + 2] = o.y; Q[j] = P[j]; Q[j + 2] = P[j + 2]; }
         }
+      };
+      // collisions first and links last in each pass (so a body pinned on the boards keeps its shape), then a
+      // final collision pass so nothing is left in the ice or the boards
+      for (let it = 0; it < RAGDOLL.iters; it++) {
+        collide();
+        LINKS.forEach(([a, b, slack], li) => {
+          const ja = a * 3, jb = b * 3, ex = P[jb] - P[ja], ey = P[jb + 1] - P[ja + 1], ez = P[jb + 2] - P[ja + 2];
+          const d = Math.hypot(ex, ey, ez) || 1e-6, r = this.rest[li];
+          const lo = r * (1 - slack);
+          if (d >= lo && d <= r) return;
+          const k = ((d < lo ? lo : r) - d) / d * 0.5;
+          P[ja] -= ex * k; P[ja + 1] -= ey * k; P[ja + 2] -= ez * k; P[jb] += ex * k; P[jb + 1] += ey * k; P[jb + 2] += ez * k;
+        });
       }
+      collide();
     }
   }
   /** test hook: is every particle finite, above the ice and every link near its rest length (no exploding limbs) */

@@ -1,4 +1,4 @@
-import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT, STICK, ABILITY_FORCE } from './sim';
+import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT, STICK, ABILITY_FORCE, ABILITY_ON } from './sim';
 import { View, GAIT } from './render';
 import { RAGDOLL } from './ragdoll';
 import { ABILITIES, ABILITY_IDS, AbilityId } from './abilities';
@@ -14,6 +14,9 @@ const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
 const params = new URLSearchParams(location.search);
 if (params.has('hands')) HAND_FORCE.v = params.get('hands') === 'l' ? -1 : 1;   // test: one shot side for everyone
 if (params.has('ability')) ABILITY_FORCE.v = params.get('ability') as AbilityId;   // test: everyone gets this ability
+ABILITY_ON.v = params.has('abilities') || params.has('ability');   // abilities are off until their design is settled
+// debug keys that change play (] knock down, ' swap ability) only with ?fxdebug, ?movedbg or ?abilities: never in a normal live game
+const DEV = params.has('fxdebug') || params.has('movedbg') || params.has('abilities') || params.has('ability') || params.has('colliders');
 if (params.has('ai')) AI.difficulty = Math.max(0, Math.min(1, Number(params.get('ai')) || 0));   // bot difficulty 0..1
 
 type Mode = 'title' | 'intro' | 'match' | 'end' | 'pick';
@@ -112,11 +115,11 @@ function forceRagdoll(imp = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 5 
 function onPress(code: string) {
   if (code === 'Semicolon') { view.moveDbg = !view.moveDbg; moveDbgEl.style.display = view.moveDbg ? 'block' : 'none'; return; }
   if (code === 'BracketLeft') { view.colDbg = !view.colDbg; return; }   // stick and body colliders
-  if (code === 'Quote' && game) {   // debug: give your skater the next ability, ready to use
+  if (code === 'Quote' && game && ABILITY_ON.v) {   // debug: give your skater the next ability, ready to use
     const h = game.ctrl; h.ab = ABILITY_IDS[(ABILITY_IDS.indexOf(h.ab) + 1) % ABILITY_IDS.length]; h.abCd = 0; h.stamina = 1;
     pop(`Ability: ${ABILITIES[h.ab].name}`, h.x, h.y, false); return;
   }
-  if (code === 'BracketRight' && mode === 'match') { forceRagdoll(); return; }   // debug: flatten the nearest opponent
+  if (code === 'BracketRight' && mode === 'match' && DEV) { forceRagdoll(); return; }   // debug: flatten the nearest opponent
   const go = code === 'Enter' || code === 'Space' || code === 'KeyJ';
   if (code === 'KeyR' && mode !== 'title') { startRun(); return; }
   if (code === 'KeyC' && mode === 'title') {
@@ -369,11 +372,11 @@ function hud() {
   } else sprintEl.style.display = 'none';
   // ability chip under the sprint bar: always there in a match so the key is learnable; the line along its bottom
   // fills as the cooldown runs down, the chip lights when it is ready and steps up once at that moment
-  if (mode === 'match' && h.out <= 0 && game.phase !== 'over') {
+  if (ABILITY_ON.v && mode === 'match' && h.out <= 0 && game.phase !== 'over') {
     const [x, y] = view.project(h.x - 1.15, 0, h.y), def = ABILITIES[h.ab];
     abilEl.style.display = 'block'; abilEl.style.left = x + 'px'; abilEl.style.top = (y + 12) + 'px';
     if (abilName.textContent !== def.name) abilName.textContent = def.name;
-    const ready = h.abCd <= 0 && h.stamina >= def.cost, w = Math.round(100 * (1 - Math.max(0, h.abCd) / def.cd));
+    const ready = h.abCd <= 0 && h.stamina >= def.cost && (h.ab !== 'bender' || game.pucks[0].owner === h), w = Math.round(100 * (1 - Math.max(0, h.abCd) / def.cd));
     if (w !== lastAbilW) { lastAbilW = w; abilFill.style.width = (ready ? 0 : w) + '%'; }
     if (ready && !abilReady) { abilEl.classList.remove('pop'); void abilEl.offsetWidth; abilEl.classList.add('pop'); }
     abilReady = ready;

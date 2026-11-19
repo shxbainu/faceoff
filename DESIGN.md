@@ -109,7 +109,7 @@ Changed 2026-11-16 at the user's request to follow the reference game's key layo
 - **H**: body check (needs speed; from a standstill it only ties the player up).
 - **U**: poke check (only works if your stick reaches the puck).
 - **Q**: switch to the skater nearest the puck (control also follows passes and possession automatically).
-- **O**: the controlled skater's active ability (see Abilities below; the chip under your sprint bar shows it).
+- **O**: the controlled skater's skill. Off for now (`?abilities` to test); see "Skills and passives" below.
 - **1 / 2 / 3**: pick a power card between rounds. **R**: restart the run.
 - Hold A or D while shooting to pick the corner.
 
@@ -308,32 +308,59 @@ Mapped onto the phase plan (1 rink/camera/goalies done, 2 switching/formations d
    keys without modifier buttons (quick deke, spin); one active ability per skater on O; passives from rounds.
 4. **Phase 5:** run structure.
 
-## Abilities (2026-11-18): proposals, the four built, and the backlog
+## Skills and passives (2026-11-18): proposal, not built
 
-Research behind this is in RESEARCH.md. Rules every ability follows: one key (O), the outcome decided by timing and
-position; a cooldown and a sprint-bar cost (a winded skater can't use one); a tell or a commitment the other side can
-read; the same rules and code for bots; feedback through the juice layer (`ability_used`, tag = id). Abilities make
-new versions of real hockey plays; they never skip the hockey. Each skater carries one (default by position,
-`LOADOUT` in `src/abilities.ts`); you use the one of the skater you control.
+Research: RESEARCH.md (the Tape to Tape study of its 17 skills, 67 talents and 41 artefacts, and why they work).
+Status: the ability system and four prototype skills exist in code (`src/abilities.ts`) but are **off**; `?abilities`
+turns them on for testing. Per the user, nothing more is built until this design is chosen.
 
-| # | Ability | What it does | Trigger | Cooldown / cost | Counterplay | Fit | Status |
-|---|---|---|---|---|---|---|---|
-| 1 | **Burst skates** | Explosive two-step the way you hold (+7.5 u/s, up to 135% of top speed) | O, direction held | 3.5 s / 18% bar | Commits you to a line; a defender who keeps his gap angles you off; a hard turn after it bleeds the speed | Speed and momentum (Karlson): beat a gap, win a race | **Built** (centre) |
-| 2 | **Shoulder charge** | Crouch 0.18 s (the tell), then a 16 u/s drive that checks the first opponent in front; a real hit, usually a ragdoll | O | 6 s / 30% bar | Read the crouch and sidestep or chip the puck past; a whiff stumbles him for 0.6 s | Big physical moments, ragdolls | **Built** (wing, defender) |
-| 3 | **Bender** | Arms your next shot for 1.6 s: it leaves wide of the corner and curls back onto it | O while carrying, then shoot | 5 s / 10% bar | A blade in its path still meets it (stick colliders); a goalie who stays square still saves it; arming it gives the defence a beat | Skill shot that rewards picking the corner (L/R) | **Built** (wings) |
-| 4 | **Long stick** | 2.5 s: blade reach x1.5, lane stick covers more, traps harder passes | O | 7 s / 12% bar | Saucer passes go over it; a reaching defender is out of position for a cut or a chip-and-chase | Defence as skill: angle, lanes, the stick (Tape to Tape-style defending) | **Built** (defenders) |
-| 5 | Magnet call | Your blade's trap window doubles for 1 s and passes to you home harder | O without the puck | 4 s / 10% | A lane stick still knocks it down; the passer still needs a lane | Tape-to-tape passing | Backlog |
-| 6 | Time-slow deke | Single player: 0.6 s of slow motion while carrying; in multiplayer becomes a feint that freezes nearby AI reads | O while carrying, defender within 2 | 8 s / 25% | Short; a defender who doesn't bite is unaffected; useless in open ice | Sifu-style read-and-react; needs the net-mode rule (no sim time scaling online) | Backlog |
-| 7 | Toe drag | Puck pulled across and behind the blade; the next poke at it misses | O while carrying | 3 s / 10% | A body check still lands; it puts the puck on the backhand | NHL skill moves, uses handedness | Backlog |
-| 8 | Saucer spin | Next pass is lifted and spun: drops on the receiver's forehand with a one-timer window x1.5 | O then pass | 5 s / 10% | Slower pass; a skater in the landing spot gets it | Passing creativity, one-timers | Backlog |
-| 9 | Board rim | Next pass or dump rims round the boards at full speed to a teammate behind the play | O then pass | 4 s / 8% | Predictable path; a defender on the wall picks it off | Uses the space behind the net | Backlog |
-| 10 | Shot block slide | Drops into a slide that blocks a lane for 0.8 s (wide block body) | O without the puck | 6 s / 20% | Out of the play for a moment; a pass round him is open | Defensive heroics | Backlog |
-| 11 | Give-and-go link (team) | After your pass, you and the receiver both get a burst for 1.2 s | O within 1 s of a pass | 6 s / 15% | Telegraphs the return pass; the lane can be closed | Hades-style synergy, teamwork | Backlog |
-| 12 | Line rush (team) | All your forwards get +10% speed for 2 s on a breakout from your own zone | O in your own zone with the puck | 12 s / 30% | Over-commits; a stretch pass against you is open | Co-op, team play | Backlog |
-| 13 | Frost trail | The ice behind you is slick for 2 s: chasers lose push | O | 7 s / 15% | Go round it; it slows your own teammates too | Fits the Permafrost gimmick; ice as a playing piece | Backlog |
+Principles taken from the study (copy what works, fix what doesn't):
+- One active skill per skater on one key (O). Each is a hockey verb with a tell or a commitment, and its result
+  goes through our physics (stick colliders, momentum checks, gait), so the other side can read and answer it.
+- Passives (up to three per skater) come in four families: trade-offs that show on the ice, situational triggers
+  that teach a play, chains that pay off passing, and roles for bot teammates.
+- Every rule-bender keeps counterplay. No "can't be intercepted", no "passes through players", no coin flips.
+- Every bonus is visible on the skater (stride, lean, trail, ring), not only a number.
 
-Synergies to build next (Hades duo idea): Bender + Curve power (both pucks curl), Long stick + Magnet stick power,
-Burst + Shoulder charge on one skater (burst into the charge for a bigger hit), Give-and-go + pass streaks.
-Balance as built (tests/ability_probe.mjs, 4 bot matches each): with abilities 11 goals from 54 shots and 17 hits
-in 369 s, without 9 from 61 and 18 in 363 s. Bots use each ability only when the moment is right, at a rate set by
-their skill (`ABILITY_AI`), about 1.4 uses per skater-minute.
+### Skills (actives, on O)
+
+| Skill | Tape to Tape source | What it does here | Cost / cooldown | Tell / counterplay | Why it works |
+|---|---|---|---|---|---|
+| Burst skates *(prototype)* | Dash | Explosive two-step the way you hold | 18% bar / 3.5 s | Commits to a line; a defender holding his gap angles you off | Speed you spend, not keep |
+| Shoulder charge *(prototype)* | Bonecrusher, Yeet (as a skill) | Crouch 0.18 s, then a driving check that ragdolls | 30% bar / 6 s | Crouch is the tell; whiff stumbles 0.6 s | A big moment you set up |
+| Bender *(prototype)* | Curve Ball (talent) | Next shot leaves wide and curls onto the corner | 10% / 5 s | Blades still meet it; square goalie saves | Rewards picking the corner |
+| Long stick *(prototype)* | Magnet | Blade reach x1.5 for 2.5 s, traps harder passes | 12% / 7 s | Saucers go over; reaching leaves you out of position | Defence as a skill |
+| Hop | Jump | Hold to crouch, release to hop a poke or a stick; in the offensive zone the shot off it rises | 15% / 4 s | Hold time telegraphs it; a body check still lands | A skill move with timing |
+| Toe drag | Spin-O-Rama (we already have the spin on the check key) | Puck pulled behind the blade to the backhand; the next poke misses | 10% / 3 s | Body check still lands; leaves you on the backhand | Deke as a read |
+| Yo-yo chip | Yo-Yo | Chip the puck past a defender, then O again pulls it back to your blade if nobody touched it | 15% / 6 s | Anyone's blade on it breaks the string | Outthink the gap |
+| Clear | Mega-Sauce | A high clear from your zone that lands past the far blue line | 10% / 5 s | Gives possession away if read; useless in attack | A relief valve under pressure |
+| Stick toss | Tomahawk, Mjolnir | Throw the stick at a pass lane: it blocks or deflects one pass, then you are stickless until you skate over it | 25% / 8 s | You are stickless (our dropped-stick rule) | Big play with a real cost |
+| Slow read (single player) | Slowmo | 0.6 s of slow motion while carrying near a defender; online it becomes a short feint for bots only | 25% / 8 s | Short, only near a defender | Sifu-style read |
+
+Left out on purpose: Gas, Dragon Shout, Kazoo, Disco Dance (area effects that win the puck without hockey). If a
+slapstick skill is wanted later, it gets a long tell and a cost, like the charge.
+
+### Passives
+
+| Passive | Family | Tape to Tape source | Effect here | Shows on the ice as | Counterplay / cost |
+|---|---|---|---|---|---|
+| Heavy frame | Trade-off | Heavy Helmet, Iron Helmet | Checks land 25% harder; turns 15% wider | Wider carve, bigger hit ring | Cut inside him |
+| Light skates | Trade-off | Propeller Helmet, Rocket Skates | +8% top speed; -15% hit weight | Longer, quicker stride | Easy to knock off the puck |
+| Glass stick | Trade-off | Glass Cannon | +15% shot power; a stick check or a big hit always breaks the stick | Taped, cracked stick | Pressure his stick |
+| Blue line burst | Trigger | Blue Line Boost | Crossing the attacking blue line with the puck at speed gives a short burst | Spray at the line | Stand him up before the line |
+| Backward motor | Trigger | Retro Rocket | +20% speed skating backward (defenders) | C-cuts deeper | Make him pivot (attack wide) |
+| Point shot | Trigger | Point Sniper | Shots from the blue line are more accurate | Puck trail | Block the lane |
+| Breakaway | Trigger | Breakaway Boost | Alone on the goalie: shot and deke bonus | Camera push | Backcheck, hook from behind |
+| Get up mad | Trigger | Enraged, Lucky Molar | After getting up from a knockdown, faster for 3 s | Red trim on the stride | Don't knock him down near play |
+| Hot stick | Chain | Power Transfer | A received pass gives your next shot +10% (forehand more) | Glow on the blade for 1.5 s | Take away the pass |
+| Give and go | Chain | Speed Transfer | After your pass, a short burst | Spray off the skates | Follow the passer |
+| Net-front tipper | Role (bots) | Redirector | Bot parks at the crease and tips shots (our stick colliders) | Stands at the crease | Box him out |
+| Shot blocker | Role (bots) | Human Shield, Safety First | Bot stays between puck and net and slides to block | Lower stance | Pass across him |
+| Forechecker | Role (bots) | Marauder, Homewrecker | Bot hunts puckless defenders in the offensive zone | Presses high | Quick outlet passes |
+| Run growth | Growth | Cannon Arm, Momentum | +3% to one stat per round won (picked when earned) | None needed | Lose and it resets |
+
+Artefact-style relics (team-wide, from round wins): comeback (+ when trailing), last minute, after a faceoff win,
+get up faster. Our power cards already cover shot-shaping relics (Curve, Split, Shock).
+
+Open questions for the user: which 3 or 4 skills to build first; whether skills come by position or are drafted;
+whether passives are drafted in runs (like Tape to Tape's talents) or fixed per skater.

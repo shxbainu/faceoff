@@ -59,7 +59,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `76e3c390242910f5` since the stick, ragdoll and ability pass of 2026-11-18),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `32e624bd5f179d1f` since the stick, ragdoll and ability pass of 2026-11-18 (abilities off)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -146,17 +146,20 @@
   Its particles become bone rotations (pelvis frame, then aim per limb), blended by a weight that eases in on impact
   and out once stun drops to `RAGDOLL.getup`, where the get-up (the fall clip run backward) takes over.
 - Light checks (`bump`, value >= `RAGDOLL.stagger`) rock the torso along the hit. At most `RAGDOLL.max` at once.
-- Debug: `]` knocks the nearest opponent down (shift+] a light one); `?norag`; `__faceoff.knock(i, imp, dx, dy)`.
+- Debug (with `?movedbg`, `?fxdebug` or `?colliders`, never in a normal game): `]` knocks the nearest opponent down (shift+] a light one); `?norag`; `__faceoff.knock(i, imp, dx, dy)`.
 - Checks: `node tests/ragdoll_probe.mjs` (5 at once: finite, link stretch, above the ice, lying flat, back up and
   skating, gradual blend, frame rate, stagger).
 
 ## Abilities (abilities.ts data, sim.ts useAbility/tickAbility/aiAbility)
+- **Off by default** (`ABILITY_ON`, sim.ts): the skill and passive design is being reworked from the Tape to Tape
+  study (DESIGN.md "Skills and passives"); `?abilities` or `?ability=id` turns them on. Don't build more until the
+  user picks from that design.
 - O uses the controlled skater's ability (buffered like other presses). Each has a cooldown and a sprint-bar cost;
   built: burst (burst skates), charge (shoulder charge), bender (curling shot), reach (long stick). Default by slot
   (`LOADOUT`). Bots use them through `aiAbility` only when the moment is right, at a skill-scaled rate (`ABILITY_AI`).
 - Every use emits the `ability_used` feedback event (tag = id), tuned in `feedback/config.ts`.
 - HUD: the chip under the sprint bar (`#abil` in index.html, `hud()` in main.ts).
 - Add one: id and def in abilities.ts, effect in `useAbility`/`tickAbility`, bot rule in `aiAbility`, then the probe.
-- Debug: `'` cycles your skater's ability and readies it; `?ability=id` gives everyone one; `__faceoff.ability(i, id)`.
+- Debug (only with abilities on): `'` cycles your skater's ability and readies it; `?ability=id` gives everyone one; `__faceoff.ability(i, id)`.
 - Checks: `node tests/ability_probe.mjs` (each effect, cooldown and cost, bots use all four, balance on vs off).
 - Proposals and backlog in DESIGN.md; research in RESEARCH.md.

@@ -42,6 +42,20 @@ for (const speed of [12, 30, 80]) {
   stepPuck(g, p, 60, [d]);
   check(p.owner !== d && p.x > d.bx + 1, 'saucer pass goes over the blade');
 }
+// 2b. a saucer still earns Heat for each lane stick it clears (home team)
+{
+  const [g, p, [d]] = scene([6, { team: 1, x: 0, y: 0, face: 0 }]);
+  Object.assign(p, { x: d.bx - 3, y: d.by, vx: 14, vy: 0, kind: 'pass', lastTeam: 0, from: g.skaters[0], target: g.skaters[1], age: 0.5, lifted: true, liftT: 1 });
+  const h0 = g.heat; stepPuck(g, p, 60, [d]);
+  check(g.heat > h0, 'saucer pass over a blade still earns Heat', `heat ${h0} -> ${g.heat}`);
+}
+// 2c. a Split ghost puck dies on a blade (it can never be trapped and carried)
+{
+  const [g, p, [d]] = scene([6, { team: 1, x: 0, y: 0, face: 0 }]);
+  Object.assign(p, { x: d.bx - 3, y: d.by, vx: 12, vy: 0, kind: 'shot', lastTeam: 0, shooter: g.skaters[0], age: 0.5, ghost: true });
+  stepPuck(g, p, 60, [d]);
+  check(!p.alive && p.owner !== d, 'a ghost puck dies on a blade');
+}
 // 3. no tunnelling: a 120 u/s puck at a blade moves at most 1 unit per step, and still hits it
 {
   const [g, p, [d]] = scene([6, { team: 1, x: 0, y: 0, face: 0 }]);
@@ -63,7 +77,7 @@ function pokeAt(cface) {
   p.owner = c; c.settle = 0; c.spinT = 0;
   for (let i = 0; i < 3; i++) { g.updatePuck(p, DT); g.placeBlade(c, DT); g.placeBlade(d, DT); }
   g.startCheck(d, 'poke');
-  for (let i = 0; i < 40 && p.owner === c; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d); g.updatePuck(p, DT); }
+  for (let i = 0; i < 40 && p.owner === c; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d, DT); g.updatePuck(p, DT); }
   return [p.owner === c, c, d];
 }
 { const [kept] = pokeAt(0); check(!kept, 'poke at a puck out front knocks it loose'); }
@@ -75,9 +89,19 @@ function pokeAt(cface) {
   for (let i = 0; i < 3; i++) { g.updatePuck(p, DT); g.placeBlade(c, DT); g.placeBlade(d, DT); }
   g.startCheck(d, 'poke');
   let lifted = false;
-  for (let i = 0; i < 40; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d); g.updatePuck(p, DT); lifted ||= c.liftT > 0; }
+  for (let i = 0; i < 40; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d, DT); g.updatePuck(p, DT); lifted ||= c.liftT > 0; }
   check(lifted && p.owner !== c, 'stick lift from behind lifts his stick and frees the puck', `liftT seen ${lifted}`);
   check(!c.bOn || c.liftT <= 0, 'a lifted stick has no blade on the ice');
+}
+// 6b. stick lift from directly behind (on his centre line): reaching round him for the shaft still works
+{
+  const [g, p, [c, d]] = scene([0, { team: 0, x: 0, y: 0, face: 0, vx: 4 }], [6, { team: 1, x: -1.1, y: 0, face: 0 }]);
+  p.owner = c;
+  for (let i = 0; i < 3; i++) { g.updatePuck(p, DT); g.placeBlade(c, DT); g.placeBlade(d, DT); }
+  g.startCheck(d, 'poke');
+  let lifted = false;
+  for (let i = 0; i < 40; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d, DT); g.updatePuck(p, DT); lifted ||= c.liftT > 0; }
+  check(lifted, 'stick lift from directly behind');
 }
 // 7. stick on stick from the front, carrier turned away: his stick is knocked aside
 {
@@ -86,7 +110,7 @@ function pokeAt(cface) {
   for (let i = 0; i < 3; i++) { g.updatePuck(p, DT); g.placeBlade(c, DT); g.placeBlade(d, DT); }
   d.stickX = c.bx; d.stickY = c.by; g.startPoke(d, c.hx + (c.bx - c.hx) * 0.5, c.hy + (c.by - c.hy) * 0.5);
   let tied = false;
-  for (let i = 0; i < 40; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d); g.updatePuck(p, DT); tied ||= c.tieT > 0 || c.liftT > 0 || p.owner !== c; }
+  for (let i = 0; i < 40; i++) { d.pokeT -= DT; g.placeBlade(c, DT); g.placeBlade(d, DT); if (!d.pokeHit) g.pokeContact(d, DT); g.updatePuck(p, DT); tied ||= c.tieT > 0 || c.liftT > 0 || p.owner !== c; }
   check(tied, 'a poke into his stick knocks it aside or frees the puck');
 }
 // 8. handedness: the carried puck rides on the shot side, forehand

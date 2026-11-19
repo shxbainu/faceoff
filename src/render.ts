@@ -22,6 +22,7 @@ const BLUE = 0x1e90ff;
 interface SkaterAnim {
   mixer: THREE.AnimationMixer; acts: Record<string, THREE.AnimationAction>; cur: string;
   shotT: number; shotKind: 'wrist' | 'slap'; prevWind: number; checkLen: number;
+  getup?: number;   // fall clip time when the get-up started (it plays back from there)
   rate: number;   // this skater's own rhythm (0.9 to 1.12), so the team doesn't stride in step
 }
 interface SkaterView {
@@ -53,7 +54,7 @@ interface SkaterView {
   /** procedural skating legs: mode, stride phase (0..1, left skate), stride size, layer weight, eased foot targets
    *  per skate (lat out from the hips, fore ahead, lift, toe-out yaw) in the body's own frame, and the rig lengths */
   /** big check: ragdoll (pending start, the body, its bones, the sim position it last rode from); light check: stagger */
-  ragStart?: { nx: number; ny: number; imp: number; kind: HitKind }; rag?: Ragdoll; ragBones?: THREE.Object3D[]; ragX?: number; ragZ?: number;
+  ragStart?: { nx: number; ny: number; imp: number; kind: HitKind }; rag?: Ragdoll; ragBones?: THREE.Object3D[]; ragNeck?: THREE.Object3D | null; ragX?: number; ragZ?: number;
   stag?: { t: number; dx: number; dy: number; a: number };
   gait?: { mode: string; ph: number; amp: number; w: number; turn: number; tgt: number[][]; rig?: GaitRig; contact: boolean[] };
 }
@@ -749,7 +750,7 @@ export class View {
   private layerRestore(v: SkaterView) {
     const L = this.layerBones(v);
     if (v.stick && v.stickRest) v.stick.position.copy(v.stickRest);
-    const pel = v.gait?.rig?.pelvis;   // the gait layer also moves the pelvis: same restore rule for its position
+    const pel = v.gait?.rig?.pelvis ?? (v.ragBones ? v.body.getObjectByName('pelvis') : undefined);   // the gait and ragdoll layers move the pelvis: same restore rule for its position
     if (pel) { if (L.pOut && pel.position.equals(L.pOut)) pel.position.copy(L.pBase!); else (L.pBase ??= new THREE.Vector3()).copy(pel.position); }
     L.bones.forEach((b, i) => {
       if (L.ready && b.quaternion.equals(L.out[i])) { if (!DBG.has('nolayerfix')) b.quaternion.copy(L.base[i]); }   // mixer skipped it: back to the clip pose (?nolayerfix shows the old bug)
@@ -759,7 +760,7 @@ export class View {
   private layerSave(v: SkaterView) {
     const L = this.layerBones(v);
     L.bones.forEach((b, i) => L.out[i].copy(b.quaternion));
-    const pel = v.gait?.rig?.pelvis; if (pel && L.pBase) (L.pOut ??= new THREE.Vector3()).copy(pel.position);
+    const pel = v.gait?.rig?.pelvis ?? (v.ragBones ? v.body.getObjectByName('pelvis') : undefined); if (pel && L.pBase) (L.pOut ??= new THREE.Vector3()).copy(pel.position);
     L.ready = true;
   }
 
@@ -823,7 +824,7 @@ export class View {
     };
     const circle = (x: number, y: number, r: number, c: number) => { for (let i = 0; i < SEG; i++) { const a0 = i / SEG * 6.283, a1 = (i + 1) / SEG * 6.283; line(x + Math.cos(a0) * r, y + Math.sin(a0) * r, 0.05, x + Math.cos(a1) * r, y + Math.sin(a1) * r, 0.05, c); } };
     for (const s of g.skaters) {
-      if (s.out > 0) { for (let i = 0; i < per; i++) line(0, 0, -9, 0, 0, -9, 0); continue; }
+      if (s.out > 0) continue;
       circle(s.x, s.y, STICK.bodyR, s.team === 0 ? 0x4aa3ff : 0xff6a4a);
       const on = s.bOn, c = !on ? 0xff2020 : s.pokeT > 0 ? 0xffd400 : 0x20ff60;
       const hx = Math.cos(s.ba) * STICK.blade / 2, hy = Math.sin(s.ba) * STICK.blade / 2;
@@ -831,7 +832,7 @@ export class View {
       line(s.bx - hx, s.by - hy, 0.05, s.bx + hx, s.by + hy, 0.05, c);
     }
     const p = g.pucks[0]; circle(p.x, p.y, PR + STICK.r, 0xffffff);
-    for (let i = 0; i < 4; i++) line(0, 0, -9, 0, 0, -9, 0);
+    this.colLines.geometry.setDrawRange(0, k);
     P.needsUpdate = true; C.needsUpdate = true;
   }
   private dbgArrows: THREE.ArrowHelper[][] = [];
@@ -1022,16 +1023,17 @@ export class View {
       const hd = Math.atan2(s.vy, s.vx), pathTurn = sp > 3 ? wrapA(hd - f.hd) / dt : 0;   // how fast the path itself bends
       f.hd = hd;
       f.turn += (Math.max(-8, Math.min(8, pathTurn)) - f.turn) * Math.min(1, rdt * 10);
-      if (acc < -20 && sp > 1.5 && f.stopT <= 0 && s.stun <= 0 && s.checkT <= 0) {
-        f.stopT = 0.45; f.stopSide = turn >= 0 ? 1 : -1;
-        this.spray(s.x, s.y, s.vx / (sp || 1), s.vy / (sp || 1), 16, 0xe8f4ff, 8);
+      // a hockey stop is the sim's own skid (not any slowing down: bots brake and carve all the time)
+      if (s.skid && sp > 1.5 && s.stun <= 0 && s.checkT <= 0) {
+        if (f.stopT <= 0) { f.stopSide = turn >= 0 ? 1 : -1; this.spray(s.x, s.y, s.vx / (sp || 1), s.vy / (sp || 1), 16, 0xe8f4ff, 8); }
+        f.stopT = Math.max(f.stopT, 0.15);   // holds while skidding, then a short settle
       }
       f.stopT -= dt;
     }
     // shooting: the body comes round to the net with the shot instead of easing round after it
     const shooting = (v.anim?.shotT ?? 0) > 0 || (s.wind >= 0 && this.game?.pucks[0].owner === s);
     f.yaw = wrapA(f.yaw + wrapA(-s.face - f.yaw) * Math.min(1, rdt * (shooting ? 40 : 14)));
-    const st = f.stopT > 0 ? Math.sin(Math.PI * Math.min(1, (0.45 - f.stopT) / 0.45)) : 0;
+    const st = f.stopT > 0 ? Math.min(1, f.stopT / 0.15) : 0;
     v.body.rotation.order = 'YXZ';
     v.body.rotation.y = f.yaw;   // the facing itself turns through the stop: no extra spin on top
     v.body.rotation.x = f.lean - f.stopSide * st * 0.2;   // dig the edges in, leaning back from the stop
@@ -1204,11 +1206,11 @@ export class View {
       const e = b.ft.matrixWorld.elements, c1 = W.a.set(e[0], e[1], e[2]).normalize();
       this.rotWorld(b.ft, W.c.crossVectors(c1, u1), c1.angleTo(u1) * g.w);
       const e2 = b.ft.matrixWorld.elements, c2 = W.b.set(e2[4], e2[5], e2[6]).normalize();
-      const p2 = c2.addScaledVector(u1, -c2.dot(u1)), q2 = u2.clone().addScaledVector(u1, -u2.dot(u1));
+      const p2 = c2.addScaledVector(u1, -c2.dot(u1)), q2 = u2.addScaledVector(u1, -u2.dot(u1));
       if (p2.lengthSq() > 1e-8 && q2.lengthSq() > 1e-8) this.rotWorld(b.ft, W.c.crossVectors(p2, q2), p2.angleTo(q2) * g.w);
     });
     // a hockey stop keeps throwing ice off both blades until it is done
-    if (g.mode === 'stop' && dt > 0 && sp > 2 && Math.random() < 0.6) this.spray(s.x, s.y, s.vx / sp, s.vy / sp, 3, 0xe8f4ff, 4 + sp * 0.4);
+    if (g.mode === 'stop' && s.skid && dt > 0 && sp > 2 && Math.random() < 0.6) this.spray(s.x, s.y, s.vx / sp, s.vy / sp, 3, 0xe8f4ff, 4 + sp * 0.4);
   }
   /** +1 if a positive turn about world up swings the forward axis toward the side axis */
   private gYS = new THREE.Vector3();
@@ -1220,6 +1222,7 @@ export class View {
    *  freezes it on the impact. */
   private rgV = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   private rgM = [new THREE.Matrix4(), new THREE.Matrix4()]; private rgQ = new THREE.Quaternion();
+  private rgS = Array.from({ length: 12 }, () => new THREE.Vector3());
   ragCount() { return this.skaters.filter(v => v.rag).length; }
   private ragApply(v: SkaterView, s: Skater, dt: number) {
     if (v.ragStart) {
@@ -1254,23 +1257,23 @@ export class View {
     };
     const pel = v.gait?.rig?.pelvis ?? v.body.getObjectByName('pelvis'); if (!pel) return;
     const P = (i: number, o: THREE.Vector3) => { const q = r.at(i, o as any); return o.set(q.x, q.y, q.z); };
-    const h0 = B[0].getWorldPosition(new THREE.Vector3()), h1 = B[1].getWorldPosition(new THREE.Vector3()), s0 = B[2].getWorldPosition(new THREE.Vector3()), s1 = B[3].getWorldPosition(new THREE.Vector3());
-    const m0 = frame(h0, h1, s0, s1, this.rgM[0]);
-    const t0 = P(RAG.HL, new THREE.Vector3()), t1 = P(RAG.HR, new THREE.Vector3()), t2 = P(RAG.SL, new THREE.Vector3()), t3 = P(RAG.SR, new THREE.Vector3());
+    const S = this.rgS;
+    const m0 = frame(B[0].getWorldPosition(S[0]), B[1].getWorldPosition(S[1]), B[2].getWorldPosition(S[2]), B[3].getWorldPosition(S[3]), this.rgM[0]);
+    const t0 = P(RAG.HL, S[4]), t1 = P(RAG.HR, S[5]), t2 = P(RAG.SL, S[6]), t3 = P(RAG.SR, S[7]);
     const m1 = frame(t0, t1, t2, t3, this.rgM[1]);
-    const q = this.rgQ.setFromRotationMatrix(m1.multiply(m0.clone().transpose()));
-    const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))), ax = new THREE.Vector3(q.x, q.y, q.z).multiplyScalar(q.w < 0 ? -1 : 1);
+    const q = this.rgQ.setFromRotationMatrix(m1.multiply(m0.transpose()));
+    const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))), ax = S[8].set(q.x, q.y, q.z).multiplyScalar(q.w < 0 ? -1 : 1);
     this.rotWorld(pel, ax, ang * w);
-    const midNow = B[0].getWorldPosition(new THREE.Vector3()).add(B[1].getWorldPosition(new THREE.Vector3())).multiplyScalar(0.5);
+    const midNow = B[0].getWorldPosition(S[9]).add(B[1].getWorldPosition(S[10])).multiplyScalar(0.5);
     const midWant = t0.add(t1).multiplyScalar(0.5);
-    const pw = pel.getWorldPosition(new THREE.Vector3()).addScaledVector(midWant.sub(midNow), w);
+    const pw = pel.getWorldPosition(S[11]).addScaledVector(midWant.sub(midNow), w);
     pel.parent!.updateWorldMatrix(true, false); pel.position.copy(pel.parent!.worldToLocal(pw)); pel.updateMatrixWorld(true);
     // limbs and head: aim each bone at its particle
     const aim = (bone: THREE.Object3D, child: THREE.Object3D, i: number) => {
       const j = bone.getWorldPosition(a), x = child.getWorldPosition(b).sub(j), y = P(i, c).sub(j);
       this.rotWorld(bone, d.crossVectors(x, y), x.angleTo(y) * w);
     };
-    const neck = v.body.getObjectByName('neck_01');
+    const neck = (v.ragNeck ??= v.body.getObjectByName('neck_01') ?? null);
     if (neck) aim(neck, B[4], RAG.HD);
     aim(B[0], B[5], RAG.KL); aim(B[5], B[7], RAG.FL); aim(B[1], B[6], RAG.KR); aim(B[6], B[8], RAG.FR);
     aim(B[2], B[9], RAG.EL); aim(B[9], B[11], RAG.AL); aim(B[3], B[10], RAG.ER); aim(B[10], B[12], RAG.AR);
@@ -1353,11 +1356,11 @@ export class View {
     if (s.stun > 0.25 && !s.air && a.acts.fall) {
       const dur = a.acts.fall.getClip().duration, t0 = 0.45;
       if (s.stun < RAGDOLL.getup && a.cur === 'fall') {
-        // get up: the fall run backward, from lying to his feet, finishing as the sim lets him go
-        const u = (s.stun - 0.25) / (RAGDOLL.getup - 0.25);
-        scrub('fall', (t0 + (Math.min(dur, a.acts.fall.time) - t0) * Math.max(0, Math.min(1, u))) / dur);
+        // get up: the fall run backward from where it lay when the get-up began, to his feet as the sim lets him go
+        const from = a.getup ??= Math.min(dur, a.acts.fall.time), u = (s.stun - 0.25) / (RAGDOLL.getup - 0.25);
+        scrub('fall', (t0 + (from - t0) * Math.max(0, Math.min(1, u))) / dur);
       }
-      else if (a.cur !== 'fall') { const f = play('fall', 0.1); f.time = t0; f.timeScale = 1.7; f.paused = false; }
+      else if (a.cur !== 'fall') { const f = play('fall', 0.1); f.time = t0; f.timeScale = 1.7; f.paused = false; a.getup = undefined; }
       a.mixer.update(dt); return;
     }
     if (s.wind >= 0 && has) { a.prevWind = s.wind; scrub('slapshot', Math.min(1, s.wind / 0.6) * 0.5); }
@@ -1607,7 +1610,10 @@ export class View {
     }
   }
 
+  /** a new faceoff or round: nobody is still crumpled from the last play */
+  clearBodies() { for (const v of this.skaters) { v.rag = undefined; v.ragStart = undefined; v.stag = undefined; if (v.anim) v.anim.getup = undefined; } }
   setTeams(home: TeamDef, away: TeamDef, gemColors: number[]) {
+    this.clearBodies();
     this.teamMat[0].body.color.setHex(home.color); this.teamMat[0].trim.color.setHex(home.trim);
     this.teamMat[1].body.color.setHex(away.color); this.teamMat[1].trim.color.setHex(away.trim);
     this.teamHex = [[home.color, home.trim], [away.color, away.trim]];
@@ -1707,6 +1713,7 @@ export class View {
       case 'save': case 'catch': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;
       case 'stickDrop': this.burst(x, y, 10, 0xd9c9a3, 5, 4, 0.1); this.spray(x, y, e.dx ?? 0, e.dy ?? 0, 10, 0xe8f4ff, 6); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;
+      case 'faceoff': this.clearBodies(); break;
       case 'stick': if (e.text !== 'trap') this.burst(x, y, e.text === 'lift' || e.text === 'tie' ? 6 : 4, 0xe8f4ff, 3, 2, 0.08, 0.1); break;
       case 'poof': this.burst(x, y, 8, 0x9a6dff, 4, 3, 0.1); break;
       case 'crowd': this.burst(x, y, 24, 0xffb400, 6, 8, 0.2, 2); this.cheer = Math.max(this.cheer, 0.8); break;
