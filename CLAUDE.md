@@ -9,8 +9,8 @@
 ## Stack
 - TypeScript + Vite
 - Three.js r186, WebGPU renderer with WebGL2 fallback
-- Physics is the hand-written, seeded 2D sim in `src/sim.ts` (fixed 120 Hz, server-portable) plus a small verlet
-  ragdoll for display (`src/ragdoll.ts`). Rapier is not used: the sim must stay deterministic and dependency-free.
+- Rapier for physics (the original stack). The sim still uses hand-written 2D physics in `src/sim.ts` (fixed 120 Hz,
+  seeded) and a verlet ragdoll (`src/ragdoll.ts`); PHYSICS_PLAN.md moves them onto Rapier's deterministic build.
 
 ## Art
 - Moving from procedural to GLB assets one at a time (see assets/PLAN.md). Online CC0 or CC-BY models first, text-to-3D only as fallback.

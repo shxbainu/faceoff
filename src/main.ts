@@ -467,6 +467,7 @@ function perf() {
     // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
     skaters: () => game.skaters.map(k => ({ id: k.id, team: k.team, human: k.human, x: k.x, y: k.y, vx: k.vx, vy: k.vy, face: k.face, hand: k.hand, bh: k.bh, mode: k.faceMode, ai: k.ai.state ?? '', stun: k.stun })),
     tuning: { MOVE, AI, HANDS, CHECK, SHOT, GAIT, STICK, RAGDOLL, ABILITIES },
+    setClock: (sec: number) => { game.clock = sec; },   // tests: keep a long probe inside one match
     ability: (i: number, id?: AbilityId) => { const s = game.skaters[i]; if (id) s.ab = id; s.abCd = 0; s.stamina = 1; return game.useAbility(s, 0, 0); },   // live: edits apply on the next step
     stickDebug: (i: number) => view.stickDebug(i),
     blade: (i: number) => { const k = game.skaters[i]; return k ? view.bladeOffset(i, k.face, k.x, k.y) : null; },

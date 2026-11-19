@@ -5,7 +5,7 @@ Status as of 2026-11-14: **v1 built and playable** (single-player vs bots, no mu
 ### v1 as built (see `src/`)
 
 - `sim.ts` is a seeded, fixed-step (120 Hz), input-driven simulation with no rendering in it, so it can move to a game server later. `render.ts` (Three.js WebGPU, WebGL2 fallback), `main.ts` (flow, HUD, loop), `audio.ts` (synthesised sound).
-- Physics is hand-written 2D circles in a rounded rink. Rapier is not used yet.
+- Physics is hand-written 2D circles in a rounded rink for now; PHYSICS_PLAN.md moves it onto Rapier.
 - The player controls one fixed skater (the centre); two bot teammates. Nets are recessed into the end boards. No goalies: the deepest defender on each side has the automatic save reach.
 - Faceoffs are a timing draw: tap J the instant the puck lands.
 - Match is first to 3 or the leader after 90 seconds; tied at 0:00 goes to sudden death with saves weakening over time.
