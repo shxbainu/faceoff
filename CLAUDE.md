@@ -9,7 +9,10 @@
 ## Stack
 - TypeScript + Vite
 - Three.js r186, WebGPU renderer with WebGL2 fallback
-- Rapier for physics
+- Rapier for physics (the original stack). The sim still uses hand-written 2D physics in `src/sim.ts` (fixed 120 Hz,
+  seeded) and a verlet ragdoll (`src/ragdoll.ts`); PHYSICS_PLAN.md moves them onto Rapier's deterministic build.
+  Step 1 is in: `?rapier` moves the puck through Rapier boards and nets (`src/physics/rink.ts`). Checks:
+  `node tests/rapier_compare.mjs` (old vs Rapier over bot matches, determinism, puck stays in), `node tests/rapier_spike.mjs`.
 
 ## Art
 - Moving from procedural to GLB assets one at a time (see assets/PLAN.md). Online CC0 or CC-BY models first, text-to-3D only as fallback.
@@ -58,7 +61,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `a4e21c0c016c58d4` since the hockey feel pass of 2026-11-18),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `8f6475929cc84fc5` since the proportions fix of 2026-11-19 (resting stick `STICK.rest` 1.7 ahead, 0.45 to the forehand side)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -97,12 +100,93 @@
   pose before layering, and `layerSave` remembers what was left. Without it the turns stack on static frames (title,
   pre-game, hit stop, held wind-up) and the head, spine and arms spin (`?nolayerfix` shows the old bug).
 - Bone turns go through `rotWorld`, which is correct under the mirrored (left shot) model.
-- Stick IK: the stick turns in the bottom glove first (`ARM.stickAim`), the arms only make small corrections, and a
-  guard drops the arm part if a hand or elbow would end up inside or behind the torso. `stickFloor` then turns the
-  stick up in the glove until the blade's heel, middle and toe are on the ice (`?nofloor` turns it off). A carried
-  puck is drawn on the blade, so it moves with the stick; the sim's puck stays the truth for play. The sim's `CARRY` point is
-  where the clips naturally hold the blade (measure with `?noik`); a target near the feet drags the hands through
-  the body. `?noik` turns the IK off.
+- Stick hold (`stickIK`, `topGrip`, `hingeIK`): anchored on the clip's own top hand, which the clip puts somewhere
+  natural. The blade goes on the ice at its target (puck, lane, or the sim's resting stick, `STICK.rest`), the shaft
+  runs from it up through the top hand's palm, the bottom hand goes to its grip on that line, the stick turns in that
+  glove onto the target, and last (after `stickFloor`) the top hand grips the shaft where it passes, up to
+  `STICK_HOLD.slide` below the knob. Arms use `hingeIK`: the elbow bends only about the clip's own hinge axis (kept in
+  the upper arm's frame, sign-corrected under the left-shot mirror), the arm swings from the shoulder onto the target,
+  then rolls until the elbow points where the clip had it. Earlier versions (a free two-bone solve, a chosen knob
+  spot, a fixed elbow pole, a wrist wrap) each bent the top-hand elbow inward, swung it back or cranked the wrist.
+  Proportions: the drawn stick is shortened to `STICK_HOLD.len` (0.9: to the chin) and the arms lengthened by
+  `ANAT.arm` (1.12, joints moved, nothing scaled; `?noarmlen`); with the model's own (91% stick, short arms) both
+  hands could not hold the stick below the chest with the blade on the ice.
+  Arms and head are judged against anatomy, not the clip (`ANAT` in render.ts): the stick is fitted between the blade
+  target and the top hand (in front of the belly, `ANAT.clear` off the spine, under the shoulder); the bottom hand
+  grips at `STICK_HOLD.bottom` and its collarbone drops (`ANAT.shrug`) if out of reach; elbows point down and back;
+  wrists within 28 deg of the bind pose; the head's axes come from the helmet and visor meshes (the bind pose's were
+  70-100 deg off) and it looks at the ice `ANAT.gaze` ahead (`visorTilt` calibrated by review), level, yaw capped
+  (`?noanat` turns the head layer off). Shots keep the clip's arms.
+  Verify poses with `node tests/arm_shots.mjs verify/roundN` (6 shots at the game camera) and a fresh subagent that
+  sees only the images and the anatomy rules (verify/VERDICT.md); numeric probes are a secondary check.
+  Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
+  `node tests/stick_state_probe.mjs` (and with `&noik` for the clip's own values) checks every state: shaft angle,
+  blade height, top hand on the shaft, drawn blade vs collider, twist, inverted elbows, elbows swung behind the clip's,
+  wrists bent past the clip's, knockdowns.
 - Checks: `node tests/spin_probe.mjs` (30 s of spinning, bones stay near the clip pose), `node tests/twist_probe.mjs
   --idle 60` (title idle and play), `node tests/arm_probe.mjs` (arm-to-torso distance and carrier close-ups), `node tests/stick_probe.mjs` (blade
   below the ice, carried puck on the blade, stickhandling sweep).
+
+
+## Skating gait (render.ts: gaitStep, gaitFoot, gaitLegs; GAIT config)
+- Legs are procedural, over the clips: each skate gets a target from a stride phase that advances with distance
+  skated (`GAIT.cycle` per cycle, shorter when digging hard, cadence clamped by `minHz`/`maxHz`), then two-bone IK
+  (thigh aimed at a pole-placed knee, calf at the target) and the foot turned flat at the target's toe angle. Push
+  toe-out comes from the blade's own path, so the blade runs along its edge (no skid).
+- Modes from the sim (`v.gait.mode`): stride, cross (crossovers on a hard carve), back (C-cuts), pivot (mohawk),
+  stop (both blades across, spray), glide, ready, off (shots, checks, falls: the clip owns the legs). Stride
+  amplitude grows with speed. Hips drop and sway over the gliding skate; the chest leans in with speed.
+- The upper-body clip (stride, crossover, back) is scrubbed to the same phase (`scrubLoop`), so the chest and stick
+  sway with the pushing legs. `?nogait` restores the old clip playback. Legs, pelvis (incl. its position), spine_01
+  and neck are in the layer restore list.
+- Posture is absolute, not added to the clip: hip height (`GAIT.hip`, about a 100-115 degree knee) and torso lean
+  per mode (`GAIT.lean`, a pure pitch about the side axis). Hip and shoulder counter-rotation come from the stride
+  clip only; the look layer turns mostly the head (`HEAD.chest` is the spine's share). Extra counter-rotation or a
+  bigger chest share twisted the shoulders 30-45 degrees off the hips. `__faceoff.gait()` reports knee, lean, hip,
+  twist (shoulder line vs hip line). `?sidecam` puts the camera beside your skater; `?nolook` turns the look off.
+- No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
+- Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
+
+## Stick colliders (sim.ts: STICK, placeBlade, bladeSweep, pokeContact)
+- Every skater's stick is a shaft (hands to heel) and a blade capsule (`bx, by, ba`), placed every step from the
+  carry point, lane stick (`stickX`), poke sweep or knock-aside, kept within `STICK.reach` and out of other bodies,
+  boards and nets (iterated). A carried puck rides the blade, so it can't pass through anything either.
+- Puck vs blades is swept (`STICK.step`) with both moving, so nothing tunnels. Soft contact traps (`catch`, the
+  receiver's `recvCatch`), harder contact deflects; a teammate's blade tips a shot (still a shot), an opponent's
+  blocks it. Saucer passes skip blades. Bodies bounce passes off the skates (`bodyBounce`), no dice rolls.
+- Pokes and lifts only aim the blade (`startPoke`); `pokeContact` sweeps it and acts on what it touches: the puck
+  (knocked loose), the carrier's shaft from behind (stick lifted, `liftT`), his stick from the front (knocked
+  aside, `tieT`; a fast low hit jars the puck loose). The carrier's body between the poker and the contact blocks it.
+- The renderer aims the drawn stick at the sim blade during pokes and knocks, lifts it during `liftT`.
+- Debug: `[` or `?colliders` draws shafts, blades, body circles and the puck radius. Sim event `stick` (text: trap,
+  deflect, tip, poke, lift, tie, body) plays the clack.
+- Checks: `node tests/stick_physics_probe.mjs` (lane blocks, no tunnelling, pokes, shielding, lifts, handedness, a
+  full bot match with no blade in a body, the boards or a net).
+
+## Ragdolls and staggers (ragdoll.ts, render.ts ragApply; RAGDOLL config)
+- The sim is the truth (knockdown, slide, stun, puck and stick drops, juice events); the ragdoll is display only.
+- Big hits launch: upward speed (`RAGDOLL.up`), push away (`launch`) and a tumble (`spin`, `twist`) scaled by the
+  hit value up to `hitTop`, shaped by the hit kind. Partly active: limbs spring toward their pose in the torso frame
+  (`stiff`), so they flail without folding. `friction` sets the slide on landing; `getup` the get-up time.
+  A `hit` event with value `n >= RAGDOLL.min` starts a 13-particle verlet ragdoll from the skater's current bone
+  positions (no pop), kicked by the hit kind the sim reports (`text`: open, hip, board), carried by the sim's slide.
+  Its particles become bone rotations (pelvis frame, then aim per limb), blended by a weight that eases in on impact
+  and out once stun drops to `RAGDOLL.getup`, where the get-up (the fall clip run backward) takes over.
+- Light checks (`bump`, value >= `RAGDOLL.stagger`) rock the torso along the hit. At most `RAGDOLL.max` at once.
+- Debug (with `?movedbg`, `?fxdebug` or `?colliders`, never in a normal game): `]` knocks the nearest opponent down (shift+] a light one); `?norag`; `__faceoff.knock(i, imp, dx, dy)`.
+- Checks: `node tests/ragdoll_probe.mjs` (5 at once: finite, link stretch, above the ice, lying flat, back up and
+  skating, gradual blend, frame rate, stagger).
+
+## Abilities (abilities.ts data, sim.ts useAbility/tickAbility/aiAbility)
+- **Off by default** (`ABILITY_ON`, sim.ts): the skill and passive design is being reworked from the Tape to Tape
+  study (DESIGN.md "Skills and passives"); `?abilities` or `?ability=id` turns them on. Don't build more until the
+  user picks from that design.
+- O uses the controlled skater's ability (buffered like other presses). Each has a cooldown and a sprint-bar cost;
+  built: burst (burst skates), charge (shoulder charge), bender (curling shot), reach (long stick). Default by slot
+  (`LOADOUT`). Bots use them through `aiAbility` only when the moment is right, at a skill-scaled rate (`ABILITY_AI`).
+- Every use emits the `ability_used` feedback event (tag = id), tuned in `feedback/config.ts`.
+- HUD: the chip under the sprint bar (`#abil` in index.html, `hud()` in main.ts).
+- Add one: id and def in abilities.ts, effect in `useAbility`/`tickAbility`, bot rule in `aiAbility`, then the probe.
+- Debug (only with abilities on): `'` cycles your skater's ability and readies it; `?ability=id` gives everyone one; `__faceoff.ability(i, id)`.
+- Checks: `node tests/ability_probe.mjs` (each effect, cooldown and cost, bots use all four, balance on vs off).
+- Proposals and backlog in DESIGN.md; research in RESEARCH.md.

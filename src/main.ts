@@ -1,5 +1,8 @@
-import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT } from './sim';
-import { View } from './render';
+import { PHYS, initPhysics } from './physics/rink';
+import { Game, Ctl, PowerId, POWERS, HOME, OPPONENTS, ROUND_ORDER, RUN_ROUNDS, TeamDef, WIN_GOALS, Ev, setTeamSize, AI, MOVE, HANDS, HAND_FORCE, CHECK, SHOT, STICK, ABILITY_FORCE, ABILITY_ON } from './sim';
+import { View, GAIT } from './render';
+import { RAGDOLL } from './ragdoll';
+import { ABILITIES, ABILITY_IDS, AbilityId } from './abilities';
 import { sfx, unlock, audio } from './audio';
 import { FeedbackSystem } from './feedback/system';
 import { feel, setFeel, FEEL_DEFAULTS } from './feedback/settings';
@@ -11,6 +14,10 @@ const $ = (id: string) => document.getElementById(id)!;
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
 const params = new URLSearchParams(location.search);
 if (params.has('hands')) HAND_FORCE.v = params.get('hands') === 'l' ? -1 : 1;   // test: one shot side for everyone
+if (params.has('ability')) ABILITY_FORCE.v = params.get('ability') as AbilityId;   // test: everyone gets this ability
+ABILITY_ON.v = params.has('abilities') || params.has('ability');   // abilities are off until their design is settled
+// debug keys that change play (] knock down, ' swap ability) only with ?fxdebug, ?movedbg or ?abilities: never in a normal live game
+const DEV = params.has('fxdebug') || params.has('movedbg') || params.has('abilities') || params.has('ability') || params.has('colliders');
 if (params.has('ai')) AI.difficulty = Math.max(0, Math.min(1, Number(params.get('ai')) || 0));   // bot difficulty 0..1
 
 type Mode = 'title' | 'intro' | 'match' | 'end' | 'pick';
@@ -50,7 +57,7 @@ const TAP = 0.18;            // simple scheme: a shoot press shorter than this i
 let shootDownAt = -1, wristQueued = false;
 // Input buffer: a press is latched until a sim step has seen it, so a tap during hit stop or slow-mo
 // (when no step may run for a few frames) still lands on the next step instead of being lost.
-const LATCH = new Set(['KeyJ', 'Space', 'KeyK', 'KeyL', 'KeyH', 'KeyU', 'KeyQ', 'KeyI']);
+const LATCH = new Set(['KeyJ', 'Space', 'KeyK', 'KeyL', 'KeyH', 'KeyU', 'KeyQ', 'KeyI', 'KeyO']);
 const latched = new Set<string>();
 window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code) || DEBUG_CODES.has(e.code) || e.code === 'KeyP' || e.code === 'Backquote') e.preventDefault();
@@ -85,7 +92,7 @@ function ctl(): Ctl {
       my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
       pass: k('KeyJ', 'Space'), saucer: false, wrist, shoot: held >= TAP,
       check: k('KeyL') && !near, poke: k('KeyL') && near,
-      burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'),
+      burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'), ability: k('KeyO'),
     };
   }
   return {
@@ -93,12 +100,27 @@ function ctl(): Ctl {
     mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
     my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
     pass: k('KeyJ', 'Space'), saucer: k('KeyK'), wrist: k('KeyL'), shoot: k('KeyI'), check: k('KeyH'), poke: k('KeyU'),
-    burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'),
+    burst: k('ShiftLeft', 'ShiftRight'), swap: k('KeyQ'), ability: k('KeyO'),
   };
+}
+
+/** debug (] key): a big hit on the opponent nearest you, from your side (shift+] for a light, stagger-sized one) */
+function forceRagdoll(imp = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 5 : 15) {
+  const h = game.ctrl, foe = game.skaters.filter(k => k.team === 1 && k.stun <= 0 && k.out <= 0).sort((a, b) => Math.hypot(a.x - h.x, a.y - h.y) - Math.hypot(b.x - h.x, b.y - h.y))[0];
+  if (!foe) return;
+  const dx = foe.x - h.x, dy = foe.y - h.y, d = Math.hypot(dx, dy) || 1;
+  if (imp < 7) handle({ t: 'bump', x: foe.x, y: foe.y, id: foe.id, dx: dx / d, dy: dy / d, n: imp });
+  else game.debugKnock(foe, dx / d, dy / d, imp);
 }
 
 function onPress(code: string) {
   if (code === 'Semicolon') { view.moveDbg = !view.moveDbg; moveDbgEl.style.display = view.moveDbg ? 'block' : 'none'; return; }
+  if (code === 'BracketLeft') { view.colDbg = !view.colDbg; return; }   // stick and body colliders
+  if (code === 'Quote' && game && ABILITY_ON.v) {   // debug: give your skater the next ability, ready to use
+    const h = game.ctrl; h.ab = ABILITY_IDS[(ABILITY_IDS.indexOf(h.ab) + 1) % ABILITY_IDS.length]; h.abCd = 0; h.stamina = 1;
+    pop(`Ability: ${ABILITIES[h.ab].name}`, h.x, h.y, false); return;
+  }
+  if (code === 'BracketRight' && mode === 'match' && DEV) { forceRagdoll(); return; }   // debug: flatten the nearest opponent
   const go = code === 'Enter' || code === 'Space' || code === 'KeyJ';
   if (code === 'KeyR' && mode !== 'title') { startRun(); return; }
   if (code === 'KeyC' && mode === 'title') {
@@ -271,6 +293,7 @@ function handle(e: Ev) {
     case 'switch': case 'pickup': sfx.recv(); break;
     case 'poke': if (e.text === 'air') audio.play('stick_whiff'); break;   // a poke at nothing (a landed one is a feedback event)
     case 'pokeTry': audio.play('stick_whiff'); break;
+    case 'stick': if (e.text !== 'body' && e.text !== 'trap') audio.play('stick_clack'); break;   // blade on puck or stick on stick
     case 'stickDrop':
       audio.play('stick_drop');
       if (game.skaters.find(k => k.id === e.id)?.human) pop('Stick down! Skate over it', e.x!, e.y!, true);
@@ -293,6 +316,8 @@ function handle(e: Ev) {
 const windEl = $('wind'), windFill = windEl.querySelector('u') as HTMLElement;
 const sprintEl = $('sprint'), sprintFill = sprintEl.querySelector('i') as HTMLElement;
 let sprintShow = 0, lastSprintW = -1;
+const abilEl = $('abil'), abilName = abilEl.querySelector('span') as HTMLElement, abilFill = abilEl.querySelector('i') as HTMLElement;
+let lastAbilW = -1, abilReady = false;
 let lastScore = '', lastClock = '', lastHeat = -1, lastMult = 0, lastStyle = -1;
 // movement debug overlay (; key or ?movedbg): your skater's facing, skating direction, head yaw and shot side,
 // and every bot's AI state; the arrows on the ice are drawn by the view
@@ -306,7 +331,10 @@ function moveDbgText() {
   const lines = [`you #${h.id}  ${h.hand > 0 ? 'right' : 'left'} shot${h.bh > 0.5 ? ' (backhand)' : ''}`,
     `facing ${deg(h.face)}  skating ${sp > 0.3 ? deg(Math.atan2(h.vy, h.vx)) : '-'}  speed ${sp.toFixed(1)}  ${h.faceMode}`,
     `head yaw ${hs ? deg(hs.twist) : '-'}  (limit ${deg(0.75)})`, ''];
-  for (const k of game.skaters) if (!k.human) lines.push(`#${k.id} ${k.team === 0 ? 'home' : 'away'} ${k.hand > 0 ? 'R' : 'L'} ${k.faceMode.padEnd(7)} ${k.ai.state ?? ''}`);
+  const gs = view.gaitState(), an = view.animStates(), gi = (k: typeof h) => { const i = game.skaters.indexOf(k), q = gs[i];
+    return q ? `${(an[i]?.clip ?? '').padEnd(10)} legs ${q.mode.padEnd(6)} phase ${q.ph.toFixed(2)} stride ${q.amp.toFixed(2)}` : ''; };
+  lines.splice(3, 0, `anim ${gi(h)}`, `stick ${h.bOn ? 'on ice' : 'off'}${h.liftT > 0 ? ' lifted' : ''}${h.tieT > 0 ? ' knocked' : ''}${h.pokeT > 0 ? ' poking' : ''}`);
+  for (const k of game.skaters) if (!k.human) lines.push(`#${k.id} ${k.team === 0 ? 'home' : 'away'} ${k.hand > 0 ? 'R' : 'L'} ${k.faceMode.padEnd(7)} ${gi(k)}  ${k.ai.state ?? ''}`);
   return lines.join('\n');
 }
 
@@ -343,6 +371,18 @@ function hud() {
     if (w !== lastSprintW) { lastSprintW = w; sprintFill.style.width = w + '%'; }
     sprintEl.classList.toggle('on', h.sprint); sprintEl.classList.toggle('gassed', h.gassed);
   } else sprintEl.style.display = 'none';
+  // ability chip under the sprint bar: always there in a match so the key is learnable; the line along its bottom
+  // fills as the cooldown runs down, the chip lights when it is ready and steps up once at that moment
+  if (ABILITY_ON.v && mode === 'match' && h.out <= 0 && game.phase !== 'over') {
+    const [x, y] = view.project(h.x - 1.15, 0, h.y), def = ABILITIES[h.ab];
+    abilEl.style.display = 'block'; abilEl.style.left = x + 'px'; abilEl.style.top = (y + 12) + 'px';
+    if (abilName.textContent !== def.name) abilName.textContent = def.name;
+    const ready = h.abCd <= 0 && h.stamina >= def.cost && (h.ab !== 'bender' || game.pucks[0].owner === h), w = Math.round(100 * (1 - Math.max(0, h.abCd) / def.cd));
+    if (w !== lastAbilW) { lastAbilW = w; abilFill.style.width = (ready ? 0 : w) + '%'; }
+    if (ready && !abilReady) { abilEl.classList.remove('pop'); void abilEl.offsetWidth; abilEl.classList.add('pop'); }
+    abilReady = ready;
+    abilEl.classList.toggle('ready', ready); abilEl.classList.toggle('live', h.abT > 0);
+  } else abilEl.style.display = 'none';
   if (mode === 'match' && h.wind >= 0 && game.phase === 'play') {
     const [x, y] = view.project(h.x, 0, h.y + 1.6);
     windEl.style.display = 'block'; windEl.style.left = x + 'px'; windEl.style.top = y + 'px';
@@ -356,13 +396,14 @@ let acc = 0, last = 0;
 const frameMs: number[] = [];
 let simMs = 0, simN = 0;
 
+let frozen = false;
 function tick(now: number) {
   requestAnimationFrame(tick);
   const rdt = Math.min(0.05, (now - last) / 1000 || 0.016);
   if (last) { frameMs.push(now - last); if (frameMs.length > 900) frameMs.shift(); }
   last = now;
   modeT += rdt;
-  const paused = fb.hud.feelOpen;   // the feel panel pauses play while you tune
+  const paused = fb.hud.feelOpen || frozen;   // the feel panel pauses play while you tune (frozen: test hook)
   if (mode === 'match' && !paused) {
     // hit stop and slow-mo only change how much real time the fixed step is fed: the sim runs the same
     // steps on the same (latched) inputs either way. In net mode the scale is always 1.
@@ -398,7 +439,11 @@ function perf() {
 
 (async () => {
   setTeamSize(params.get('team') === '3' ? 3 : 5);
+  PHYS.rapier = params.has('rapier');   // PHYSICS_PLAN.md: Rapier puck, boards and nets
+  // loads alongside the renderer and its assets; if it fails, play on the old physics instead of hanging
+  const physReady = PHYS.rapier ? initPhysics().catch(e => { console.warn('Rapier failed, old physics', e); PHYS.rapier = false; }) : null;
   await view.init($('gl') as HTMLCanvasElement, params.has('webgl'), params.has('noassets') ? 'off' : params.has('breakassets') ? 'break' : 'on');
+  await physReady;
   opp = OPPONENTS[0];
   game = new Game(1, opp, powers, 1);
   game.events.length = 0;
@@ -410,7 +455,11 @@ function perf() {
     perf, resetPerf: () => { frameMs.length = 0; simMs = 0; simN = 0; },
     assets: () => ({ ...view.assets }), assetsReady: () => view.assetsReady,
     anims: () => view.animStates(),
+    gait: () => view.gaitState(), feet: (i: number) => view.feet(i), rag: () => view.ragState(),
+    stickPose: (i: number) => view.stickPose(i), puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
+    knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
+    freeze: (on: boolean) => { frozen = on; }, closeCam: (i: number, d = 6, a = 0) => { view.closeCam = i < 0 ? null : { i, d, a }; },
     gearCheck: () => view.gearCheck(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
     ground: (x: number, y: number) => view.project(x, 0.05, y),
@@ -422,7 +471,9 @@ function perf() {
     stick: (i: number) => view.stickState(i),
     // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
     skaters: () => game.skaters.map(k => ({ id: k.id, team: k.team, human: k.human, x: k.x, y: k.y, vx: k.vx, vy: k.vy, face: k.face, hand: k.hand, bh: k.bh, mode: k.faceMode, ai: k.ai.state ?? '', stun: k.stun })),
-    tuning: { MOVE, AI, HANDS, CHECK, SHOT },   // live: edits apply on the next step
+    tuning: { MOVE, AI, HANDS, CHECK, SHOT, GAIT, STICK, RAGDOLL, ABILITIES },
+    setClock: (sec: number) => { game.clock = sec; },   // tests: keep a long probe inside one match
+    ability: (i: number, id?: AbilityId) => { const s = game.skaters[i]; if (id) s.ab = id; s.abCd = 0; s.stamina = 1; return game.useAbility(s, 0, 0); },   // live: edits apply on the next step
     stickDebug: (i: number) => view.stickDebug(i),
     blade: (i: number) => { const k = game.skaters[i]; return k ? view.bladeOffset(i, k.face, k.x, k.y) : null; },
     // feedback layer: fire any event at an intensity, read what fired, change settings, run the full sweep
@@ -454,7 +505,7 @@ const DEBUG: DebugEntry[] = [
   ['Digit8', '8', 'check_landed'], ['Digit9', '9', 'check_board'], ['Digit0', '0', 'got_hit'], ['KeyY', 'Y', 'check_shove'],
   ['KeyF', 'F', 'check_poke'], ['Minus', '-', 'streak_end'], ['Equal', '=', 'speed_burst'], ['KeyZ', 'Z', 'spin_move'],
   ['KeyX', 'X', 'beat_defender'], ['KeyC', 'C', 'turnover_won'], ['KeyV', 'V', 'turnover_lost'], ['KeyM', 'M', 'faceoff_won'],
-  ['KeyG', 'G', 'heat_fire'], ['KeyB', 'B', 'goal_scored'], ['KeyN', 'N', 'goal_conceded'],
+  ['KeyG', 'G', 'heat_fire'], ['KeyB', 'B', 'goal_scored'], ['KeyN', 'N', 'goal_conceded'], ['KeyE', 'E', 'ability_used'],
 ];
 const DEBUG_CODES = new Set([...DEBUG.map(d => d[0]), 'Comma', 'Period', 'Slash', 'Backslash']);
 const LEVELS: Record<string, [string, number]> = { Comma: ['low', 0.15], Period: ['medium', 0.55], Slash: ['high', 1] };
@@ -487,6 +538,7 @@ function debugFire(name: string, i: number) {
       case 'turnover_lost': return { ...base, t: 'turnover', team: 1, id: foe?.id };
       case 'beat_defender': return { ...base, vid: foe?.id, tag: 'spin' };
       case 'heat_fire': return { ...base, t: 'fire' };
+      case 'ability_used': return { ...base, tag: game.ctrl.ab };
       case 'goal_scored': return { ...base, x: netX + 0.3, y: 0.4, n: i > 0.5 ? 3 : 0, text: i > 0.8 ? 'one_timer winner streak' : '' };
       case 'goal_conceded': return { ...base, t: 'goal_scored', team: 1, x: -netX - 0.3, y: 0 };
       default: return base;

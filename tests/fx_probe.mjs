@@ -86,8 +86,10 @@ const wait = (page, ms) => page.waitForTimeout(ms);
     }
   }
   const goal = await page.evaluate(() => window.__faceoff.perf());
-  await page.evaluate(() => { window.__faceoff.fx.set({ intensity: 1 }); window.__faceoff.resetPerf(); window.__faceoff.fx.sweep(); });
-  while (await page.evaluate(() => window.__faceoff.fx.sweeping())) await wait(page, 500);
+  await page.evaluate(() => { window.__faceoff.fx.set({ intensity: 1 }); window.__faceoff.resetPerf(); window.__faceoff.setClock(600); window.__faceoff.fx.sweep(); });
+  const sweepEnd = Date.now() + 120e3;   // the sweep only runs during a match; never wait forever on it
+  while (await page.evaluate(() => window.__faceoff.fx.sweeping()) && Date.now() < sweepEnd) await wait(page, 500);
+  check('the full sweep finishes', !(await page.evaluate(() => window.__faceoff.fx.sweeping())), `mode ${(await page.evaluate(() => window.__faceoff.snap())).mode}`);
   const sweep = await page.evaluate(() => window.__faceoff.perf());
   report.perf = { baseline: base, heaviestGoal: { ...goal, peakParticles, peakVoices, maxFxMs: maxFx }, sweep };
   console.log('perf', JSON.stringify(report.perf));

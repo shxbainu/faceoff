@@ -251,6 +251,13 @@ export const FEEDBACK = {
       sounds: [{ cue: 'burst_scrape', vol: [0.22, 0.4], jitter: 1.5 }],
       flow: 5,
     },
+    ability_used: {   // an ability going off: a crisp kick of ice and a scrape; the payoff (hit, goal) has its own event
+      priority: 2, valence: 'good',
+      fov: [0.6, 1.4], trauma: [0.02, 0.05],
+      particles: [{ kind: 'spray', count: [8, 14], color: ICE, speed: [4, 8], up: 2.5, directional: true }],
+      sounds: [{ cue: 'burst_scrape', vol: [0.3, 0.5], jitter: 2 }, { cue: 'stick_clack', vol: [0.1, 0.2], jitter: 1 }],
+      flow: 10,
+    },
     // ------------------------------------------------------------------ possession
     turnover_won: {
       priority: 3, valence: 'good',
