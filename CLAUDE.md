@@ -59,7 +59,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `f61c6748e2d2584b` since the stick hold pass of 2026-11-18 (resting stick on the forehand side)),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `a3c0e80fd8d4e3c9` since the arm and stick hold fix of 2026-11-19 (resting stick 1.85 ahead on the forehand side)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -98,17 +98,18 @@
   pose before layering, and `layerSave` remembers what was left. Without it the turns stack on static frames (title,
   pre-game, hit stop, held wind-up) and the head, spine and arms spin (`?nolayerfix` shows the old bug).
 - Bone turns go through `rotWorld`, which is correct under the mirrored (left shot) model.
-- Stick hold (`stickIK`, `STICK_HOLD`): the blade goes on the ice at its target (puck, lane, or the sim's resting
-  stick on the forehand side, `STICK.rest`), the shaft runs back up toward the top hand's shoulder at the lie angle,
-  the bottom hand goes to its grip by hinge arm IK (`hingeIK`: the elbow only bends about the clip's own axis, the arm
-  swings from the shoulder, then rolls the elbow down; a free two-bone solve bent the top-hand elbow inward 26% of the time), the stick is turned in that glove onto
-  the target, and last (`topGrip`, after `stickFloor`) the top hand's palm goes onto the knob. Every skater always
-  has a stick target, so the stick never hangs like a cane. `node tests/stick_state_probe.mjs` checks every state
-  (shaft angle, blade height, top hand on the stick, drawn blade vs collider, twist, elbows bent the wrong way, knockdowns). `stickFloor` then turns the
-  stick up in the glove until the blade's heel, middle and toe are on the ice (`?nofloor` turns it off). A carried
-  puck is drawn on the blade, so it moves with the stick; the sim's puck stays the truth for play. The sim's `CARRY` point is
-  where the clips naturally hold the blade (measure with `?noik`); a target near the feet drags the hands through
-  the body. `?noik` turns the IK off.
+- Stick hold (`stickIK`, `topGrip`, `hingeIK`): anchored on the clip's own top hand, which the clip puts somewhere
+  natural. The blade goes on the ice at its target (puck, lane, or the sim's resting stick, `STICK.rest`), the shaft
+  runs from it up through the top hand's palm, the bottom hand goes to its grip on that line, the stick turns in that
+  glove onto the target, and last (after `stickFloor`) the top hand grips the shaft where it passes, up to
+  `STICK_HOLD.slide` below the knob. Arms use `hingeIK`: the elbow bends only about the clip's own hinge axis (kept in
+  the upper arm's frame, sign-corrected under the left-shot mirror), the arm swings from the shoulder onto the target,
+  then rolls until the elbow points where the clip had it. Earlier versions (a free two-bone solve, a chosen knob
+  spot, a fixed elbow pole, a wrist wrap) each bent the top-hand elbow inward, swung it back or cranked the wrist.
+  Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
+  `node tests/stick_state_probe.mjs` (and with `&noik` for the clip's own values) checks every state: shaft angle,
+  blade height, top hand on the shaft, drawn blade vs collider, twist, inverted elbows, elbows swung behind the clip's,
+  wrists bent past the clip's, knockdowns.
 - Checks: `node tests/spin_probe.mjs` (30 s of spinning, bones stay near the clip pose), `node tests/twist_probe.mjs
   --idle 60` (title idle and play), `node tests/arm_probe.mjs` (arm-to-torso distance and carrier close-ups), `node tests/stick_probe.mjs` (blade
   below the ice, carried puck on the blade, stickhandling sweep).
