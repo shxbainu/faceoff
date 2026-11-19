@@ -42,10 +42,11 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; ikT?: THREE.Vector3; palmL?: THREE.Object3D; palmClip?: THREE.Vector3;
+  ikW?: number; ikT?: THREE.Vector3; palmL?: THREE.Object3D; palmClip?: THREE.Vector3; neckB?: THREE.Object3D; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
+  anat?: { head: THREE.Vector3; headUp: THREE.Vector3; hand: { q: THREE.Quaternion; ax: THREE.Vector3 }[] } | null;
   /** the stick prop's resting position in the glove (the IK moves it; restored every frame) */
   stickRest?: THREE.Vector3;
   /** the cloned skater model (mirrored on x for a left shot) */
@@ -93,8 +94,15 @@ export const GAIT = {
 };
 /** How a stick is held (stickIK, topGrip). slide: how far below the knob the top hand may hold the shaft (share of its
  *  length), so the top hand stays near where the clip has it */
-export const STICK_HOLD = { slide: 0.15 };
+export const STICK_HOLD = { slide: 0.05 };
 const ARM = { floor: 0.015 };   // stickFloor: lowest the blade may sit (above the ice)
+/** Arms and head judged against a human body, not the clip (the clips hold the stick with the elbows hiked to
+ *  shoulder height and look at the sky when the torso leans). pole: where each elbow points (weights of down, back,
+ *  out); top: the top hand's spot off spine_01 (forward, up, toward its own shoulder), on the belly in front of the
+ *  body; wrist/twist: most a hand may bend / roll off its bind pose (deg); gaze: the eyes look at the ice this far
+ *  ahead (m); reach: share of an arm's length a hand is asked to reach from its shoulder; the head taking `head` of the turn and the neck the rest; yaw: most the head turns off the chest (rad),
+ *  and it is held level (no roll). */
+export const ANAT = { pole: [1, 0.45, 0.25], top: [0.6, 0.1, 0.2], reach: 0.88, wrist: 28, twist: 70, gaze: 4.5, head: 0.6, yaw: 0.8 };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
 // ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
@@ -958,13 +966,16 @@ export class View {
     // target. topGrip then moves the top hand the short way onto the knob. Elbows roll back to where the clip had
     // them. (Choosing a knob spot and dragging the top hand to it swung that arm back or hiked the elbow up.)
     v.armClip = [this.armBend(A.ua_l, A.la_l, A.h_l, v.armClip?.[0]), this.armBend(A.ua_r, A.la_r, A.h_r, v.armClip?.[1])];   // the clip's elbows, before the IK moves them
-    const palm = (v.palmL ??= v.body.getObjectByName('middle_01_l') ?? A.h_l);
-    (v.palmClip ??= new THREE.Vector3()).copy(palm.getWorldPosition(this.ikE));
+    (v.palmClip ??= new THREE.Vector3()).copy(this.topSpot(v, this.ikE));   // the top hand's anatomical spot
     const dir = this.ikE.sub(T); if (dir.lengthSq() < 1e-6) return; dir.normalize();
     const len = c.copy(g.top).applyMatrix4(st.matrixWorld).distanceTo(this.ikD.copy(g.blade).applyMatrix4(st.matrixWorld));
     if (g.gripB === undefined) { const hb = A.h_r.getWorldPosition(a), ax = b.copy(g.top).sub(g.blade); g.gripB = Math.max(0.2, Math.min(0.95, st.worldToLocal(hb).sub(g.blade).dot(ax) / ax.lengthSq())); }   // where the clip's bottom hand holds the shaft
-    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(T).addScaledVector(dir, len * g.gripB), v.armClip[1].n, v.armClip[1].pole, w);
+    const sh = A.ua_r.getWorldPosition(this.ikG), tB = Math.max(g.gripB - 0.12, Math.min(g.gripB + 0.15, sh.sub(T).dot(dir) / len));   // the bottom hand slides toward its shoulder
+    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(T).addScaledVector(dir, len * tB), v.armClip[1].n, this.anatPole(v, A.ua_r, this.apR), w);
+    this.wristClamp(v, A.h_r, 1);
     this.turnStick(v, st, blade().clone(), T, Math.PI * w);   // shaft from the glove to the blade target
+    { const bw = blade().clone(), p0 = st.parent!.worldToLocal(bw.clone()), p1 = st.parent!.worldToLocal(bw.lerp(T, w));   // slide the shaft through the glove so the blade lands on the target
+      st.position.add(p1.sub(p0)); st.updateMatrixWorld(true); }
   }
   /** the top hand wraps the shaft at its grip (the palm, not the wrist, on it); runs last, after stickFloor has
    *  settled the stick, so nothing moves the shaft out of the hand afterward */
@@ -980,7 +991,8 @@ export class View {
     for (let pass = 0; pass < 2; pass++) {   // twice: the arm's roll turns the hand, which moves the palm's offset from the wrist
       const grip = this.ikD.copy(g.blade).lerp(g.top, tAt).applyMatrix4(st.matrixWorld);
       grip.sub(palm.getWorldPosition(this.ikE).sub(A.h_l.getWorldPosition(this.ikG)));
-      this.hingeIK(A.ua_l, A.la_l, A.h_l, grip, v.armClip[0].n, v.armClip[0].pole, w);
+      this.hingeIK(A.ua_l, A.la_l, A.h_l, grip, v.armClip[0].n, this.anatPole(v, A.ua_l, this.apL), w);
+      this.wristClamp(v, A.h_l, 0);
     }
   }
   private ikF = new THREE.Vector3(); private ikC = new THREE.Vector3(); private ikD = new THREE.Vector3(); private ikE = new THREE.Vector3(); private ikG = new THREE.Vector3();
@@ -1226,6 +1238,91 @@ export class View {
     const ang = hup.angleTo(want) * G.headLevel * w;
     if (ang > 1e-3) this.rotWorld(R.neck, c.crossVectors(hup, want), ang);
   }
+  /** Bind-pose references, read once per skater from the skin: the head bone's own forward axis, and each hand's
+   *  rest turn on its forearm with the axis toward the knuckles (a straight wrist). */
+  private anatOf(v: SkaterView) {
+    if (v.anat !== undefined) return v.anat;
+    let mesh: THREE.SkinnedMesh | null = null;
+    v.body.traverse(o => { if (!mesh && (o as THREE.SkinnedMesh).isSkinnedMesh && (o as THREE.SkinnedMesh).skeleton.bones.some(b => b.name === 'Head')) mesh = o as THREE.SkinnedMesh; });
+    if (!mesh) return (v.anat = null);
+    const m = mesh as THREE.SkinnedMesh, sk = m.skeleton;
+    const bind = (n: string) => { const i = sk.bones.findIndex(b => b.name === n); return i < 0 ? null : new THREE.Matrix4().copy(sk.boneInverses[i]).invert(); };
+    const head = bind('Head'); if (!head) return (v.anat = null);
+    v.root.updateMatrixWorld(true);
+    // head forward: the body's forward taken into the head bone's bind frame (bind pose in world = mesh x bind)
+    const hw = new THREE.Matrix4().multiplyMatrices(m.matrixWorld, m.bindMatrixInverse).multiply(head);
+    const f = -v.body.rotation.y, fw = new THREE.Vector3(Math.cos(f), 0, Math.sin(f));
+    const inv = new THREE.Matrix3().setFromMatrix4(hw).invert(), hf = fw.applyMatrix3(inv).normalize(), hu = new THREE.Vector3(0, 1, 0).applyMatrix3(inv).normalize();
+    const hand = (['l', 'r'] as const).map(x => {
+      const la = bind('lowerarm_' + x)!, h = bind('hand_' + x)!, mid = bind('middle_01_' + x);
+      const loc = new THREE.Matrix4().copy(la).invert().multiply(h), q = new THREE.Quaternion(); loc.decompose(new THREE.Vector3(), q, new THREE.Vector3());
+      const ax = mid ? new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(h).invert().multiply(mid)).normalize() : new THREE.Vector3(1, 0, 0);
+      return { q, ax };
+    });
+    return (v.anat = { head: hf, headUp: hu, hand });
+  }
+  /** where an elbow points, by anatomy: mostly down, a little back and a little out from the body (mirror safe: "out"
+   *  is read off where the shoulder sits from the neck) */
+  private apL = new THREE.Vector3(); private apR = new THREE.Vector3(); private apT = new THREE.Vector3();
+  private anatPole(v: SkaterView, upper: THREE.Object3D, out: THREE.Vector3) {
+    const f = -v.body.rotation.y, [d, b, o] = ANAT.pole, neck = (v.neckB ??= v.body.getObjectByName('neck_01')!);
+    const side = upper.getWorldPosition(out).sub(neck.getWorldPosition(this.apT)).setY(0).normalize();
+    return out.set(-Math.cos(f) * b, -d, -Math.sin(f) * b).addScaledVector(side, o).normalize();
+  }
+  /** the top hand's spot: in front of the belly, a little toward its own shoulder */
+  private topSpot(v: SkaterView, out: THREE.Vector3) {
+    const A = v.arms!, f = -v.body.rotation.y, [fw, up, sd] = ANAT.top, sp = (v.sp1 ??= v.body.getObjectByName('spine_01')!);
+    const side = A.ua_l.getWorldPosition(this.apT).sub(A.ua_r.getWorldPosition(out)).setY(0).normalize();
+    sp.getWorldPosition(out).add(new THREE.Vector3(Math.cos(f) * fw, up, Math.sin(f) * fw)).addScaledVector(side, sd);
+    return this.inReach(A.ua_l, A.la_l, A.h_l, out);
+  }
+  /** pull a hand target back toward its shoulder until it is within ANAT.reach of the arm's length (no locked-out arm) */
+  private irS = new THREE.Vector3(); private irK = new THREE.Vector3();
+  private inReach(ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D, T: THREE.Vector3) {
+    const S = ua.getWorldPosition(this.irS), K = la.getWorldPosition(this.irK), len = (S.distanceTo(K) + K.distanceTo(h.getWorldPosition(this.apT))) * ANAT.reach;
+    const d = T.distanceTo(S); if (d > len) T.sub(S).multiplyScalar(len / d).add(S);
+    return T;
+  }
+  /** keep a wrist within ANAT.wrist of straight (bend) and ANAT.twist (roll), measured from the bind pose */
+  private wcR = new THREE.Quaternion(); private wcT = new THREE.Quaternion(); private wcS = new THREE.Quaternion(); private wcI = new THREE.Quaternion();
+  private wristClamp(v: SkaterView, hand: THREE.Object3D, k: number) {
+    const an = this.anatOf(v); if (!an) return;
+    const { q, ax } = an.hand[k];
+    const r = this.wcR.copy(q).invert().multiply(hand.quaternion);   // turn off the straight wrist, in the bind frame
+    const pr = ax.x * r.x + ax.y * r.y + ax.z * r.z;
+    const tw = this.wcT.set(ax.x * pr, ax.y * pr, ax.z * pr, r.w).normalize(), sw = this.wcS.copy(r).multiply(this.wcI.copy(tw).invert());
+    const lim = (x: THREE.Quaternion, deg: number) => { const a = x.angleTo(this.wcI.identity()), m = deg * Math.PI / 180; if (a > m) this.wcI.identity().slerp(x, m / a), x.copy(this.wcI); };
+    lim(sw, ANAT.wrist); lim(tw, ANAT.twist);
+    hand.quaternion.copy(q).multiply(sw).multiply(tw); hand.updateMatrixWorld(true);
+  }
+  /** test hook: a hand's bend off a straight wrist (deg, bind pose), twist not counted */
+  private wristDev(v: SkaterView, hand: THREE.Object3D, k: number) {
+    const an = this.anatOf(v); if (!an) return NaN;
+    const { q, ax } = an.hand[k], r = q.clone().invert().multiply(hand.quaternion);
+    return +(ax.clone().applyQuaternion(r).angleTo(ax) * 180 / Math.PI).toFixed(0);
+  }
+  /** eyes on the ice a few metres ahead: pitch the head (and neck) so its forward axis looks at that spot */
+  private hgA = new THREE.Vector3(); private hgB = new THREE.Vector3(); private hgC = new THREE.Vector3();
+  private headGaze(v: SkaterView) {
+    const an = this.anatOf(v), head = (v.headB ??= v.body.getObjectByName('Head')!), neck = (v.neckB ??= v.body.getObjectByName('neck_01')!); if (!an || !head) return;
+    const up = this.gW.up, bf = -v.body.rotation.y;
+    head.updateWorldMatrix(true, false);
+    // yaw: no further than ANAT.yaw off the body's facing
+    { const f = this.hgA.copy(an.head).transformDirection(head.matrixWorld), d = Math.atan2(Math.sin(Math.atan2(f.z, f.x) - bf), Math.cos(Math.atan2(f.z, f.x) - bf));
+      if (Math.abs(d) > ANAT.yaw) this.rotWorld(head, up, d - Math.sign(d) * ANAT.yaw); }   // a turn about world +y lowers atan2(z, x): a positive angle undoes a positive d
+    for (const [bone, share] of [[neck, 1 - ANAT.head], [head, 1]] as const) {
+      head.updateWorldMatrix(true, false);
+      const f = this.hgA.copy(an.head).transformDirection(head.matrixWorld), eye = head.getWorldPosition(this.hgB);
+      const h = this.hgC.set(f.x, 0, f.z); if (h.lengthSq() < 1e-4) return;
+      const want = h.normalize().multiplyScalar(ANAT.gaze).add(eye).setY(0).sub(eye).normalize();
+      this.rotWorld(bone, this.gZ.crossVectors(f, want), f.angleTo(want) * share);
+    }
+    // roll: the head's up has no sideways lean (turn about its own forward until its up is in the vertical plane)
+    const f = this.hgA.copy(an.head).transformDirection(head.matrixWorld), hu = this.hgB.copy(an.headUp).transformDirection(head.matrixWorld);
+    const want = this.hgC.copy(up).addScaledVector(f, -up.dot(f)); if (want.lengthSq() < 1e-4) return;
+    hu.addScaledVector(f, -hu.dot(f));
+    this.rotWorld(head, f.clone().multiplyScalar(Math.sign(this.gZ.crossVectors(hu, want).dot(f)) || 1), hu.angleTo(want));
+  }
   /** Arm IK that respects the elbow as a hinge. 1: bend or straighten the elbow only about its own bend axis (the
    *  clip's, kept in the upper arm's frame) to the angle the reach needs; 2: swing the whole arm from the shoulder so
    *  the hand lands on the target; 3: roll the arm about the shoulder-to-hand line so the elbow points along `pole`. No step can fold the forearm through the joint. (A free two-bone solve with a pole bent
@@ -1374,6 +1471,7 @@ export class View {
   /** test hook: the drawn stick against real hockey: shaft angle from vertical (deg; a held stick runs about 40-60),
    *  blade height above the ice, blade position off the body (forward, lateral toward the shot side), top hand's
    *  distance from its grip on the shaft (0 = holding it), and the drawn blade's distance from the sim's collider */
+  closeCam: { i: number; d: number; a?: number } | null = null;
   stickPose(i: number) {
     const v0 = this.skaters[i]; if (v0) this.stickOf(v0);   // measures the grips too (with ?noik the IK never did)
     const v = this.skaters[i], g = this.stickGeo, s = this.game?.skaters[i]; if (!v || !g || !s || !v.stick || g.gripT < 0) return null;
@@ -1397,6 +1495,11 @@ export class View {
       elbowFwd: v.arms ? [v.arms.ua_l, v.arms.ua_r].map((u, k) => { const K = [v.arms!.la_l, v.arms!.la_r][k].getWorldPosition(new THREE.Vector3()), H = u.getWorldPosition(new THREE.Vector3()); return +(K.sub(H).normalize().dot(new THREE.Vector3(Math.cos(-v.body.rotation.y), 0, Math.sin(-v.body.rotation.y)))).toFixed(2); }) : [],
       wrist: v.arms ? (['l', 'r'] as const).map(x => { const L = v.body.getObjectByName('lowerarm_' + x)!.getWorldPosition(new THREE.Vector3()), Hd = v.body.getObjectByName('hand_' + x)!.getWorldPosition(new THREE.Vector3()), M = v.body.getObjectByName('middle_01_' + x)?.getWorldPosition(new THREE.Vector3()); return M ? +(Hd.clone().sub(L).angleTo(M.sub(Hd)) * 180 / Math.PI).toFixed(0) : 0; }) : [],
       elbows: v.arms ? [[v.arms.ua_l, v.arms.la_l, v.arms.h_l], [v.arms.ua_r, v.arms.la_r, v.arms.h_r]].map(([u, l, h]) => { const H = u.getWorldPosition(new THREE.Vector3()), K = l.getWorldPosition(new THREE.Vector3()), F = h.getWorldPosition(new THREE.Vector3()); return +(H.sub(K).angleTo(F.sub(K)) * 180 / Math.PI).toFixed(0); }) : [],
+      // anatomy: elbow height above its shoulder (negative = below) and wrist bend / roll off the bind pose (deg)
+      elbowUp: v.arms ? [[v.arms.ua_l, v.arms.la_l], [v.arms.ua_r, v.arms.la_r]].map(([u, l]) => +(l.getWorldPosition(new THREE.Vector3()).y - u.getWorldPosition(new THREE.Vector3()).y).toFixed(2)) : [],
+      headPitch: (() => { const an = this.anatOf(v), h = v.body.getObjectByName('Head'); if (!an || !h) return NaN; const f = an.head.clone().transformDirection(h.matrixWorld); return +(Math.asin(-f.y) * 180 / Math.PI).toFixed(0); })(),   // deg below horizontal
+      headRoll: (() => { const an = this.anatOf(v), h = v.body.getObjectByName('Head'); if (!an || !h) return NaN; const u = an.headUp.clone().transformDirection(h.matrixWorld), f = an.head.clone().transformDirection(h.matrixWorld); const sd = new THREE.Vector3().crossVectors(f, new THREE.Vector3(0, 1, 0)).normalize(); return +(Math.asin(Math.max(-1, Math.min(1, u.dot(sd)))) * 180 / Math.PI).toFixed(0); })(),
+      wristDev: v.arms ? [v.arms.h_l, v.arms.h_r].map((h, k) => this.wristDev(v, h, k)) : [],
       topHand: +hl.distanceTo(new THREE.Line3(lo, hi).closestPointToPoint(hl, true, grip)).toFixed(2), toSim: s.bOn ? +Math.hypot(b.x - s.bx, b.z - s.by).toFixed(2) : -1, w: +(v.ikW ?? 0).toFixed(2) };
   }
   /** test hook: knee angles (deg, 180 = straight), torso lean from vertical (deg) and hip height (leg lengths) */
@@ -1901,6 +2004,7 @@ export class View {
         if (s.stickless <= 0 && !DBG.has('noik')) this.stickIK(v, s, p, rdt);
         if (s.stickless <= 0 && !DBG.has('nofloor')) this.stickFloor(v);
         if (s.stickless <= 0 && !DBG.has('noik') && !s.air && s.stun <= 0) this.topGrip(v);
+        if (!DBG.has('noanat') && !s.air && s.stun <= 0) this.headGaze(v);   // shots keep the clip's arms: they already hold the stick with the elbows down
         this.ragApply(v, s, dt);
         this.layerSave(v);
         if (v.crunch) {   // impact: squash and lurch along the hit (or a stretch on a catch), then spring back
@@ -2165,6 +2269,10 @@ export class View {
     const tx = this.camX + F.ox, tz = this.camZ + F.oz;
     this.camera.position.set(tx - Math.cos(CAM_EL) * pd, Math.sin(CAM_EL) * pd, tz);
     this.camera.lookAt(tx, 0, tz);
+    if (this.closeCam) {   // test hook: the game camera's angle, moved in close on one skater (tests/arm_shots.mjs)
+      const k = g.skaters[this.closeCam.i], d = this.closeCam.d, a = this.closeCam.a ?? 0;   // a: orbit off the game camera's direction
+      if (k) { this.camera.position.set(k.x - Math.cos(CAM_EL) * d * Math.cos(a), 1.0 + Math.sin(CAM_EL) * d, k.y - Math.cos(CAM_EL) * d * Math.sin(a)); this.camera.lookAt(k.x, 1.0, k.y); }
+    }
     if (DBG.has('sidecam')) {   // debug: low camera beside your skater, to judge posture and stick side-on
       const h = g.ctrl, a = h.face + Math.PI / 2 * (DBG.get('sidecam') === 'l' ? -1 : 1);
       this.camera.position.set(h.x + Math.cos(a) * 7, 1.6, h.y + Math.sin(a) * 7); this.camera.lookAt(h.x, 1.0, h.y);

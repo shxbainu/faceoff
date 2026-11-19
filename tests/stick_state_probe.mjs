@@ -26,7 +26,7 @@ const rows = await page.evaluate(async () => {
       if (!k.ok && k.stun <= 0) return;
       const sp = f.stickPose(i); if (!sp) return;
       const clip = a[i]?.clip, st = k.stun > 0 ? 'down' : ['wrist_shot', 'slapshot', 'check'].includes(clip) ? clip : f.puckOwner?.() === i ? 'puck' : g[i]?.mode;
-      out.push({ st, ...sp, efL: sp.elbowFwd?.[0], efR: sp.elbowFwd?.[1], wrL: sp.wrist?.[0], wrR: sp.wrist?.[1], knee: g[i]?.knee, lean: g[i]?.lean, hip: g[i]?.hip, twist: g[i]?.twist, chest: Math.abs(g[i]?.chestOff ?? NaN), hips: Math.abs(g[i]?.hipsOff ?? NaN), stickless: k.stickless > 0 });
+      out.push({ st, ...sp, efL: sp.elbowFwd?.[0], efR: sp.elbowFwd?.[1], wrL: sp.wristDev?.[0], wrR: sp.wristDev?.[1], euL: sp.elbowUp?.[0], euR: sp.elbowUp?.[1], hp: sp.headPitch, hr: Math.abs(sp.headRoll), knee: g[i]?.knee, lean: g[i]?.lean, hip: g[i]?.hip, twist: g[i]?.twist, chest: Math.abs(g[i]?.chestOff ?? NaN), hips: Math.abs(g[i]?.hipsOff ?? NaN), stickless: k.stickless > 0 });
     });
   }
   // knocked down and getting up (big hits on two opponents), and the faceoff stance after a goal-free reset
@@ -54,7 +54,7 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
   const line = `${String(st).padEnd(9)} ${String(R.length).padStart(4)}   ${q(c('shaft'), 0.1)}/${q(c('shaft'), 0.5)}/${q(c('shaft'), 0.9)}`.padEnd(38) +
     `${q(c('bladeY'), 0.9).toFixed(2)}`.padEnd(13) + `${q(c('fwd'), 0.5).toFixed(2)}`.padEnd(9) + `${q(c('lat'), 0.5).toFixed(2)}`.padEnd(10) +
     `${q(c('topHand'), 0.5).toFixed(2)}/${q(c('topHand'), 0.9).toFixed(2)}`.padEnd(11) + `${q(c('toSim'), 0.9).toFixed(2)}`.padEnd(12) +
-    `${q(R.flatMap(r => r.knee ?? []), 0.5)}`.padEnd(10) + `${q(c('lean'), 0.5)}`.padEnd(10) + `${q(c('hip'), 0.5)}`.padEnd(8) + `elbowFwd L ${q(c('efL'), 0.1)}/${q(c('efL'), 0.5)} R ${q(c('efR'), 0.1)}/${q(c('efR'), 0.5)}  wrist L ${q(c('wrL'), 0.5)}/${q(c('wrL'), 0.9)} R ${q(c('wrR'), 0.5)}/${q(c('wrR'), 0.9)}  ` + `flipL ${(R.filter(r => r.elbowFlip?.[0]).length / R.length * 100).toFixed(0)}% flipR ${(R.filter(r => r.elbowFlip?.[1]).length / R.length * 100).toFixed(0)}%  ` + `twist ${q(c('twist'), 0.5)}/${q(c('twist'), 0.9)}  chest ${q(c('chest'), 0.5)}/${q(c('chest'), 0.9)}  hips ${q(c('hips'), 0.5)}/${q(c('hips'), 0.9)}`;
+    `${q(R.flatMap(r => r.knee ?? []), 0.5)}`.padEnd(10) + `${q(c('lean'), 0.5)}`.padEnd(10) + `${q(c('hip'), 0.5)}`.padEnd(8) + `elbowFwd L ${q(c('efL'), 0.1)}/${q(c('efL'), 0.5)} R ${q(c('efR'), 0.1)}/${q(c('efR'), 0.5)}  wrist L ${q(c('wrL'), 0.5)}/${q(c('wrL'), 0.9)} R ${q(c('wrR'), 0.5)}/${q(c('wrR'), 0.9)}  head pitch ${q(c('hp'), 0.1)}/${q(c('hp'), 0.5)}/${q(c('hp'), 0.9)} roll p90 ${q(c('hr'), 0.9)}  elbowUp max L ${Math.max(...c('euL').filter(Number.isFinite))} R ${Math.max(...c('euR').filter(Number.isFinite))}  ` + `flipL ${(R.filter(r => r.elbowFlip?.[0]).length / R.length * 100).toFixed(0)}% flipR ${(R.filter(r => r.elbowFlip?.[1]).length / R.length * 100).toFixed(0)}%  ` + `twist ${q(c('twist'), 0.5)}/${q(c('twist'), 0.9)}  chest ${q(c('chest'), 0.5)}/${q(c('chest'), 0.9)}  hips ${q(c('hips'), 0.5)}/${q(c('hips'), 0.9)}`;
   console.log(line);
   // skating states: the stick is held (top hand on it), angled like a stick not a cane, blade near the ice
   if (['stride', 'glide', 'cross', 'back', 'ready', 'puck', 'stop'].includes(st)) {
@@ -64,10 +64,13 @@ for (const st of [...new Set(rows.map(r => r.st))].sort()) {
     if (bad) { console.log(`FAIL  ${st}: cane-like or loose stick`); fails++; }
     // the body doesn't screw into itself: shoulders within about 30 degrees of the hips (crossovers turn into the turn)
     if (R.some(r => r.elbowFlip?.[0] || r.elbowFlip?.[1])) { console.log(`FAIL  ${st}: an elbow bends against its natural hinge (chicken wing)`); fails++; }
-    // arms against the clip's own values (clip-only, ?noik, stride: top-hand elbow p10 -0.38, wrist p90 88 deg):
-    // the IK may not swing an elbow further back or crank a wrist further than that
-    if (q(c('efL'), 0.1) < -0.4 || q(c('efR'), 0.1) < -0.6) { console.log(`FAIL  ${st}: an elbow swung back behind the body`); fails++; }
-    if (q(c('wrL'), 0.9) > 100 || q(c('wrR'), 0.9) > 100) { console.log(`FAIL  ${st}: a wrist bent back past the clip's`); fails++; }
+    // anatomy, not the clip (the clips themselves hike the elbows): elbows below the shoulders, not swung far back,
+    // wrists within 30 deg of straight (bind pose); a leaning skater's top-hand upper arm runs along his side (about -0.7)
+    if (Math.max(...c('euL'), ...c('euR')) > -0.02) { console.log(`FAIL  ${st}: an elbow at or above shoulder height (max ${Math.max(...c('euL'), ...c('euR'))})`); fails++; }
+    if (q(c('efL'), 0.1) < -0.85 || q(c('efR'), 0.1) < -0.85) { console.log(`FAIL  ${st}: an elbow swung back behind the body`); fails++; }
+    // head: eyes on the ice a few metres ahead (about 10-35 deg below level), not rolled onto a shoulder
+    if (q(c('hp'), 0.1) < 5 || q(c('hp'), 0.9) > 45 || q(c('hr'), 0.9) > 10) { console.log(`FAIL  ${st}: head not looking at the ice ahead, or rolled`); fails++; }
+    if (Math.max(...c('wrL'), ...c('wrR')) > 30) { console.log(`FAIL  ${st}: a wrist bent more than 30 deg`); fails++; }
     if (q(c('twist'), 0.9) > 32) { console.log(`FAIL  ${st}: shoulders twisted off the hips (p90 ${q(c('twist'), 0.9)} deg)`); fails++; }
   }
 }

@@ -106,6 +106,10 @@
   the upper arm's frame, sign-corrected under the left-shot mirror), the arm swings from the shoulder onto the target,
   then rolls until the elbow points where the clip had it. Earlier versions (a free two-bone solve, a chosen knob
   spot, a fixed elbow pole, a wrist wrap) each bent the top-hand elbow inward, swung it back or cranked the wrist.
+  Arms and head are judged against anatomy, not the clip (`ANAT` in render.ts): elbows pointed down and back,
+  wrists within 28 deg of the bind pose, the top hand's spot in front of the belly, the head looking at the ice
+  `ANAT.gaze` m ahead, level, yaw capped (`headGaze`; `?noanat` turns the head layer off). Shots keep the clip's arms.
+  `node tests/arm_shots.mjs verify/roundN` renders the 6 review shots; an independent reviewer judges them (verify/VERDICT.md).
   Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
   `node tests/stick_state_probe.mjs` (and with `&noik` for the clip's own values) checks every state: shaft angle,
   blade height, top hand on the shaft, drawn blade vs collider, twist, inverted elbows, elbows swung behind the clip's,

@@ -395,13 +395,14 @@ let acc = 0, last = 0;
 const frameMs: number[] = [];
 let simMs = 0, simN = 0;
 
+let frozen = false;
 function tick(now: number) {
   requestAnimationFrame(tick);
   const rdt = Math.min(0.05, (now - last) / 1000 || 0.016);
   if (last) { frameMs.push(now - last); if (frameMs.length > 900) frameMs.shift(); }
   last = now;
   modeT += rdt;
-  const paused = fb.hud.feelOpen;   // the feel panel pauses play while you tune
+  const paused = fb.hud.feelOpen || frozen;   // the feel panel pauses play while you tune (frozen: test hook)
   if (mode === 'match' && !paused) {
     // hit stop and slow-mo only change how much real time the fixed step is fed: the sim runs the same
     // steps on the same (latched) inputs either way. In net mode the scale is always 1.
@@ -453,6 +454,7 @@ function perf() {
     stickPose: (i: number) => view.stickPose(i), puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
     knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
+    freeze: (on: boolean) => { frozen = on; }, closeCam: (i: number, d = 6, a = 0) => { view.closeCam = i < 0 ? null : { i, d, a }; },
     gearCheck: () => view.gearCheck(),
     screen: (x: number, y: number) => view.project(x, 1.1, y),
     ground: (x: number, y: number) => view.project(x, 0.05, y),
