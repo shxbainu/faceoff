@@ -1,3 +1,10 @@
+# Arm motion review (2026-11-19, after easing the stick IK targets)
+
+Strips in verify/arm_motion (A = new, B = old; 15 frames at 10 fps, side camera). Blind reviewer, images only:
+A mostly natural (top arm in front of the belly, elbow down, smooth; A2 row 3 the cleanest strip), B some problems
+(top arm reaching straight out, B1 row 1 col 4 to row 2 col 1). Prefers A at about 60%: the strips are small and half
+the frames are blocked by other players. No pops, backward elbows or hands off the stick seen in either.
+
 # Independent pose review (fresh subagent, images and anatomy rules only)
 
 Latest: verify/round10 (after the proportions fix: stick 2.04 -> 1.84, arms +12%, resting blade 1.7 ahead).

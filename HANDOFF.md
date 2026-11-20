@@ -1,30 +1,135 @@
-# Handoff: game-feel layer and hockey feel pass (2026-11-18)
+# Handoff: Rapier step 4 next (2026-11-19)
 
 ## State
 
-- **Committed on branch `hockey-feel`** (feedback layer plus the hockey feel pass: head/arm/stick fixes, facing,
-  movement, handedness, momentum checks, AI defense). See PLAN.md for the pass and CLAUDE.md for how it works.
-  Sim fingerprint now `a4e21c0c016c58d4` (gameplay changed on purpose). Next: the user's feel tuning.
-- Files: `src/feedback/` (events.ts, config.ts, settings.ts, time.ts, system.ts, hud.ts), edits to `src/sim.ts`
-  (event emits only), `src/render.ts` (fx API, particles, rings, chroma pass), `src/main.ts` (wiring, input latch,
-  P feel panel, backtick debug panel), `src/audio.ts` (voice pool, cues), `index.html` (HUD styles), new
-  `PLAN.md`, `tests/fx_probe.mjs`, `tests/fx_determinism.mjs`, `tests/fx_hitch.mjs`. CLAUDE.md has a section on
-  how the system works and how to add an event.
+- Live site: PR #2 merged (`9096de0`), https://shxbainu.github.io/faceoff/, step 1 only.
+- Branch `skating-sticks-ragdolls`: step 2 committed (`e52bdff`). Step 3 (sticks) done and verified, **not
+  committed**: `src/physics/rink.ts`, `src/sim.ts` (`placeBlade`, `bladeSweep`, `pokeContact`),
+  `tests/stick_physics_probe.mjs` (`--rapier`), `tests/rapier_compare.mjs` (stick contact counts), docs. Ask before
+  committing; going live (merge to main) needs the user's word.
+- Sim fingerprint without `?rapier`: `3b74b3d094685dbe` (`node tests/fx_determinism.mjs`), since the carried puck slides along the boards.
+- The user was playtesting the live site (step 1). Wait for their notes before tuning feel.
+- Since step 2, Rapier traps about 20% fewer pucks than the old physics (PHYSICS_PLAN.md step 3 table). Not a step 3
+  change; watch it when tuning.
 
-## Verified
+## Physics: moving onto Rapier (PHYSICS_PLAN.md)
 
-- `npm run build` passes. `node tests/fx_probe.mjs`: 22 of 22 pass (every event at 3 levels, 60 fps with worst frame
-  16.8 ms through five max goals, toggles, live config, goal skip, input buffer, net mode, real play).
-- `node tests/fx_determinism.mjs`: the feedback layer left the fingerprint unchanged (`a03d0311ac598cbb`); the later hockey pass changed it to `a4e21c0c016c58d4`.
-- Playbot clean, no console errors.
+- The original stack is Rapier; the hand-written physics was my unasked deviation. Plan and results for steps 0-2
+  are in PHYSICS_PLAN.md. Pattern for every step: game state stays in the sim and is copied in and out of Rapier each
+  step; the game's rules (checks, momentum keep, catch/deflect) stay in sim.ts; behind `?rapier`; compare old vs
+  new over bot matches with `node tests/rapier_compare.mjs --matches 16` on 2-3 seeds (`--seed`): single runs of 8
+  matches are noisy, and one changed contact changes the rest of a match.
+- **Next: step 4, ragdolls** (`@dimforge/rapier3d-compat`, display only, client side; keep the blend into the
+  get-up). Check with `node tests/ragdoll_probe.mjs`. Then step 5: delete the old physics paths.
+- Rapier skaters can sink up to ~0.14 into the boards for a step (soft contacts; rare). If it shows, project them
+  out after the step the way `puckOut` does for the puck.
 
-## Next
+## Open issues
 
-- Tune by feel from the user's playtest: all numbers live in `src/feedback/config.ts`. Don't change the sim.
-- Open questions for the playtest: hit-stop length, goal slow-mo on repeat goals, wind-up hum and vignette,
-  top-speed lines, how quiet getting hit is, flow rank pace, streak pitch, shake vs puck readability.
-- Known, not from this work: a ~300 ms frame when a round starts (same on the previous commit).
-- Placeholders to replace later (synth sounds, box particles, plain rings, text-only goal card) are listed in PLAN.md.
+- User playtest 2026-11-19 (on `?rapier`): "limbs glitched", "puck inconsistent with the stick", "left arm moves
+  unnaturally with the body". Measured: the same with and without Rapier (stick_state_probe, stick_probe), so it is
+  the render layer. Puck off the drawn blade happens only in the slapshot wind-up (the clip lifts the stick while the
+  sim carries the puck along; `stick_probe` now prints where). Left arm: the top hand popped (jumped in single frames) because the stick's target, the top hand's spot and the fitted stick top switched instantly; now eased (`IK_EASE`), see CLAUDE.md and `tests/arm_motion_probe.mjs`. Waiting on the user's playtest.
+  Fixed from the same notes: faster passes, spin move on simple controls (L with the puck was sent as a poke).
+- Second playtest 2026-11-19: "pretty good". Fixed from it: sprint squish (lean at top speed 0.66 -> 0.52 rad,
+  hips 0.75 -> 0.79 leg lengths in GAIT), goalie save timing and a jolt on contact, shots drawn in the air and goals
+  drawn into the net (CLAUDE.md "Puck height and goalie saves"). Not playtested yet.
+- Third playtest 2026-11-19: puck off the stick at the boards (fixed in the sim: `carryPoint` slides the puck along
+  the boards to the stick side instead of into the skates; it was 0.4 from the body skating into the boards, now 1.3+),
+  and "arms not in sync with the body". Measured (`tests/arm_motion_probe.mjs`, frame-to-frame hand vs shoulder) and
+  seen (`tests/arm_strip.mjs`): both arms held straight down to a rigid stick pinned on the ice while the legs stride;
+  the clip's own arms pump with the stride. The stick target now turns with the chest and rides the top shoulder's
+  swing (ANAT.ride, follow): forward sync 0.21 -> 0.36, sideways still about 0.2 (clip 0.7-0.9). The user picked
+  one-handed skating without the puck (`ONE_HAND` in render.ts, CLAUDE.md): one-handed frames now match the clip's
+  sync (stride fwd/side 0.54/0.68 vs clip 0.52/0.70; cross 0.78/0.92 vs 0.78/0.94), about 75% of no-puck stride
+  frames. Strips in verify/one_hand. Not playtested yet.
+
+- `tests/fx_probe.mjs` fails "the full sweep finishes": the match ends during the effects sweep (sweep has a 120 s
+  deadline and `setClock(600)` now, so it no longer hangs). Cause not found yet.
+- Pose review round 10 (verify/VERDICT.md) still fails glide, tight turn and backhand. Parked, not being worked.
+
+## How the user works (added this session; also in memory)
+
+- Never swap a chosen library for hand-written code, or write such a swap into CLAUDE.md, without asking.
+- If a job runs longer than it should, check on it (fx_probe once hung 3 hours on an unbounded loop).
+- Pose fixes are judged by a blind subagent on rendered shots plus anatomy rules, not by numbers alone.
+- Commit or push only when asked; merging to main is going live and needs their word.
+- They are often on Remote Control: write the full closing message, not just the next-step box.
+
+---
+
+# Earlier handoff: fluidity, movement and stick interaction (2026-11-18, late)
+
+## State
+
+- **Live.** PR #1 (feedback layer + hockey feel pass) is merged into `main` (`9b2bf81`) and deployed to
+  https://shxbainu.github.io/faceoff/ (the live bundle was checked for the new code). Local checkout is on `main`.
+- This handoff file is the only uncommitted change.
+- Read first: `CLAUDE.md` (sections "Movement, facing, handedness, checks and bot defense" and "Skater rendering
+  layers"), `PLAN.md` top section (Tape to Tape comparison, root causes, status), `DESIGN.md`.
+- Sim fingerprint: `a4e21c0c016c58d4` (`node tests/fx_determinism.mjs`). Any sim change moves it; update CLAUDE.md
+  when it changes on purpose.
+
+## How the user works (learned this session)
+
+- Wants real root-cause fixes, proven with before/after numbers and browser evidence (close-up crops, probes), not
+  claims. Their playtest notes are short ("stick clips through the floor"); turn each into a measurable probe first.
+- Asked for these plugins/skills to be used: agent-skills (debugging, testing, code review via the
+  `agent-skills:code-reviewer` agent), ponytail (smallest complete fix), the threejs game skills
+  (`threejs-game-director` -> `threejs-gameplay-systems`, `references/game-feel.md`), Impeccable only for HUD/UI.
+- Shipping: branch -> PR -> merge into `main` (merging deploys to GitHub Pages). Commit/push only when asked.
+
+## Where things live
+
+- Skating, facing, buffers: `src/sim.ts` `updateSkater` (MOVE, SKATE_BASE), `humanLook`, `faceMode`.
+- Puck on the stick (sim): `CARRY` (carry point = where the clips hold the blade), dangle in `updatePuck`,
+  backhand `bh`/`bhT`, `HANDS`. Pokes and lifts: `startCheck`. Lane sticks: `stickAng`, `STICK_R`, interception in
+  `updatePuck` (blade within 0.65 of the puck).
+- Drawn stick (render): `stickIK` (stick turns in the glove via `turnStick`, small arm CCD, torso guard),
+  `stickFloor` (blade heel/middle/toe kept on the ice), carried puck drawn on the blade (frame(), "carried: draw it
+  on the blade"). Head/chest look: `microBlend` (HEAD config). Body yaw, lean, stop: `skateFeel`. Clip choice and
+  speed matching: `animate` (`CYCLE_DIST`, `LOCO` phase sync). Bone layering safety: `layerRestore`/`layerSave`,
+  `rotWorld` (mirror-safe for left shots).
+- Live tuning in the browser console: `window.__faceoff.tuning` (MOVE, AI, HANDS, CHECK, SHOT).
+
+## Tools
+
+- Probes: `tests/move_probe.mjs` (headless sim, 28 checks), `tests/stick_probe.mjs` (blade below ice, puck-to-blade
+  gap, stickhandling sweep), `tests/arm_probe.mjs` (arm-to-torso distance + carrier close-ups), `tests/spin_probe.mjs`,
+  `tests/twist_probe.mjs`, `tests/fx_probe.mjs`, `tests/playbot.mjs`, `tests/fx_determinism.mjs`.
+- URL switches: `?test` (empty rink, but the sim does not move the puck there), `?autoplay`, `?movedbg` or `;`
+  (facing/skating arrows, head yaw, AI state), `?hands=l|r`, `?noik`, `?nofloor`, `?nolayerfix`, `?nohull`,
+  `?noink`, `?pose=clip:0.5`, `?ai=0..1`, `?webgl`, `?seed=N`.
+- Test hooks: `__faceoff.skaters()`, `.head(i)`, `.arms(i)`, `.stick(i)`, `.blade(i)`, `.body(i)`, `.anims()`.
+
+## Next focus (user's call): fluidity, movement, stick interaction
+
+Leads found this session, not yet worked:
+- **Pivots have no animation.** Facing just rotates at `MOVE.pivotRate` (16 rad/s) while the legs keep the current
+  clip, so forward <-> backward transitions and the defender's pivot snap the body round. Candidates: a mohawk or
+  crossover-pivot blend, body yaw lagging hips/legs, clip crossfade timing in `animate`.
+- **Foot sliding / cadence.** Stride rate follows `CYCLE_DIST`; check skate contact against ground speed at low
+  speed, during the hockey stop, and on the `back` clip.
+- **Hockey stop.** One step still changes velocity by up to 1.18 at the end of a stop (move_probe reports it); the
+  drawn stop turns side-on for 0.45 s regardless of the stop's length.
+- **Stick when the arm guard trips.** The torso guard drops the arm correction outright, so the blade can miss the
+  puck for a frame (stick_probe: puck-to-blade gap max about 2.4 even though p90 is 0.04). A partial back-off
+  (binary search on the IK weight) would be smoother. The guard also measures with the sim facing, not the drawn
+  yaw, for a few frames after a shot.
+- **Stick interaction ideas:** stick-on-stick contact (pokes and lifts are instant puck drops today), the receiver's
+  blade meeting the pass (reception timing), shot release timed to the blade's contact in the clip, pass and shot
+  sounds tied to blade contact, deflections off a defender's lane stick.
+- **Hit feel:** knockback was raised (CHECK.send 2.4, slide 1.15); the user has not judged it since.
+
+## Known issues / small debt
+
+- `ai.state` debug strings are built every sim step (cheap, but only needed with the overlay open).
+- Impeccable flagged a red side-accent border on HUD cards and possibly low-contrast muted text in `index.html`;
+  both predate this work and were left for the user to decide.
+- GitHub Actions warns the Pages workflow's actions target Node 20 (bump action versions in `.github/workflows/pages.yml`).
+- About 300 ms frame when a round starts (older than this work).
+- Safari bugs (black WebGPU screen, title spin) are parked below; the title spin may have been the bone-stacking bug
+  fixed this session (`layerRestore`), but Safari was not retested.
 
 ---
 

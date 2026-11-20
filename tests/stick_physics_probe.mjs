@@ -1,13 +1,15 @@
 // Headless checks for the stick colliders (sim only): passes meet a lane blade, fast pucks never tunnel, pokes and
 // lifts act on contact only, blades never enter bodies, boards or nets, handedness holds.
-// Usage: node tests/stick_physics_probe.mjs        exits 1 if any check fails
+// Usage: node tests/stick_physics_probe.mjs [--rapier]        exits 1 if any check fails
 import { build } from 'esbuild';
 import { pathToFileURL } from 'node:url';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 const out = mkdtempSync(tmpdir() + '/stick-') + '/sim.mjs';
-await build({ entryPoints: ['src/sim.ts'], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' });
+const RAP = process.argv.includes('--rapier');   // PHYSICS_PLAN.md step 3: the same checks with Rapier sticks
+await build({ entryPoints: [RAP ? 'tests/rapier_entry.ts' : 'src/sim.ts'], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' });
 const S = await import(pathToFileURL(out).href);
+if (RAP) { await S.initPhysics(); S.PHYS.rapier = true; }
 const P = Object.fromEntries(S.POWERS.map(p => [p.id, 0]));
 const DT = 1 / 120;
 let fails = 0;

@@ -86,7 +86,9 @@ function ctl(): Ctl {
     const wrist = wristQueued; wristQueued = false;
     // check key: poke when the stick can reach the puck, shoulder check otherwise
     const h = game?.ctrl, p = game?.pucks[0];
-    const near = !!(h && p && Math.hypot(p.x - h.x, p.y - h.y) < 1.8);
+    // with the puck it is the spin move (the sim reads it from check), so it must not become a poke
+    const carrying = !!(h && p && p.owner === h);
+    const near = !carrying && !!(h && p && Math.hypot(p.x - h.x, p.y - h.y) < 1.8);
     return {
       mx: (k('KeyW', 'ArrowUp') ? 1 : 0) - (k('KeyS', 'ArrowDown') ? 1 : 0),
       my: (k('KeyD', 'ArrowRight') ? 1 : 0) - (k('KeyA', 'ArrowLeft') ? 1 : 0),
@@ -468,6 +470,8 @@ function perf() {
     body: (i: number) => view.bodyFrame(i),
     head: (i: number) => view.headState(i),
     arms: (i: number) => view.armState(i),
+    limbs: (i: number) => view.limbs(i),
+    puckDrawn: () => view.puckDrawn(),
     stick: (i: number) => view.stickState(i),
     // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
     skaters: () => game.skaters.map(k => ({ id: k.id, team: k.team, human: k.human, x: k.x, y: k.y, vx: k.vx, vy: k.vy, face: k.face, hand: k.hand, bh: k.bh, mode: k.faceMode, ai: k.ai.state ?? '', stun: k.stun })),

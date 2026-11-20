@@ -11,8 +11,13 @@
 - Three.js r186, WebGPU renderer with WebGL2 fallback
 - Rapier for physics (the original stack). The sim still uses hand-written 2D physics in `src/sim.ts` (fixed 120 Hz,
   seeded) and a verlet ragdoll (`src/ragdoll.ts`); PHYSICS_PLAN.md moves them onto Rapier's deterministic build.
-  Step 1 is in: `?rapier` moves the puck through Rapier boards and nets (`src/physics/rink.ts`). Checks:
-  `node tests/rapier_compare.mjs` (old vs Rapier over bot matches, determinism, puck stays in), `node tests/rapier_spike.mjs`.
+  Steps 1-3 are in: `?rapier` moves the puck (boards, nets) and the skaters (own world, `skatersStep`; checks and
+  momentum rules stay in `collide`) through Rapier, and sticks use Rapier queries (`bladeWalls` casts the blade from
+  the hands to the first wall, `sweepHit` gives the exact puck-vs-blade contact; trap/deflect/poke rules stay in
+  sim.ts) (`src/physics/rink.ts`). Next: step 4, ragdolls. Checks:
+  `node tests/rapier_compare.mjs [--matches 16] [--seed N]` (old vs Rapier over bot matches, determinism, puck and
+  skaters stay in, stick contacts), `node tests/move_probe.mjs --rapier`, `node tests/stick_physics_probe.mjs --rapier`,
+  `node tests/rapier_spike.mjs`.
 
 ## Art
 - Moving from procedural to GLB assets one at a time (see assets/PLAN.md). Online CC0 or CC-BY models first, text-to-3D only as fallback.
@@ -61,7 +66,7 @@
   team, id, vid, ... })`, intensity from how good the play was; (3) add an entry under `FEEDBACK.events` in `config.ts`
   (or a variant line in `system.ts` `variant` if it needs a good/bad or tag split); (4) add a debug key in `DEBUG` in
   `main.ts`; (5) run the checks below.
-- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `8f6475929cc84fc5` since the proportions fix of 2026-11-19 (resting stick `STICK.rest` 1.7 ahead, 0.45 to the forehand side)),
+- Checks: `node tests/fx_determinism.mjs` (sim fingerprint must not change from feedback work: `3b74b3d094685dbe` since the carried puck slides along the boards on 2026-11-19 (`carryPoint`, `CARRY.wall`; before: faster passes, `PASS_BASE.speed` 1.4)),
   `node tests/fx_probe.mjs` (every event x3, frame rate in the heaviest goal sequence, toggles, live config, skip,
   input buffer, net mode, real play), `node tests/fx_hitch.mjs 60` (logs frames over 40 ms).
 
@@ -117,6 +122,20 @@
   wrists within 28 deg of the bind pose; the head's axes come from the helmet and visor meshes (the bind pose's were
   70-100 deg off) and it looks at the ice `ANAT.gaze` ahead (`visorTilt` calibrated by review), level, yaw capped
   (`?noanat` turns the head layer off). Shots keep the clip's arms.
+  Smoothness: the blade target, the top hand's spot and the fitted stick top all ease at `IK_EASE` (18/s), measured
+  from the skater or pelvis so they never trail him; the fitted top is re-clamped clear of the belly after easing.
+  Without it a switching target (puck, lane, rest) or a flipping fit rule popped the stick and top hand in one frame.
+  `node tests/arm_motion_probe.mjs [&noik]` reports top-hand sway, speed (p99 near the clip's own, about 9), how much
+  it follows the shoulder, single-frame jumps and what moved on those frames.
+  One hand (`ONE_HAND`, `oneHand`): skating faster than 5.5 m/s with nothing to reach for and not defending, the
+  stick is held in the bottom glove just under the knob, blade on the ice toward the sim's blade, and both arms are
+  the clip's (wrists clamped). The stride clip swings the top arm and keeps the bottom fist at the chest, so the arms
+  move with the body as the clip does (`arm_motion_probe` "one hand" rows near `&noik`). The free arm's shoulder
+  swing is the clip's, enlarged around its average (`ONE_HAND.swing` 1.8; the clip's is about 0.2 m), backed off
+  (down to 0.3 of the clip's, which itself hikes the fist by the helmet) until the elbow is 0.2 under the shoulder
+  and the fist under it (a blind review read a flared elbow as a flex). Two hands come back for
+  the puck, a pass, a loose puck near, defending, pokes and shots. `?twohand` turns it off; `stick_state_probe`
+  checks one-handed frames as their own state. `node tests/arm_strip.mjs out.png [query] [dist] [angle]` makes a strip.
   Verify poses with `node tests/arm_shots.mjs verify/roundN` (6 shots at the game camera) and a fresh subagent that
   sees only the images and the anatomy rules (verify/VERDICT.md); numeric probes are a secondary check.
   Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
@@ -176,6 +195,17 @@
 - Debug (with `?movedbg`, `?fxdebug` or `?colliders`, never in a normal game): `]` knocks the nearest opponent down (shift+] a light one); `?norag`; `__faceoff.knock(i, imp, dx, dy)`.
 - Checks: `node tests/ragdoll_probe.mjs` (5 at once: finite, link stretch, above the ice, lying flat, back up and
   skating, gradual blend, frame rate, stagger).
+
+## Puck height and goalie saves (render.ts, display only; the sim is flat)
+- Shots are drawn in the air (`SHOT_ARC`, `puckAir`): they rise to a height by the goal line (a hash of the release
+  spot, so every client draws the same), re-aimed when the goalie reads them (glove high, blocker mid, pads and
+  butterfly capped low), and fall and bounce once they stop being a shot. On a goal the sim parks the puck behind the
+  end boards; the renderer draws it going into the back of the net where it crossed.
+- Saves: the clip waits in the stance after an early read so its reach peaks when the puck arrives; a save he didn't
+  read starts `GOALIE_REACT` before the peak (no snap); the puck hitting him jolts him back (`crunch`, shared with
+  skater hits).
+- Checks: `node tests/shot_air_probe.mjs` (heights, back on the ice, goal puck in the net, close-ups),
+  `node tests/goalie_timing_probe.mjs` (where the save clip is at contact).
 
 ## Abilities (abilities.ts data, sim.ts useAbility/tickAbility/aiAbility)
 - **Off by default** (`ABILITY_ON`, sim.ts): the skill and passive design is being reworked from the Tape to Tape

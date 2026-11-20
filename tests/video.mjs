@@ -12,7 +12,7 @@ const browser = await chromium.launch({ headless: true, channel: 'chromium',
   args: ['--enable-gpu', '--use-angle=metal', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, recordVideo: { dir: TMP, size: { width: 1280, height: 720 } } });
 const page = await ctx.newPage();
-await page.goto('http://localhost:4173/?autoplay');
+await page.goto('http://localhost:4173/?autoplay' + arg('query', ''));   // --query '&sidecam&rapier'
 await page.waitForFunction(() => window.__faceoff);
 await page.evaluate(() => window.__faceoff.assetsReady());
 for (let i = 0; i < 80; i++) {

@@ -42,7 +42,7 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; ikT?: THREE.Vector3; palmL?: THREE.Object3D; palmClip?: THREE.Vector3; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
+  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
@@ -86,9 +86,9 @@ export const GAIT = {
   out: [0.25, 0.6], inW: 0.09, set: 0.16, back: [0.18, 0.52], lift: 0.06,
   // hip (thigh joint) height above the blade, in leg lengths: about a 115 degree knee standing or gliding, about
   // 100 degrees at full speed; dips a little as each push extends. Absolute, so the clip's own crouch can't stack.
-  hip: [0.85, 0.75], hipDip: 0.025, sway: 0.4, toeMax: 0.7, blend: 14,
+  hip: [0.85, 0.79], hipDip: 0.025, sway: 0.4, toeMax: 0.7, blend: 14,
   // torso lean from vertical (rad, pelvis to neck): ready, glide, stride at a crawl and at top speed, backward, stop
-  lean: { ready: 0.22, glide: 0.33, stride: [0.45, 0.66], back: 0.3, stop: 0.2, cross: 0.6 },
+  lean: { ready: 0.22, glide: 0.33, stride: [0.45, 0.52], back: 0.3, stop: 0.2, cross: 0.6 },
   headLevel: 0.85,   // how level the head is held over the stride (the clip itself carries the hip and shoulder counter-rotation)
   glideW: 0.17, readyW: 0.24, stopW: 0.3, backOut: 0.42, crossOut: 0.5, crossOver: 0.28,
 };
@@ -97,7 +97,26 @@ export const GAIT = {
  *  makes it reach his chin, as a real one does), shortening the shaft above `keep` (share from the blade); bottom:
  *  where the bottom hand holds it (share from the blade; about shoulder width below the knob). */
 export const STICK_HOLD = { slide: 0.03, len: 0.9, keep: 0.15, bottom: 0.72 };
-const ARM = { floor: 0.015 };   // stickFloor: lowest the blade may sit (above the ice)
+const ARM = { floor: 0.015 };
+/** how fast the stick's target on the ice and the top hand's spot follow where they are asked to be (1/s): about
+ *  60 ms to close most of a jump, fast enough for a poke, slow enough that a switch is a move, not a pop */
+const IK_EASE = 18;
+/** skating without the puck (nothing to reach for, not defending), faster than `on` m/s (back to two hands under
+ *  `off`): one hand on the stick, both arms the clip's. The stride clip swings the top arm wide and keeps the bottom
+ *  fist in front of the chest, so the stick stays in that bottom glove, held just under the knob, blade on the ice.
+ *  in/out: how fast it lets go and grabs back (1/s; grabbing is quick, for a pass on its way) */
+const ONE_HAND = { on: 5.5, off: 4, in: 5, out: 12,
+  // the free (top) arm's swing: the clip's own shoulder motion (not the elbow: that hiked the fist to the helmet) around their average over `avg` s, times
+  // `swing` (the clip swings the hand about 0.2 m; a sprinting player's goes hip to chin)
+  swing: 1.8, avg: 0.5 };
+/** shots in the air (drawn only): height at the goal line by a hash of the release spot (low, mid, high), or where
+ *  the goalie reads it (glove high, blocker mid, pads and butterfly low); rise: share of the way to the net by
+ *  which it is up; g: fall once it is no longer a shot (bounce keeps this share of the speed) */
+const SHOT_ARC = { low: 0.12, high: 1.05, rise: 0.35, g: 22, bounce: 0.35,
+  // per save: [height to set (0: keep its own), cap]
+  save: { glove: [1.0, 0], blocker: [0.7, 0], butterfly: [0, 0.6], pad_l: [0, 0.25], pad_r: [0, 0.25] } as Record<string, number[]> };
+/** a save the goalie didn't read in time: the clip starts this long (s) before its reach peak, so he visibly reaches */
+const GOALIE_REACT = 0.12;   // stickFloor: lowest the blade may sit (above the ice)
 /** Arms and head judged against a human body, not the clip (the clips hold the stick with the elbows hiked to
  *  shoulder height and look at the sky when the torso leans). pole: where each elbow points (weights of down, back,
  *  out); top: the top hand's spot off spine_01 (forward, up, toward its own shoulder), on the belly in front of the
@@ -107,8 +126,10 @@ const ARM = { floor: 0.015 };   // stickFloor: lowest the blade may sit (above t
  *  neck) - padded torsos are about 0.3 across the belly; visorTilt: the visor axis vs the eye line (rad; calibrated by review: the clip's own head reads
  *  38 deg up on it and looks chin-up, 17 deg down looks bowed); below: the top hand stays at least this far under its shoulder (m); backhand: how much further forward and out (to the forehand side) the top hand goes on a
  *  backhand, so the knob clears the belly; headGap: closest a hand may come to the head's centre (m); reach: share of an arm's length a hand is asked to reach from its shoulder; the head taking `head` of the turn and the neck the rest; yaw: most the head turns off the chest (rad),
- *  and it is held level (no roll). */
-export const ANAT = { pole: [1, 0.3, 0.1], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45 };
+ *  and it is held level (no roll); ride: share of the chest's twist off the heading the stick target turns with
+ *  (stickIK), up to swing (rad); follow: share of the top shoulder's stride swing (its motion around its average over
+ *  shAvg s) the top hand rides. */
+export const ANAT = { pole: [1, 0.3, 0.1], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45, ride: 1, swing: 0.6, follow: 1, shAvg: 0.6 };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
 // ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
@@ -164,6 +185,9 @@ export class View {
   private ringI = 0;
   /** puck release snap: stretched along its path for a moment */
   private snapT = 0; private snapA = 0;
+  /** drawn height of the puck (display only: the sim is flat). A shot rises off the ice to hNet by the time it
+   *  reaches the goal line; a puck that stops being a shot falls back and bounces. */
+  private arc = { on: false, x0: 0, hNet: 0.5, h: 0, vy: 0, goalT: -1, gx: 0, gy: 0 };
   /** camera offsets the feedback system writes every frame (shake, kick, punch, roll, fov) */
   fxCam = { ox: 0, oz: 0, roll: 0, fov: 0, punch: 0 };
   /** chromatic pulse: amount and direction; the post pass only runs while it is non-zero */
@@ -830,6 +854,19 @@ export class View {
     return { ...r, ikW: +(v.ikW ?? 0).toFixed(2), clip: v.anim?.cur };
   }
 
+  /** test hook: hands, shoulders and the stick's top in skater i's heading frame (fwd, side to his left, up; units),
+   *  measured from the pelvis, plus the gait mode and clip: tests/arm_motion_probe.mjs */
+  limbs(i: number) {
+    const v = this.skaters[i]; if (!v?.model) return null;
+    v.root.updateMatrixWorld(true);
+    const f = -v.body.rotation.y, c = Math.cos(f), s = Math.sin(f), pel = v.body.getObjectByName('pelvis')?.getWorldPosition(new THREE.Vector3()); if (!pel) return null;
+    const loc = (q: THREE.Vector3 | undefined | null) => q ? [+((q.x - pel.x) * c + (q.z - pel.z) * s).toFixed(4), +((q.x - pel.x) * s - (q.z - pel.z) * c).toFixed(4), +(q.y - pel.y).toFixed(4)] : null;
+    const P = (n: string) => v.body.getObjectByName(n)?.getWorldPosition(new THREE.Vector3());
+    const st = this.stickOf(v), g = this.stickGeo;
+    return { hl: loc(P('hand_l')), hr: loc(P('hand_r')), sl: loc(P('upperarm_l')), sr: loc(P('upperarm_r')), el: loc(P('lowerarm_l')),
+      knob: st && g && st.visible ? loc(g.top.clone().applyMatrix4(st.matrixWorld)) : null, T: loc(v.ikT), spot: loc(v.palmClip), bot: loc(v.botT), tw: v.chestTw ?? 0, yaw: f, ikW: v.ikW ?? 0, one: v.oneW ?? 0, blade: st && g && st.visible ? loc(g.blade.clone().applyMatrix4(st.matrixWorld)) : null, mode: v.gait?.mode, clip: v.anim?.cur };
+  }
+
   /** test hook: lowest point of skater i's stick blade (world height, ice = 0) and, for the carrier, how far the
    *  drawn puck is from the drawn blade, and the puck's side offset toward the shot side */
   stickState(i: number) {
@@ -954,7 +991,7 @@ export class View {
     const A = v.arms, T = (v.ikT ??= new THREE.Vector3());
     const busy = ['wrist_shot', 'slapshot', 'fall', 'check'].includes(v.anim.cur) || s.wind >= 0 || s.stun > 0 || s.air;
     const d = Math.hypot(p.x - s.x, p.y - s.y);
-    let want = 0;
+    let want = 0, free = false;
     if (!busy) {
       if (s.liftT > 0) { want = 1; T.set(s.x + Math.cos(s.face) * 1.2, 0.9, s.y + Math.sin(s.face) * 1.2); }   // stick lifted off the ice
       else if (s.pokeT > 0 || s.tieT > 0) { want = 1; T.set(s.bx, IK_Y, s.by); }   // the sim's blade: the poke sweep, or knocked aside
@@ -966,12 +1003,42 @@ export class View {
       // otherwise the blade rides on the ice where the sim's stick collider is (out front), never hanging free:
       // with no target the clip and the stride layer left the stick dangling like a cane and the top hand off it
       // (when the sim's stick isn't live, faceoffs and goal resets, its own forehand rest spot off the drawn body)
-      else if (s.bOn && this.game?.phase === 'play') { want = 1; T.set(s.bx, IK_Y, s.by); }
-      else { const f = -v.body.rotation.y, la = STICK.rest[1] * s.hand; want = 1;
+      else if (s.bOn && this.game?.phase === 'play') { want = 1; free = true; T.set(s.bx, IK_Y, s.by); }
+      else { const f = -v.body.rotation.y, la = STICK.rest[1] * s.hand; want = 1; free = true;
         T.set(s.x + Math.cos(f) * STICK.rest[0] - Math.sin(f) * la, IK_Y, s.y + Math.sin(f) * STICK.rest[0] + Math.cos(f) * la); }
     }
     { const dx = T.x - s.x, dz = T.z - s.y, d0 = Math.hypot(dx, dz); if (d0 > ANAT.blade) { T.x = s.x + dx * ANAT.blade / d0; T.z = s.y + dz * ANAT.blade / d0; } }
+    // the stick swings with the chest: the target turns about him by the chest's twist off his heading (the stride's
+    // shoulder swing, the look toward the puck), so the hands, the stick and a carried puck on it move with the body.
+    // With a target fixed on the ice the hands stayed put while the shoulders swung, and the arms stretched and folded
+    // on their own
+    if (v.arms && !busy) {
+      v.root.updateMatrixWorld(true);
+      const sl = v.arms.ua_l.getWorldPosition(this.ikF), sr = v.arms.ua_r.getWorldPosition(this.ikG), f = -v.body.rotation.y;
+      let cx = -(sl.z - sr.z), cz = sl.x - sr.x; if (cx * Math.cos(f) + cz * Math.sin(f) < 0) { cx = -cx; cz = -cz; }
+      const tw = Math.max(-ANAT.swing, Math.min(ANAT.swing, wrapA(Math.atan2(cz, cx) - f))) * ANAT.ride;
+      const ox = T.x - s.x, oz = T.z - s.y, c = Math.cos(tw), sn = Math.sin(tw);
+      T.x = s.x + ox * c - oz * sn; T.z = s.y + ox * sn + oz * c;
+      v.chestTw = tw;
+      // and the whole stick rides the top shoulder's stride swing and the body's sway over the gliding skate (the
+      // shoulder's motion over the ice around where it sits on average): the stick is rigid and its blade was pinned
+      // where the sim put it, so the body swayed and swung under hands that stayed still
+      const d = v.arms.ua_l.getWorldPosition(this.ikF).sub(v.root.position), lx = d.x * Math.cos(f) + d.z * Math.sin(f), lz = -d.x * Math.sin(f) + d.z * Math.cos(f);
+      const m = (v.shM ??= [lx, d.y, lz]), k = 1 - Math.exp(-rdt / ANAT.shAvg);
+      m[0] += (lx - m[0]) * k; m[1] += (d.y - m[1]) * k; m[2] += (lz - m[2]) * k;
+      const ux = (lx - m[0]) * ANAT.follow, uz = (lz - m[2]) * ANAT.follow;
+      const o = (v.shO ??= [0, 0, 0]); o[0] = ux * Math.cos(f) - uz * Math.sin(f); o[1] = (d.y - m[1]) * ANAT.follow; o[2] = ux * Math.sin(f) + uz * Math.cos(f);
+      T.x += o[0]; T.z += o[2];
+    } else if (v.shO) v.shO.fill(0);
+    // the target eases, measured from the skater so it never trails him: when it switched (puck, lane, the sim's
+    // stick) or the sim's blade jumped, the whole stick and the top hand on it crossed over in one frame
+    { const o = (v.ikTo ??= [T.x - s.x, T.z - s.y]);
+      if ((v.ikW ?? 0) < 0.02) { o[0] = T.x - s.x; o[1] = T.z - s.y; }
+      else { const k = 1 - Math.exp(-rdt * IK_EASE); o[0] += (T.x - s.x - o[0]) * k; o[1] += (T.z - s.y - o[1]) * k; }
+      T.x = s.x + o[0]; T.z = s.y + o[1]; }
     v.ikW = (v.ikW ?? 0) + (want - (v.ikW ?? 0)) * Math.min(1, rdt * (want > (v.ikW ?? 0) ? 14 : 6));
+    { const sp = Math.hypot(s.vx, s.vy), o0 = v.oneW ?? 0, on = free && !DBG.has('twohand') && sp > ((v.oneW ?? 0) > 0.5 ? ONE_HAND.off : ONE_HAND.on) ? 1 : 0;
+      v.oneW = o0 + (on - o0) * Math.min(1, rdt * (on > o0 ? ONE_HAND.in : ONE_HAND.out)); }
     const w = v.ikW;
     if (w < 0.02) return;
     v.root.updateMatrixWorld(true);
@@ -994,7 +1061,16 @@ export class View {
     // target. topGrip then moves the top hand the short way onto the knob. Elbows roll back to where the clip had
     // them. (Choosing a knob spot and dragging the top hand to it swung that arm back or hiked the elbow up.)
     v.armClip = [this.armBend(A.ua_l, A.la_l, A.h_l, v.armClip?.[0]), this.armBend(A.ua_r, A.la_r, A.h_r, v.armClip?.[1])];   // the clip's elbows, before the IK moves them
+    const one = (v.oneW ?? 0) * w, cl0 = (v.clavR ??= v.body.getObjectByName('clavicle_r') ?? null);
+    const botClip = one > 0.01 ? [cl0, A.ua_r, A.la_r, A.h_r].map(b => b ? b.quaternion.clone() : null) : null;
     (v.palmClip ??= new THREE.Vector3()).copy(this.topSpot(v, this.ikE, s.bh));   // the top hand's anatomical spot
+    if (v.shO) { v.palmClip.x += v.shO[0]; v.palmClip.y += v.shO[1]; v.palmClip.z += v.shO[2]; }   // rides the shoulder's swing (above)
+    { // eased like the target, from the pelvis: its clamps (clear of the belly, under the shoulder, in reach) switch on
+      // and off and moved the hand in steps
+      const pl = (v.pelB ??= v.body.getObjectByName('pelvis')!).getWorldPosition(this.ikG), o = v.spotO;
+      if (!o || w < 0.05) v.spotO = v.palmClip.clone().sub(pl);
+      else { o.lerp(this.ikF.copy(v.palmClip).sub(pl), 1 - Math.exp(-rdt * IK_EASE)); v.palmClip.copy(pl).add(o); }
+      this.ikE.copy(v.palmClip); }
     const spotY = this.ikE.y, dir = this.ikE.sub(T); if (dir.lengthSq() < 1e-6) return; dir.normalize();
     const len = c.copy(g.top).applyMatrix4(st.matrixWorld).distanceTo(this.ikD.copy(g.blade).applyMatrix4(st.matrixWorld));
     // Fit the stick between the blade target and the top hand: the hand sits L up the shaft, at its spot's height, as
@@ -1013,6 +1089,14 @@ export class View {
         P.copy(T).lerp(H, (gripB - 0.15) / g.gripT);   // the lowest the bottom hand may grip
         if (y >= top || (spine.closestPointToPoint(H, true, near).distanceTo(H) >= ANAT.clear && P.distanceTo(shR) <= armR)) break;
       }
+      // eased from the pelvis: the search above rises in steps and its two rules flip on and off, which threw the
+      // shaft, both hands and the knob across in one frame
+      { const pl = pel.getWorldPosition(new THREE.Vector3()), o = v.fitO;
+        if (!o || w < 0.05) v.fitO = H.clone().sub(pl);
+        else { o.lerp(H.clone().sub(pl), 1 - Math.exp(-rdt * IK_EASE)); H.copy(pl).add(o); }
+        // easing must not carry it into the belly while the body moves: the rule still holds every frame
+        const q = spine.closestPointToPoint(H, true, near), off = H.clone().sub(q), dd = off.length();
+        if (dd < ANAT.clear && dd > 1e-4) { H.copy(q).addScaledVector(off, ANAT.clear / dd); v.fitO!.copy(H).sub(pl); } }
       dir.copy(H).sub(T).normalize();
     }
     const sh = A.ua_r.getWorldPosition(this.ikG), tB = Math.max(gripB - 0.15, Math.min(gripB, sh.sub(T).dot(dir) / len));   // the bottom hand slides down toward its shoulder, never up (hands bunch together)
@@ -1026,11 +1110,45 @@ export class View {
     this.turnStick(v, st, blade().clone(), T, Math.PI * w);   // shaft from the glove to the blade target
     { const bw = blade().clone(), p0 = st.parent!.worldToLocal(bw.clone()), p1 = st.parent!.worldToLocal(bw.lerp(T, w));   // slide the shaft through the glove so the blade lands on the target
       st.position.add(p1.sub(p0)); st.updateMatrixWorld(true); }
+    this.ohDt = rdt; if (botClip) this.oneHand(v, st, g, T, len, one, [cl0, A.ua_r, A.la_r, A.h_r], botClip);
+  }
+  /** One hand on the stick (ONE_HAND): the bottom arm goes back to the clip's (topGrip lets the top arm go too)
+   *  and the stick hangs from the bottom glove, gripped just under the knob, down to the ice toward the target,
+   *  turned the least from the two-handed stick, blended by `one`. The stick is that glove's child, so its pose is
+   *  set in the world and carried into the glove's frame after the arm moved. */
+  private ohDt = 0;
+  private ohM = { a: new THREE.Matrix4(), b: new THREE.Matrix4(), q: new THREE.Quaternion(), u: new THREE.Vector3(), t: new THREE.Vector3() };
+  private oneHand(v: SkaterView, st: THREE.Object3D, g: NonNullable<View['stickGeo']>, T: THREE.Vector3, len: number, one: number, bones: (THREE.Object3D | null)[], clip: (THREE.Quaternion | null)[]) {
+    const { a, b, q, u, t } = this.ohM, W = st.matrixWorld.clone(), gT = g.gripT - STICK_HOLD.slide;
+    bones.forEach((bn, i) => { if (bn && clip[i]) bn.quaternion.slerp(clip[i]!, one); });
+    v.root.updateMatrixWorld(true);
+    if (v.arms) { const A = v.arms, m = (v.swM ??= A.ua_l.quaternion.clone()), k = 1 - Math.exp(-this.ohDt / ONE_HAND.avg), q0 = A.ua_l.quaternion.clone();
+      m.slerp(q0, k);
+      // the elbow stays well under the shoulder and the fist under it: back the swing off in steps until they do
+      // (below 1 it pulls in under the clip's own pose too, whose top of the swing hikes the fist by the helmet)
+      for (const amp of [ONE_HAND.swing, 1.5, 1.2, 0.9, 0.6, 0.3]) {
+        A.ua_l.quaternion.copy(q0).slerp(m.clone().slerp(q0, amp), one); v.root.updateMatrixWorld(true);
+        const shY = A.ua_l.getWorldPosition(this.ikG).y;   // a flare out to the side, fist by the helmet, read as a flex (review)
+        if (A.la_l.getWorldPosition(this.ikF).y < shY - 0.2 && A.h_l.getWorldPosition(this.ikF).y < shY) { v.swA = amp; break; } v.swA = amp; }
+      // the size eases (a fresh pick each frame jumped the hand between steps): quick to shrink, slower to grow
+      const want = v.swA!, cur = (v.swE ??= want); v.swE = cur + (want - cur) * (1 - Math.exp(-this.ohDt * (want < cur ? 25 : 8)));
+      A.ua_l.quaternion.copy(q0).slerp(m.clone().slerp(q0, v.swE), one); v.root.updateMatrixWorld(true); }
+    this.wristClamp(v, bones[3]!, 1); if (v.arms) this.wristClamp(v, v.arms.h_l, 0);   // the clip's own wrists bend 60-80 deg
+    const grip = g.blade.clone().lerp(g.top, gT).applyMatrix4(W), bl = g.blade.clone().applyMatrix4(W);
+    const palm = (v.palmR ??= v.body.getObjectByName('middle_01_r') ?? bones[3]!).getWorldPosition(new THREE.Vector3()), L = len * gT, h = Math.max(0, palm.y - IK_Y);
+    u.set(T.x - palm.x, 0, T.z - palm.z); if (u.lengthSq() < 1e-6) return; u.normalize();
+    const hd = Math.sqrt(Math.max(0, L * L - h * h));
+    t.set(palm.x + u.x * hd, IK_Y, palm.z + u.z * hd).sub(palm).normalize();   // grip to blade, one-handed
+    q.setFromUnitVectors(bl.sub(grip).normalize(), t); q.slerp(new THREE.Quaternion(), 1 - one);
+    const to = grip.clone().lerp(palm, one);
+    a.makeTranslation(to.x, to.y, to.z).multiply(b.makeRotationFromQuaternion(q)).multiply(new THREE.Matrix4().makeTranslation(-grip.x, -grip.y, -grip.z)).multiply(W);
+    b.copy(st.parent!.matrixWorld).invert().multiply(a).decompose(st.position, st.quaternion, st.scale);
+    st.updateMatrixWorld(true);
   }
   /** the top hand wraps the shaft at its grip (the palm, not the wrist, on it); runs last, after stickFloor has
    *  settled the stick, so nothing moves the shaft out of the hand afterward */
   private topGrip(v: SkaterView) {
-    const st = v.stick, g = this.stickGeo, A = v.arms, w = v.ikW ?? 0;
+    const st = v.stick, g = this.stickGeo, A = v.arms, w = (v.ikW ?? 0) * (1 - (v.oneW ?? 0));   // one-handed: the top arm is the clip's
     if (!st || !g || !A || g.gripT <= 0 || w < 0.02) return;
     if (!v.armClip) return;
     const palm = (v.palmL ??= v.body.getObjectByName('middle_01_l') ?? A.h_l);
@@ -1072,7 +1190,7 @@ export class View {
 
   /** test hook: which clip each skater is playing and where it is */
   animStates() {
-    return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2), rate: +v.anim.rate.toFixed(3), twist: +(v.mb?.twist ?? 0).toFixed(3) } : null);
+    return this.skaters.map(v => v.anim ? { clip: v.anim.cur, t: +v.anim.acts[v.anim.cur].time.toFixed(3), w: +v.anim.acts[v.anim.cur].getEffectiveWeight().toFixed(2), rate: +v.anim.rate.toFixed(3), twist: +(v.mb?.twist ?? 0).toFixed(3), gsave: v.gsave ? { clip: v.gsave.clip, t: +v.gsave.t.toFixed(3) } : null } : null);
   }
 
   /** Skating feel on top of the clips (display only, the sim is unchanged):
@@ -1639,7 +1757,10 @@ export class View {
     if (!v || !v.anim || !clip || !v.anim.acts[clip]) return;
     if (v.gsave && v.gsave.clip === clip && v.gsave.t < v.gsave.len * 0.5) return;   // already making this save
     const len = 0.75, peak = len * 0.2;   // the clips reach full extension about a fifth of the way in
-    v.gsave = { clip, t: Math.max(0, Math.min(peak, peak - arrive)), len };
+    // read early: hold the stance (t < 0) and start so the reach peaks as the puck arrives (it used to start at
+    // once and peak long before). At contact with no save under way: a quick reach that peaks just after, instead
+    // of snapping from the stance straight to full extension
+    v.gsave = { clip, t: arrive > 0 ? Math.max(-1.5, peak - arrive) : peak - GOALIE_REACT, len };
   }
 
   /** choose and advance the skater's clip from what the sim says it is doing */
@@ -1666,7 +1787,8 @@ export class View {
     if (forced) { const [c, f] = forced.split(':'); if (a.acts[c]) { scrub(c, parseFloat(f || '0.5')); a.mixer.update(dt); return; } }
     if (!s) {   // goalie: wide, low stance, or a save in progress (scrubbed so its reach meets the puck)
       const gs = v.gsave;
-      if (gs && gs.t < gs.len && a.acts[gs.clip]) { gs.t += dt; scrub(gs.clip, gs.t / gs.len); }
+      if (gs && gs.t < 0) { gs.t += dt; play(a.acts.goalie ? 'goalie' : 'glide', 0.2); }   // waiting for the moment to move
+      else if (gs && gs.t < gs.len && a.acts[gs.clip]) { gs.t += dt; scrub(gs.clip, gs.t / gs.len); }
       else { v.gsave = undefined; play(a.acts.goalie ? 'goalie' : 'glide', 0.2); }
       a.mixer.update(dt); return;
     }
@@ -1994,6 +2116,42 @@ export class View {
     r.m.position.set(x, 0.07, y); (r.m.material as THREE.MeshBasicMaterial).color.setHex(color); r.m.visible = true;
   }
   /** squash (a > 0) or stretch (a < 0) a skater by id for len seconds */
+  /** test hook: where the puck is drawn (x, height, y) */
+  puckDrawn() { const q = this.puck.position; return [+q.x.toFixed(3), +q.y.toFixed(3), +q.z.toFixed(3)]; }
+  /** the puck's drawn height this frame (see SHOT_ARC) */
+  private puckAir(g: Game, p: { x: number; y: number; vx: number; kind: string; owner: unknown; held?: unknown; lifted?: boolean }, rdt: number) {
+    const A = this.arc, shot = p.kind === 'shot' && !p.owner && !p.held && !p.lifted && g.phase === 'play';
+    if (A.goalT >= 0) { A.vy -= SHOT_ARC.g * rdt; A.h = Math.max(0, A.h + A.vy * rdt); return A.h; }
+    if (shot) {
+      if (!A.on) {   // released: aim it low, mid or high from a hash of where it left (same on every client)
+        A.on = true; A.x0 = p.x; A.vy = 0;
+        const r = Math.abs(Math.sin(p.x * 12.9898 + p.y * 78.233) * 43758.5453) % 1;
+        A.hNet = SHOT_ARC.low + (SHOT_ARC.high - SHOT_ARC.low) * r;
+      }
+      const gx = Math.sign(p.vx || 1) * GL, u = Math.max(0, Math.min(1, (p.x - A.x0) / ((gx - A.x0) || 1)));
+      const k = Math.min(1, u / SHOT_ARC.rise), want = A.hNet * k * k * (3 - 2 * k);
+      A.vy = (want - A.h) / Math.max(rdt, 1e-3); A.h += (want - A.h) * Math.min(1, rdt * 30);   // eased: a read save re-aims it smoothly
+      return A.h;
+    }
+    A.on = false;
+    if (A.h > 0 || A.vy > 0) {   // no longer a shot (saved, blocked, deflected): it drops and bounces
+      A.vy = Math.min(A.vy, 4) - SHOT_ARC.g * rdt; A.h += A.vy * rdt;
+      if (A.h <= 0) { A.h = 0; A.vy = A.vy < -2 ? -A.vy * SHOT_ARC.bounce : 0; }
+    }
+    if (p.owner || p.held) { A.h = 0; A.vy = 0; }
+    return A.h;
+  }
+
+  /** impact: squash and lurch along the hit (or a stretch on a catch), then spring back. Real time: the squash
+   *  plays through the hit stop, so the freeze shows the impact */
+  private crunch(v: SkaterView, rdt: number) {
+    if (!v.crunch) return;
+    const c = v.crunch; c.t -= rdt;
+    const u = 1 - c.t / c.len, k = c.t > 0 ? (u < 0.25 ? u / 0.25 : Math.sin(Math.PI * 0.5 * (1 - (u - 0.25) / 0.75))) * c.a : 0;
+    v.body.scale.set(1 + 0.6 * k, 1 - k, 1 + 0.6 * k);
+    v.body.position.x = c.dx * 2.2 * Math.max(0, k); v.body.position.z = c.dy * 2.2 * Math.max(0, k);
+    if (c.t <= 0) { v.crunch = undefined; v.body.scale.set(1, 1, 1); v.body.position.x = v.body.position.z = 0; }
+  }
   squash(id: number, a: number, dx = 0, dy = 0, len = 0.18) {
     const vi = this.game?.skaters.findIndex(k => k.id === id) ?? -1;
     const v = vi >= 0 ? this.skaters[vi] : null;
@@ -2032,8 +2190,17 @@ export class View {
         break;
       }
       // goalie read the shot: start the save so its reach meets the puck; a save or catch without a read starts it now
-      case 'gread': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, e.n ?? 0); break;
-      case 'save': case 'catch': if (e.team !== undefined && e.text) this.goalieSave(e.team, e.text, 0); break;
+      case 'gread': if (e.team !== undefined && e.text) {
+        this.goalieSave(e.team, e.text, e.n ?? 0);
+        if (this.arc.on) {   // the shot comes in where he will meet it: high to the glove, mid to the blocker, under a cap for the pads and the butterfly
+          const sv = SHOT_ARC.save[e.text]; if (sv) this.arc.hNet = sv[0] > 0 ? sv[0] : Math.min(this.arc.hNet, sv[1]); }
+      } break;
+      case 'save': case 'catch': if (e.team !== undefined && e.text) {
+        this.goalieSave(e.team, e.text, 0);
+        // the puck hits him: a jolt back into the net (smaller when he catches it, the glove gives)
+        const gv = this.skaters[(this.game?.skaters.length ?? 0) + e.team];
+        if (gv && e.t === 'save') gv.crunch = { t: 0.16, len: 0.16, dx: e.team === 0 ? -1 : 1, dy: 0, a: e.text === 'glove' || e.text === 'butterfly' ? 0.06 : 0.1 };
+      } break;
       case 'stickDrop': this.burst(x, y, 10, 0xd9c9a3, 5, 4, 0.1); this.spray(x, y, e.dx ?? 0, e.dy ?? 0, 10, 0xe8f4ff, 6); break;
       case 'lunge': this.burst(x, y, 7, 0xe8f4ff, 4, 2, 0.1, 0.1); break;
       case 'faceoff': this.clearBodies(); break;
@@ -2042,7 +2209,9 @@ export class View {
       case 'crowd': this.burst(x, y, 24, 0xffb400, 6, 8, 0.2, 2); this.cheer = Math.max(this.cheer, 0.8); break;
       case 'shock': this.shockT = 0.4; this.shockR = e.n ?? 3; this.shockMesh.position.set(x, 0.06, y); break;
       case 'fire': this.cheer = 1.2; break;
-      case 'goal': this.netGoal(e.team ?? 0); break;
+      case 'goal': this.netGoal(e.team ?? 0);
+        // the sim parks the puck behind the end boards: draw it going into the back of the net where it crossed
+        this.arc.goalT = 0; this.arc.gx = Math.sign(x) || 1; this.arc.gy = Math.max(-(GOAL_HALF - 0.3), Math.min(GOAL_HALF - 0.3, y)); break;
     }
   }
 
@@ -2090,13 +2259,7 @@ export class View {
         if (!DBG.has('noanat') && !s.air && s.stun <= 0) this.headGaze(v);   // shots keep the clip's arms: they already hold the stick with the elbows down
         this.ragApply(v, s, dt);
         this.layerSave(v);
-        if (v.crunch) {   // impact: squash and lurch along the hit (or a stretch on a catch), then spring back
-          const c = v.crunch; c.t -= rdt;   // real time: the squash plays through the hit stop, so the freeze shows the impact
-          const u = 1 - c.t / c.len, k = c.t > 0 ? (u < 0.25 ? u / 0.25 : Math.sin(Math.PI * 0.5 * (1 - (u - 0.25) / 0.75))) * c.a : 0;
-          v.body.scale.set(1 + 0.6 * k, 1 - k, 1 + 0.6 * k);
-          v.body.position.x = c.dx * 2.2 * Math.max(0, k); v.body.position.z = c.dy * 2.2 * Math.max(0, k);
-          if (c.t <= 0) { v.crunch = undefined; v.body.scale.set(1, 1, 1); v.body.position.x = v.body.position.z = 0; }
-        }
+        this.crunch(v, rdt);
         if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is
           const st = this.stickOf(v);
           if (st && this.stickGeo) {
@@ -2126,7 +2289,7 @@ export class View {
       v.body.rotation.set(0, -k.face, v.anim ? 0 : -0.3);   // squared up to the puck
       this.setGoalieLook(v, true);   // pads, blocker, glove, mask and goalie stick instead of the skater kit
       if (v.anim) this.animate(v, null, false, false, dt);
-      v.body.position.y = 0; v.root.scale.setScalar(1.12);
+      v.body.position.y = 0; v.root.scale.setScalar(1.12); this.crunch(v, rdt);
       // the box goalie leaned into the slide; tipping the real model would push a skate and the stick into the ice
       v.root.rotation.x = v.anim ? 0 : Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
     });
@@ -2178,7 +2341,12 @@ export class View {
         pkx = p.x + (bw.x - p.x) * k; pkz = p.y + (bw.z - p.y) * k;
       }
     }
-    this.puck.position.set(pkx, 0.05 + dropH + lift, pkz);
+    const air = this.puckAir(g, p, rdt);
+    if (this.arc.goalT >= 0 && Math.abs(p.x) > L) {   // a goal: into the net, off the back mesh, down onto its floor
+      const A = this.arc, u = Math.min(1, (A.goalT += rdt) / 0.14);
+      pkx = A.gx * (GL + (NET_DEPTH - 0.25) * u); pkz = A.gy;
+    } else if (this.arc.goalT >= 0) this.arc.goalT = -1;
+    this.puck.position.set(pkx, 0.05 + dropH + lift + air, pkz);
     if (this.snapT > 0) {   // release snap: the puck stretches along its path, then settles
       this.snapT -= rdt;
       const k = Math.max(0, this.snapT / 0.12) * this.snapA;

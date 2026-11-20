@@ -5,8 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 const out = mkdtempSync(tmpdir() + '/move-') + '/sim.mjs';
-await build({ entryPoints: ['src/sim.ts'], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' });
+const RAP = process.argv.includes('--rapier');   // PHYSICS_PLAN.md: the same checks with Rapier moving the skaters and puck
+await build({ entryPoints: [RAP ? 'tests/rapier_entry.ts' : 'src/sim.ts'], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'error' });
 const S = await import(pathToFileURL(out).href);
+if (RAP) { await S.initPhysics(); S.PHYS.rapier = true; }
 const P = Object.fromEntries(S.POWERS.map(p => [p.id, 0]));
 const NO = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: false };
 const DT = 1 / 120;
