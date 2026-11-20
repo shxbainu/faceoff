@@ -11,8 +11,10 @@
 - Three.js r186, WebGPU renderer with WebGL2 fallback
 - Rapier for physics (the original stack). The sim still uses hand-written 2D physics in `src/sim.ts` (fixed 120 Hz,
   seeded) and a verlet ragdoll (`src/ragdoll.ts`); PHYSICS_PLAN.md moves them onto Rapier's deterministic build.
-  Step 1 is in: `?rapier` moves the puck through Rapier boards and nets (`src/physics/rink.ts`). Checks:
-  `node tests/rapier_compare.mjs` (old vs Rapier over bot matches, determinism, puck stays in), `node tests/rapier_spike.mjs`.
+  Steps 1-2 are in: `?rapier` moves the puck (boards, nets) and the skaters (own world, `skatersStep`; checks and
+  momentum rules stay in `collide`) through Rapier (`src/physics/rink.ts`). Next: step 3, sticks. Checks:
+  `node tests/rapier_compare.mjs [--matches 16] [--seed N]` (old vs Rapier over bot matches, determinism, puck and
+  skaters stay in), `node tests/move_probe.mjs --rapier`, `node tests/rapier_spike.mjs`.
 
 ## Art
 - Moving from procedural to GLB assets one at a time (see assets/PLAN.md). Online CC0 or CC-BY models first, text-to-3D only as fallback.

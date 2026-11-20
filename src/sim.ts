@@ -4,7 +4,7 @@
 // never reads anything back from the feedback system.
 import { ABILITIES, AbilityId, LOADOUT, ABILITY_AI } from './abilities';
 import type { FxFields } from './feedback/events';
-import { PHYS, puckStep, puckOut } from './physics/rink';
+import { PHYS, puckStep, puckOut, skatersStep } from './physics/rink';
 
 export const L = 40; // half length (x). Was 22: skaters were ~10% of the rink width, the reference is ~3%
 export const W = 19; // half width (y, screen-down is +y)
@@ -16,7 +16,7 @@ export const NET_DEPTH = 1.5;
 /** goal line: nets stand out from the end boards so play can go behind them (NHL: 11 ft of a 200 ft rink) */
 export const GL = L - 4.4;
 export const SR = 0.7; // skater radius: check reach and boards
-const BODY = 0.5;      // body radius for skater-on-skater contact
+export const BODY = 0.5;      // body radius for skater-on-skater contact
 export const PR = 0.15; // puck radius (small and quick, like the real thing)
 export const WIN_GOALS = 3;
 export const MATCH_SECONDS = 90;
@@ -264,6 +264,8 @@ export function insideRink(x: number, y: number, r = 0): boolean {
 }
 
 export class Game {
+  // ?rapier scratch for collide (reused every step)
+  private preV: number[] = []; private rMass: number[] = []; private rRest: number[] = []; private hitPairs = new Set<number>();
   skaters: Skater[] = [];
   pucks: Puck[] = [];
   score = [0, 0];
@@ -414,7 +416,7 @@ export class Game {
       const me = this.ctrl;
       for (const k of this.skaters) if (k !== me) { k.out = 1e9; k.x = k.y = 0; k.vx = k.vy = 0; }
       this.updateSkater(me, human, dt);
-      collideNet(me, BODY, 0.2);
+      if (PHYS.rapier) this.collide(dt); else collideNet(me, BODY, 0.2);
       return;
     }
 
@@ -668,8 +670,10 @@ export class Game {
       s.stun -= dt;
       const f = Math.exp(-CHECK.slide * dt); s.vx *= f; s.vy *= f;   // knocked down: slides on the ice
       const pre = Math.hypot(s.vx, s.vy);
-      s.x += s.vx * dt; s.y += s.vy * dt;
-      if (collideBoards(s, SR, 0.4, false) && pre > 6) { this.ev({ t: 'slam', x: s.x, y: s.y, n: pre, id: s.id }); }
+      if (!PHYS.rapier) {   // ?rapier: moved by Rapier in collide, which also raises the slam
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        if (collideBoards(s, SR, 0.4, false) && pre > 6) { this.ev({ t: 'slam', x: s.x, y: s.y, n: pre, id: s.id }); }
+      }
       s.pPass = c.pass; s.pShoot = c.shoot; s.pCheck = c.check;
       s.bPass = s.bWrist = s.bCheck = s.bPoke = 0;   // presses made before going down don't fire on getting up
       return;
@@ -828,6 +832,7 @@ export class Game {
     if (pokeEdge && s.checkCd <= 0 && p.owner !== s) { this.startCheck(s, 'poke'); s.bPoke = 0; }
     s.pPass = c.pass; s.pShoot = c.shoot; s.pCheck = c.check; s.pSaucer = !!c.saucer; s.pWrist = !!c.wrist; s.pPoke = !!c.poke;
 
+    if (PHYS.rapier) return;   // moved by Rapier in collide
     s.x += s.vx * dt; s.y += s.vy * dt;
     collideBoards(s, SR, 0.2, false);
     collideNet(s, BODY, 0.2);
@@ -1499,31 +1504,60 @@ export class Game {
   }
 
   private collide(dt: number) {
-    const S = this.skaters, owner = this.pucks[0].owner;
+    const S = this.skaters, owner = this.pucks[0].owner, rap = PHYS.rapier;
+    const off = (s: Skater) => s.air || s.out > 0 || s.boxed > 0;
     for (const s of S) { s.disengage -= dt; s.tangle = Math.max(0, s.tangle - dt * 2); }
+    // a body check is a rule, not a contact: whoever is checking and within reach lands the hit
+    const checked = (a: Skater, b: Skater) => {
+      if (a.team === b.team) return false;
+      if (a.checkT > 0 && !a.hits.has(b.id) && b.stun <= 0 && b.spinT <= 0) { this.hit(a, b); return true; }
+      if (b.checkT > 0 && !b.hits.has(a.id) && a.stun <= 0 && a.spinT <= 0) { this.hit(b, a); return true; }
+      return false;
+    };
+    const pv = this.preV;
+    if (rap) {
+      // ?rapier: checks first (from where the step starts), then Rapier moves everyone and solves contacts and walls
+      // with the same momentum rule as below (faster or carrying = heavier); the rules after a contact run after it
+      this.hitPairs.clear();
+      for (let i = 0; i < S.length; i++) for (let j = i + 1; j < S.length; j++) {
+        const a = S[i], b = S[j];
+        if (off(a) || off(b)) continue;
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < SR * 2 && d >= 1e-4 && checked(a, b)) this.hitPairs.add(i * 64 + j);
+      }
+      const mass = this.rMass, rest = this.rRest;
+      mass.length = rest.length = pv.length = 0;
+      for (const s of S) {
+        pv.push(s.vx, s.vy);
+        mass.push(off(s) ? 0 : 1 + 0.12 * Math.hypot(s.vx, s.vy) + (owner === s ? 0.8 : 0));
+        rest.push(s.stun > 0 ? 0.4 : 0.15);
+      }
+      const wall = skatersStep(S, mass, rest, dt);
+      for (let i = 0; i < S.length; i++) {
+        const s = S[i], pre = Math.hypot(pv[i * 2], pv[i * 2 + 1]);
+        if (wall[i] && s.stun > 0 && pre > 6) this.ev({ t: 'slam', x: s.x, y: s.y, n: pre, id: s.id });
+      }
+    }
     for (let i = 0; i < S.length; i++) for (let j = i + 1; j < S.length; j++) {
       const a = S[i], b = S[j];
-      if (a.air || b.air || a.out > 0 || b.out > 0 || a.boxed > 0 || b.boxed > 0) continue;
+      if (off(a) || off(b)) continue;
       const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
       if (d >= SR * 2 || d < 1e-4) continue;
-      if (a.team !== b.team) {
-        if (a.checkT > 0 && !a.hits.has(b.id) && b.stun <= 0 && b.spinT <= 0) { this.hit(a, b); continue; }
-        if (b.checkT > 0 && !b.hits.has(a.id) && a.stun <= 0 && a.spinT <= 0) { this.hit(b, a); continue; }
-      }
+      if (rap ? this.hitPairs.has(i * 64 + j) : checked(a, b)) continue;
       // bodies are smaller than the check reach, so skaters brush past instead of locking together
-      if (d >= BODY * 2) continue;
+      if (d >= BODY * 2 + (rap ? 0.02 : 0)) continue;   // Rapier leaves a hair of gap or overlap
       const nx = dx / d, ny = dy / d, ov = BODY * 2 - d;
+      // velocities going into the contact (Rapier has already solved it, so its own are the ones before the step)
+      const avx = rap ? pv[i * 2] : a.vx, avy = rap ? pv[i * 2 + 1] : a.vy, bvx = rap ? pv[j * 2] : b.vx, bvy = rap ? pv[j * 2 + 1] : b.vy;
       // whoever is moving faster, or carrying the puck, keeps more of their momentum
-      const ia = 1 / (1 + 0.12 * Math.hypot(a.vx, a.vy) + (owner === a ? 0.8 : 0));
-      const ib = 1 / (1 + 0.12 * Math.hypot(b.vx, b.vy) + (owner === b ? 0.8 : 0));
-      const wa = ia / (ia + ib), wb = ib / (ia + ib);
-      a.x -= nx * ov * wa; a.y -= ny * ov * wa; b.x += nx * ov * wb; b.y += ny * ov * wb;
-      const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+      const ia = 1 / (1 + 0.12 * Math.hypot(avx, avy) + (owner === a ? 0.8 : 0));
+      const ib = 1 / (1 + 0.12 * Math.hypot(bvx, bvy) + (owner === b ? 0.8 : 0));
+      if (!rap) { const wa = ia / (ia + ib), wb = ib / (ia + ib); a.x -= nx * ov * wa; a.y -= ny * ov * wa; b.x += nx * ov * wb; b.y += ny * ov * wb; }
+      const rv = (bvx - avx) * nx + (bvy - avy) * ny;
       if (rv < 0) {
-        const pa = Math.hypot(a.vx, a.vy), pb = Math.hypot(b.vx, b.vy);
-        const ca = pa > 0 ? Math.abs(a.vx * nx + a.vy * ny) / pa : 1, cb = pb > 0 ? Math.abs(b.vx * nx + b.vy * ny) / pb : 1;
-        const jn = (-(1 + 0.15) * rv) / (ia + ib);
-        a.vx -= nx * jn * ia; a.vy -= ny * jn * ia; b.vx += nx * jn * ib; b.vy += ny * jn * ib;
+        const pa = Math.hypot(avx, avy), pb = Math.hypot(bvx, bvy);
+        const ca = pa > 0 ? Math.abs(avx * nx + avy * ny) / pa : 1, cb = pb > 0 ? Math.abs(bvx * nx + bvy * ny) / pb : 1;
+        if (!rap) { const jn = (-(1 + 0.15) * rv) / (ia + ib); a.vx -= nx * jn * ia; a.vy -= ny * jn * ia; b.vx += nx * jn * ib; b.vy += ny * jn * ib; }
         // glancing contact: deflect off the shoulder and keep most of your speed instead of stopping dead
         for (const [k, pre, cs, sgn] of [[a, pa, ca, -1], [b, pb, cb, 1]] as [Skater, number, number, number][]) {
           if (pre < 3 || cs > 0.75 || k.checkT > 0) continue;

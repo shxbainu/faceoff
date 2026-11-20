@@ -105,3 +105,36 @@ against 0.15 without; ready in 0.9 s against 0.66 s (localhost). With the flag o
 
 Found on the way: the old carry path never kept a carried puck inside the boards when the blade collider was off.
 The end-of-step `puckOut` covers it under Rapier.
+
+## Step 2 results (2026-11-19): skaters, behind `?rapier`
+
+Skaters have their own Rapier world in `src/physics/rink.ts` (`skatersStep`): a dynamic ball of radius `BODY` per
+skater (CCD, created in index order), the boards moved in by `SR - BODY` so the body ball stops where the old
+`collideBoards(s, SR)` did, and each net as a closed box. Bounciness 0.2 off walls, 0.15 between skaters, 0.4 for a
+knocked-down skater; contacts stiffened (8 solver iterations, natural frequency 60) so a pinned skater doesn't sink.
+In `collide`, checks land first (a rule, from where the step starts), then Rapier moves every skater and solves the
+contacts with mass `1 + 0.12 speed (+0.8 carrying)`, the same weighting the old impulse used. The rules after a contact
+(glancing contact keeps 88%, carrier peels off, tangles push apart) still run in sim.ts on the velocities going in.
+Slams come from Rapier's contact-start events. Skaters in the air, off the ice or in the box are left out.
+
+Found and fixed for step 1 on the way: the net frame's inner face sat inside where the goal rule counts a goal, so a
+puck the rule called in could ring off the inside of the post, and a sliver could slip into the net with no goal.
+The frame is now a 0.03 wall whose inner face is at 2.145 (the goal rule's puck edge reaches 2.175), outside 2.175
+(old box 2.1), with no overhang past the goal line.
+
+`node tests/rapier_compare.mjs --matches 16` over three seed sets (48 matches):
+
+| | old | Rapier |
+|---|---|---|
+| goals | 158 | 168 |
+| shots | 544 | 503 |
+| pass completion | 70-73% | 69-71% |
+| checks landed / average hit value | 170 / 13.2-13.8 | 175 / 13.2-14.2 |
+| slams | 45 | 43 |
+| post hits | 20 | 25 |
+| skaters sunk into each other | 0 | 0 |
+| deepest a skater went into the boards | 0 | 0.14 (2-10 steps of ~150k) |
+
+Single-skater checks in `node tests/move_probe.mjs --rapier` (skating timings, stop, turns, knockback against
+checker speed) give the same numbers as without. Browser: 60 fps either way, no errors, no frames over 40 ms.
+With the flag off the fingerprint is unchanged (`8f6475929cc84fc5`).
