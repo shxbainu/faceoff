@@ -42,7 +42,7 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
+  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; poleLag?: THREE.Vector3[]; laLag?: THREE.Quaternion; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
@@ -60,7 +60,7 @@ interface SkaterView {
   stag?: { t: number; dx: number; dy: number; a: number };
   /** the chest's stride motion this frame (pitch, roll, rad) and the head's eased share of it (gaitLegs, headGaze) */
   dyn?: { p: number; r: number; hp: number; hr: number };
-  gait?: { mode: string; ph: number; amp: number; w: number; turn: number; tgt: number[][]; rig?: GaitRig; contact: boolean[] };
+  gait?: { mode: string; ph: number; amp: number; w: number; turn: number; tgt: number[][]; rig?: GaitRig; contact: boolean[]; mt?: number };
 }
 interface GaitRig { leg: number; footY: number; bones: { th: THREE.Object3D; ca: THREE.Object3D; ft: THREE.Object3D; r: boolean }[]; pelvis: THREE.Object3D; sp1: THREE.Object3D; sp3: THREE.Object3D;
   neck: THREE.Object3D; head: THREE.Object3D; ua: THREE.Object3D[]; la: THREE.Object3D[] }
@@ -97,6 +97,9 @@ export const GAIT = {
   body: { pitch: 0.1, roll: 0.4, breath: 0.015, breathHz: 0.3, head: 0.6, headLag: 10 },
   headLevel: 0.85,   // how level the head is held over the stride (the clip itself carries the hip and shoulder counter-rotation)
   glideW: 0.17, readyW: 0.24, stopW: 0.3, backOut: 0.42, crossOut: 0.5, crossOver: 0.28,
+  // ankle: toe flick (rad, toe down) at full extension, toe up while the skate swings forward, the toe's reach from
+  // the ankle (leg lengths, so the heel lifts and the toe stays on the ice), how long a change of mode eases (s)
+  flick: 0.55, toeUp: 0.2, toeLen: 0.16, modeEase: 0.25,
 };
 /** How a stick is held (stickIK, topGrip). slide: how far below the knob the top hand may hold the shaft (share of its
  *  length); len: the drawn stick's length as a share of the model's (2.04 units, 91% of the skater's height; 0.9
@@ -114,7 +117,9 @@ const IK_EASE = 18;
 const ONE_HAND = { on: 5.5, off: 4, in: 5, out: 12,
   // the free (top) arm's swing: the clip's own shoulder motion (not the elbow: that hiked the fist to the helmet) around their average over `avg` s, times
   // `swing` (the clip swings the hand about 0.2 m; a sprinting player's goes hip to chin)
-  swing: 1.8, avg: 0.5 };
+  swing: 1.8, avg: 0.5,
+  // follow-through: the free forearm trails the upper arm's swing (1/s; lower lags more), by at most `lagMax` rad
+  lag: 9, lagMax: 0.35 };
 /** shots in the air (drawn only): height at the goal line by a hash of the release spot (low, mid, high), or where
  *  the goalie reads it (glove high, blocker mid, pads and butterfly low); rise: share of the way to the net by
  *  which it is up; g: fall once it is no longer a shot (bounce keeps this share of the speed) */
@@ -135,7 +140,10 @@ const GOALIE_REACT = 0.12;   // stickFloor: lowest the blade may sit (above the 
  *  and it is held level (no roll); ride: share of the chest's twist off the heading the stick target turns with
  *  (stickIK), up to swing (rad); follow: share of the top shoulder's stride swing (its motion around its average over
  *  shAvg s) the top hand rides. */
-export const ANAT = { pole: [1, 0.3, 0.1], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45, ride: 1, swing: 0.6, follow: 1, shAvg: 0.6 };
+export const ANAT = { pole: [1, 0.15, 0.3], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45, ride: 1, swing: 0.6, follow: 1, shAvg: 0.6,
+  // botClear: the bottom hand stays this far off the spine line (it rides lower and to the side, so a thinner capsule);
+  // elbowLag: how fast an elbow follows where it should point (1/s), so it trails the hand a beat
+  botClear: 0.36, fistClear: 0.45, elbowLag: 10 };
 /** drawn look: two flat tones per colour plus a highlight, ink outline around every skater */
 // debug switches for the look: ?nohull (no outline shell), ?noink (no contour ink), ?hulldbg (shell in magenta),
 // ?nomask (old uniform shell), ?pose=clip:fraction (hold every skater in one pose)
@@ -1107,11 +1115,12 @@ export class View {
     }
     const sh = A.ua_r.getWorldPosition(this.ikG), tB = Math.max(gripB - 0.15, Math.min(gripB, sh.sub(T).dot(dir) / len));   // the bottom hand slides down toward its shoulder, never up (hands bunch together)
     (v.botT ??= new THREE.Vector3()).copy(T).addScaledVector(dir, len * tB);   // test hook: where the bottom hand was sent
+    this.clearBody(v, v.botT, ANAT.botClear);   // a stick across the body sent the bottom glove (and forearm) into the belly
     // out of reach: drop the bottom shoulder toward the grip, as players do (the collarbone turns, up to ANAT.shrug)
     { const cl = (v.clavR ??= v.body.getObjectByName('clavicle_r') ?? null), need = A.ua_r.getWorldPosition(this.ikF).distanceTo(v.botT), arm = this.armLen(A.ua_r, A.la_r, A.h_r) * 0.97;
       if (cl && need > arm) { const c0 = cl.getWorldPosition(this.ikC), u = this.ikF.clone().sub(c0), t = v.botT.clone().sub(c0);
         this.rotWorld(cl, u.clone().cross(t), Math.min(ANAT.shrug, u.angleTo(t)) * w); } }
-    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(T).addScaledVector(dir, len * tB), v.armClip[1].n, this.anatPole(v, A.ua_r, this.apR), w);
+    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(v.botT), v.armClip[1].n, this.lagPole(v, 1, this.anatPole(v, A.ua_r, this.apR), rdt), w);
     this.wristClamp(v, A.h_r, 1);
     this.turnStick(v, st, blade().clone(), T, Math.PI * w);   // shaft from the glove to the blade target
     { const bw = blade().clone(), p0 = st.parent!.worldToLocal(bw.clone()), p1 = st.parent!.worldToLocal(bw.lerp(T, w));   // slide the shaft through the glove so the blade lands on the target
@@ -1138,7 +1147,24 @@ export class View {
         if (A.la_l.getWorldPosition(this.ikF).y < shY - 0.2 && A.h_l.getWorldPosition(this.ikF).y < shY) { v.swA = amp; break; } v.swA = amp; }
       // the size eases (a fresh pick each frame jumped the hand between steps): quick to shrink, slower to grow
       const want = v.swA!, cur = (v.swE ??= want); v.swE = cur + (want - cur) * (1 - Math.exp(-this.ohDt * (want < cur ? 25 : 8)));
-      A.ua_l.quaternion.copy(q0).slerp(m.clone().slerp(q0, v.swE), one); v.root.updateMatrixWorld(true); }
+      A.ua_l.quaternion.copy(q0).slerp(m.clone().slerp(q0, v.swE), one); v.root.updateMatrixWorld(true);
+      // follow-through: the forearm keeps a lagged world turn, so it trails the upper arm's swing and overshoots a little
+      // at each turn-around (it moved locked to the upper arm, like one rigid piece)
+      // (lagged in the chest's frame: lagging in the world also trailed the body's own turns and folded the fist up to the neck)
+      const la = A.la_l, chest = A.ua_l.parent!.parent!, cq = chest.getWorldQuaternion(new THREE.Quaternion());
+      const q1 = la.quaternion.clone(), rel = cq.clone().invert().multiply(la.getWorldQuaternion(new THREE.Quaternion()));
+      const lag = (v.laLag ??= rel.clone()); lag.slerp(rel, 1 - Math.exp(-this.ohDt * ONE_HAND.lag));
+      if (rel.angleTo(lag) > ONE_HAND.lagMax) lag.copy(rel).rotateTowards(lag, ONE_HAND.lagMax);
+      const loc = la.parent!.getWorldQuaternion(this.ohM.q).invert().multiply(cq).multiply(lag);
+      const shY = A.ua_l.getWorldPosition(this.ikG).y;
+      for (const k of [1, 0.5, 0]) {   // never lifts the fist to the shoulder: back the lag off until it stays under
+        la.quaternion.copy(q1).slerp(loc, one * k); la.updateMatrixWorld(true);
+        if (A.h_l.getWorldPosition(this.ikF).y < shY - 0.1) break; }
+      // the free fist stays off the chest (the crossover clip lays it flush on the sternum)
+      const hp = A.h_l.getWorldPosition(new THREE.Vector3()), fist = this.clearBody(v, hp.clone(), ANAT.fistClear);
+      fist.y = Math.min(fist.y, hp.y, shY - 0.15);   // pushed out, never up (pushing straight off the spine line raised it into a flex)
+      if (fist.distanceToSquared(hp) > 1e-6) { const ab = this.armBend(A.ua_l, A.la_l, A.h_l); this.hingeIK(A.ua_l, A.la_l, A.h_l, fist, ab.n, ab.pole.normalize(), one); } }
+    else v.laLag = undefined;
     this.wristClamp(v, bones[3]!, 1); if (v.arms) this.wristClamp(v, v.arms.h_l, 0);   // the clip's own wrists bend 60-80 deg
     const grip = g.blade.clone().lerp(g.top, gT).applyMatrix4(W), bl = g.blade.clone().applyMatrix4(W);
     const palm = (v.palmR ??= v.body.getObjectByName('middle_01_r') ?? bones[3]!).getWorldPosition(new THREE.Vector3()), L = len * gT, h = Math.max(0, palm.y - IK_Y);
@@ -1165,7 +1191,7 @@ export class View {
     for (let pass = 0; pass < 2; pass++) {   // twice: the arm's roll turns the hand, which moves the palm's offset from the wrist
       const grip = this.ikD.copy(g.blade).lerp(g.top, tAt).applyMatrix4(st.matrixWorld);
       grip.sub(palm.getWorldPosition(this.ikE).sub(A.h_l.getWorldPosition(this.ikG)));
-      this.hingeIK(A.ua_l, A.la_l, A.h_l, grip, v.armClip[0].n, this.anatPole(v, A.ua_l, this.apL), w);
+      this.hingeIK(A.ua_l, A.la_l, A.h_l, grip, v.armClip[0].n, pass ? this.apL : this.lagPole(v, 0, this.anatPole(v, A.ua_l, this.apL), this.ohDt), w);
       this.wristClamp(v, A.h_l, 0);
     }
   }
@@ -1238,7 +1264,7 @@ export class View {
    *  the pushes look like they make the speed. Hard acceleration shortens the cycle (quick, choppy pushes); at speed
    *  the cycle stretches into long pushes and glides. Hit stop (dt 0) freezes it. */
   private gaitStep(v: SkaterView, s: Skater, dt: number) {
-    const g = v.gait ??= { mode: 'ready', ph: Math.random(), amp: 0, w: 0, turn: 0, tgt: [[0, 0, 0, 0], [0, 0, 0, 0]], contact: [true, true] };
+    const g = v.gait ??= { mode: 'ready', ph: Math.random(), amp: 0, w: 0, turn: 0, tgt: [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], contact: [true, true], mt: 1 };
     const sp = Math.hypot(s.vx, s.vy), f = v.feel, k = Math.min(1, sp / s.move.topSpeed), effort = f?.effort ?? 0;
     const along = sp > 0.01 ? (s.vx * Math.cos(s.face) + s.vy * Math.sin(s.face)) / sp : 1;
     const cur = v.anim?.cur ?? '';
@@ -1249,6 +1275,7 @@ export class View {
     else if (sp > 1.2 && along < -0.3) mode = s.drive ? 'back' : 'glide';
     else if (s.drive && sp > 0.8) mode = Math.abs(f?.turn ?? 0) > 1.6 && sp > 5 ? 'cross' : 'stride';
     else mode = sp > 0.6 ? 'glide' : 'ready';
+    if (mode !== g.mode) g.mt = 0; else g.mt = (g.mt ?? 1) + dt;   // time in this mode: a change of mode eases across
     g.mode = mode; g.turn = f?.turn ?? 0;
     if (dt <= 0) return;
     if (mode === 'stride' || mode === 'cross' || mode === 'back') {
@@ -1280,18 +1307,21 @@ export class View {
           return Math.min(G.toeMax, Math.atan2(latV, Math.max(0.6, fwdV)));
         };
         // push: glides first, then drives out and back, fastest at the end (a smooth u^1.6 arc, no snap at the turn)
-        if (ps < P) { const u = ps / P, e = Math.pow(u, 1.6); return [sg * (G.inW + (out - G.inW) * e), G.set - (G.set + back) * e, 0, sg * toe(u)]; }
+        // ankle: flat through the push, the toe flicks down as the leg reaches full extension, then comes up as the skate
+        // swings forward and flattens to set down (a locked flat foot hinged the whole stride at the knee)
+        if (ps < P) { const u = ps / P, e = Math.pow(u, 1.6), fl = G.flick * A * sm(Math.max(0, (u - 0.82) / 0.18)); return [sg * (G.inW + (out - G.inW) * e), G.set - (G.set + back) * e, G.toeLen * Math.sin(fl), sg * toe(u), fl]; }
         // recovery: comes in under the hips first (lateral leads), then forward to set down, low over the ice
         const u = (ps - P) / (1 - P), eL = sm(Math.min(1, u * 1.4)), eF = sm(u);
-        return [sg * (out + (G.inW - out) * eL), -back + (G.set + back) * eF, G.lift * (0.5 + 0.5 * A) * Math.sin(Math.PI * u), sg * toe(1) * (1 - eL)];
+        const fl = G.flick * A * (1 - sm(Math.min(1, u * 3))) - G.toeUp * A * Math.sin(Math.PI * Math.min(1, Math.max(0, (u - 0.2) / 0.8)));
+        return [sg * (out + (G.inW - out) * eL), -back + (G.set + back) * eF, G.lift * (0.5 + 0.5 * A) * Math.sin(Math.PI * u) + G.toeLen * Math.sin(Math.max(0, fl)), sg * toe(1) * (1 - eL), fl];
       }
       case 'cross': {
         // outward from the turn, in side-axis terms: a positive path turn bends toward -side
         const outS = g.turn > 0 ? 1 : -1, outside = sg === outS, X = G.crossOver, O = G.crossOut;
         if (outside) {   // pushes out on its inside edge, lifts, steps over in front of the inside skate
-          if (ps < 0.5) { const u = ps / 0.5; return [outS * (-0.12 + (O + 0.12) * Math.pow(u, 1.3)), 0.2 - 0.35 * u, 0, outS * 0.35 * u]; }
-          const u = (ps - 0.5) / 0.5, e = sm(u);
-          return [outS * (O - (O + X) * e), -0.15 + 0.4 * e, 0.12 * Math.sin(Math.PI * u), outS * 0.35 * (1 - e)];
+          if (ps < 0.5) { const u = ps / 0.5, fl = G.flick * sm(Math.max(0, (u - 0.8) / 0.2)); return [outS * (-0.12 + (O + 0.12) * Math.pow(u, 1.3)), 0.2 - 0.35 * u, G.toeLen * Math.sin(fl), outS * 0.35 * u, fl]; }
+          const u = (ps - 0.5) / 0.5, e = sm(u), fl = G.flick * (1 - sm(Math.min(1, u * 3))) - G.toeUp * Math.sin(Math.PI * u);
+          return [outS * (O - (O + X) * e), -0.15 + 0.4 * e, 0.12 * Math.sin(Math.PI * u) + G.toeLen * Math.sin(Math.max(0, fl)), outS * 0.35 * (1 - e), fl];
         }
         const q = (ps + 0.5) % 1;   // the inside skate: crossunder push under the body, then lifts out and comes back
         if (q < 0.5) { const u = q / 0.5; return [outS * (-0.3 + 0.45 * u), 0.05 - 0.15 * u, 0, -outS * 0.1]; }
@@ -1359,7 +1389,8 @@ export class View {
       const t = this.gaitFoot(g, sides[i], g.ph + (b.r ? 0.5 : 0), sp, hz, leg, stopSide);
       const cur = g.tgt[i];
       // stepping modes follow their own path exactly once settled; a change of mode eases across
-      for (let j = 0; j < 4; j++) cur[j] += (t[j] - cur[j]) * (g.mode === 'stride' || g.mode === 'back' || g.mode === 'cross' ? Math.max(ease, 0.5) : ease);
+      const settled = (g.mode === 'stride' || g.mode === 'back' || g.mode === 'cross') && (g.mt ?? 1) > GAIT.modeEase;
+      for (let j = 0; j < 5; j++) cur[j] += ((t[j] ?? 0) - cur[j]) * (settled ? Math.max(ease, 0.5) : ease);
       g.contact[i] = cur[2] < 0.01;
     });
     // hips: set to an absolute height (athletic stance, not the clip's squat), dipping as each push extends, and
@@ -1385,7 +1416,7 @@ export class View {
     dy.p = dP; dy.r = dR; dy.hp += (dP - dy.hp) * ke; dy.hr += (dR - dy.hr) * ke;
     // legs
     R.bones.forEach((b, i) => {
-      const [lat, fore, lift, yaw] = g.tgt[i];
+      const [lat, fore, lift, yaw, pitch] = g.tgt[i];
       const H = b.th.getWorldPosition(W.H), K = b.ca.getWorldPosition(W.K), F = b.ft.getWorldPosition(W.F);
       const T = W.T.copy(base).addScaledVector(side, lat * leg).addScaledVector(fwd, fore * leg).addScaledVector(up, R.footY + lift * leg);
       T.lerp(F, 1 - g.w);
@@ -1393,8 +1424,9 @@ export class View {
       const yawQ = this.gQ.setFromAxisAngle(up, this.yawSign(fwd, side) * yaw);
       const bw = (b as any).ax as THREE.Vector3[];
       const u1 = this.gU1.copy(bw[0]).transformDirection(v.body.matrixWorld).applyQuaternion(yawQ), u2 = this.gU2.copy(bw[1]).transformDirection(v.body.matrixWorld).applyQuaternion(yawQ);
-      // knee bent forward over the toe, a little outward
-      this.twoBone(b.th, b.ca, b.ft, T, W.b.copy(fwd).addScaledVector(side, (Math.sign(lat) || 1) * 0.25), 1);
+      // knee bent forward over the toe, a little out to its own side (by the hip it hangs from, not where the skate is:
+      // a crossover skate past the midline flipped the knee across, into the other knee)
+      this.twoBone(b.th, b.ca, b.ft, T, W.b.copy(fwd).addScaledVector(side, sides[i] * 0.25), 1);
       void H; void K;
       // foot: turn its first axis onto u1, then roll about it until the second matches u2 (blade flat, toe at yaw)
       const e = b.ft.matrixWorld.elements, c1 = W.a.set(e[0], e[1], e[2]).normalize();
@@ -1402,6 +1434,8 @@ export class View {
       const e2 = b.ft.matrixWorld.elements, c2 = W.b.set(e2[4], e2[5], e2[6]).normalize();
       const p2 = c2.addScaledVector(u1, -c2.dot(u1)), q2 = u2.addScaledVector(u1, -u2.dot(u1));
       if (p2.lengthSq() > 1e-8 && q2.lengthSq() > 1e-8) this.rotWorld(b.ft, W.c.crossVectors(p2, q2), p2.angleTo(q2) * g.w);
+      // ankle: pitch about the skate's own cross axis (up x toe turns the toe down); the target was raised to keep the toe on the ice
+      if (Math.abs(pitch) > 1e-3) this.rotWorld(b.ft, W.c.copy(fwd).applyQuaternion(yawQ).cross(up).negate(), pitch * g.w);
     });
     this.gaitUpper(g, R, fwd);
     // a hockey stop keeps throwing ice off both blades until it is done
@@ -1471,6 +1505,23 @@ export class View {
     const hd = (v.headB ??= v.body.getObjectByName('Head')!).getWorldPosition(this.apT), off = out.clone().sub(hd), dd = off.length();
     if (dd < ANAT.headGap) out.copy(hd).add(off.setY(Math.min(off.y, 0) - 0.05).normalize().multiplyScalar(ANAT.headGap));
     return out;
+  }
+  /** push a hand target out of the torso (a capsule of radius r round the pelvis-to-neck line) and away from the helmet */
+  private clearBody(v: SkaterView, P: THREE.Vector3, r: number) {
+    const pel = (v.pelB ??= v.body.getObjectByName('pelvis')!), nk = (v.neckB ??= v.body.getObjectByName('neck_01')!), f = -v.body.rotation.y;
+    const near = new THREE.Line3(pel.getWorldPosition(new THREE.Vector3()), nk.getWorldPosition(new THREE.Vector3())).closestPointToPoint(P, true, new THREE.Vector3());
+    const off = P.clone().sub(near), dd = off.length();
+    if (dd < r) P.copy(near).addScaledVector(dd > 1e-4 ? off.divideScalar(dd) : new THREE.Vector3(Math.cos(f), 0, Math.sin(f)), r);
+    const hd = (v.headB ??= v.body.getObjectByName('Head')!).getWorldPosition(new THREE.Vector3()), o2 = P.clone().sub(hd);
+    if (o2.length() < ANAT.headGap) P.copy(hd).add(o2.setY(Math.min(o2.y, 0) - 0.05).normalize().multiplyScalar(ANAT.headGap));
+    return P;
+  }
+  /** an elbow's pole, eased (ANAT.elbowLag) so the elbow trails the hand a beat instead of moving locked to it; the
+   *  hand itself stays on its target (the pole only rolls the arm about the shoulder-to-hand line) */
+  private lagPole(v: SkaterView, k: number, pole: THREE.Vector3, rdt: number) {
+    const L = (v.poleLag ??= [pole.clone(), pole.clone()]);
+    if ((v.ikW ?? 0) < 0.05) L[k].copy(pole); else L[k].lerp(pole, 1 - Math.exp(-rdt * ANAT.elbowLag)).normalize();
+    return pole.copy(L[k]);
   }
   private armLen(ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D) { return ua.getWorldPosition(this.irS).distanceTo(la.getWorldPosition(this.irK)) + this.irK.distanceTo(h.getWorldPosition(this.apT)); }
   /** pull a hand target back toward its shoulder until it is within ANAT.reach of the arm's length (no locked-out arm) */

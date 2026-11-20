@@ -1,3 +1,14 @@
+# Limb stiffness and clipping review (2026-11-20), blind subagent, images and rules only
+
+Baseline verify/limbs_before; rounds verify/limbs_r1..r3 (low/ = 640 px copies the reviewer saw). Each round is a
+different moment, so passes are not strictly comparable. r3 mid-shot reuses r2's (r3's run missed one; shots keep the clip's arms).
+
+| Round | Pass | Failures |
+|---|---|---|
+| r1 | 3/6 | sprint: free fist up at the neck; tight turn: free fist flush on the sternum; backward: elbow folded back at shoulder level |
+| r2 | 5/6 | tight turn: free fist raised to helmet height ("flex") |
+| r3 | 3/6 | tight turn: shaft top past the bottom glove into the forearm (borderline); backward: shaft across the belly, top hand off the knob (borderline); backhand: can't judge (hidden) |
+
 # Arm motion review (2026-11-19, after easing the stick IK targets)
 
 Strips in verify/arm_motion (A = new, B = old; 15 frames at 10 fps, side camera). Blind reviewer, images only:

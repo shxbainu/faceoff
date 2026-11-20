@@ -169,6 +169,13 @@
   hips bob more (`hipDip` 0.045); the head keeps `head` (0.6) of the chest's motion, eased at `headLag` so it trails.
   `?nobody` turns it off. Checks: `node tests/torso_probe.mjs [query]` (per mode, p95 motion off a 0.4 s mean and
   p99 per-frame step) and `node tests/torso_trace.mjs` (frame by frame in a straight sprint).
+- Ankle and knee (`GAIT.flick`, `toeUp`, `toeLen`, `modeEase`): the toe flicks down at full extension (heel lifts, target
+  raised so the toe stays on the ice) and comes up as the skate swings forward; each knee bends out to its own hip's
+  side (by where the skate is, a crossover flipped it into the other knee); a change of mode eases for `modeEase` s.
+- Arm follow-through and clearance (render.ts): elbow poles ease (`ANAT.elbowLag`, `lagPole`) so elbows trail the hands;
+  the free one-handed forearm lags in the chest's frame (`ONE_HAND.lag`, backed off if the fist would rise to the
+  shoulder); the bottom hand and the free fist are kept out of a torso capsule and off the helmet (`clearBody`,
+  `ANAT.botClear`, `fistClear`). Review images: verify/limbs_r1..r3 (verify/limbs_before is the baseline).
 - No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
 - Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
 
