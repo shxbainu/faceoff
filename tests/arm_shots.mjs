@@ -34,7 +34,7 @@ for (const [name, hand] of shots) {
           : name === '3_tight_turn' ? m === 'cross'
           : name === '4_backward' ? m === 'back' && sp > 2
           : name === '5_backhand_carry' ? own === i && c.bh > 0.7
-          : ['wrist_shot', 'slapshot'].includes(clip) && a[i].t > 0.12 && f.stickPose(i)?.bladeY < 0.2;   // blade on the ice: at the puck, not the follow-through
+          : ['wrist_shot', 'slapshot'].includes(clip) && a[i].t > 0.12 && f.stickPose(i)?.bladeY < (late ? 0.35 : 0.2);   // blade on the ice: at the puck, not the follow-through
         if (ok) { f.freeze(true); f.closeCam(i, 5.5); return { i, hand: c.hand, speed: +sp.toFixed(1), mode: m, clip, bh: +c.bh.toFixed(2) }; }
       }
       return null;

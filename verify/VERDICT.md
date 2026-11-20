@@ -1,3 +1,14 @@
+# Grip rig review (2026-11-20), blind subagent, images and rules only
+
+Hard check `node tests/grip_check.mjs 60` (every frame of a 60 s bot match, every skater): 0 frames over 1 cm,
+worst 0.003 cm (35,657 skater-frames). Images verify/grip_r1..r3 (r3 adds a side view of the same frozen moment).
+
+| Round | Pass | Failures |
+|---|---|---|
+| r1 | 3/6 | tight turn: top glove past the shaft end; backhand: knob into the chest, top hand hidden; mid-shot: shaft through the torso, top hand hidden |
+| r2 | 3/6 | backward: top forearm flat across the belly (borderline); sprint, mid-shot: hands hidden from behind, can't judge |
+| r3 | 3/6 | sprint: game view shows no stick (side view: both gloves on the shaft); glide: side view shows no stick and a fist at shoulder height (game view: both gloves on it); backhand: one glove visible, shaft top at the belly |
+
 # Limb stiffness and clipping review (2026-11-20), blind subagent, images and rules only
 
 Baseline verify/limbs_before; rounds verify/limbs_r1..r3 (low/ = 640 px copies the reviewer saw). Each round is a

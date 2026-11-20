@@ -127,15 +127,15 @@
   Without it a switching target (puck, lane, rest) or a flipping fit rule popped the stick and top hand in one frame.
   `node tests/arm_motion_probe.mjs [&noik]` reports top-hand sway, speed (p99 near the clip's own, about 9), how much
   it follows the shoulder, single-frame jumps and what moved on those frames.
-  One hand (`ONE_HAND`, `oneHand`): skating faster than 5.5 m/s with nothing to reach for and not defending, the
-  stick is held in the bottom glove just under the knob, blade on the ice toward the sim's blade, and both arms are
-  the clip's (wrists clamped). The stride clip swings the top arm and keeps the bottom fist at the chest, so the arms
-  move with the body as the clip does (`arm_motion_probe` "one hand" rows near `&noik`). The free arm's shoulder
-  swing is the clip's, enlarged around its average (`ONE_HAND.swing` 1.8; the clip's is about 0.2 m), backed off
-  (down to 0.3 of the clip's, which itself hikes the fist by the helmet) until the elbow is 0.2 under the shoulder
-  and the fist under it (a blind review read a flared elbow as a flex). Two hands come back for
-  the puck, a pass, a loose puck near, defending, pokes and shots. `?twohand` turns it off; `stick_state_probe`
-  checks one-handed frames as their own state. `node tests/arm_strip.mjs out.png [query] [dist] [angle]` makes a strip.
+  Grip rig (`gripSolve`, runs last every frame, after the ragdoll): both hands always hold the stick. Two fixed grips
+  (bottom at `STICK_HOLD.bottom`, top `STICK_HOLD.slide` under the knob grip `gripT`); the stick pose so far gives
+  them; a grip out of reach (or closer than the elbow folds, `ANAT.elbowMax` 145 deg) or inside the torso moves the
+  stick, never the hand; each arm is solved onto the palm (`middle_01`) with the clip's hinge and an elbow pole down,
+  back and a little out (`ANAT.pole`), the hand turned to wrap the shaft, wrist clamped; the stick is seated in the
+  bottom glove and the top hand solved last onto the stick's own grip. The one-handed hold was removed (2026-11-20,
+  user: hands must always be on the stick). Hard check: `node tests/grip_check.mjs [60]` (every frame of a bot
+  match, each palm within 1 cm of its grip; prints the worst; exit 1 on any frame over).
+  `node tests/arm_strip.mjs out.png [query] [dist] [angle]` makes a strip.
   Verify poses with `node tests/arm_shots.mjs verify/roundN` (6 shots at the game camera) and a fresh subagent that
   sees only the images and the anatomy rules (verify/VERDICT.md); numeric probes are a secondary check.
   Verify arm changes with close-ups against `?noik` (`?sidecam`, `?sidecam=l`), not only numbers.
@@ -172,10 +172,8 @@
 - Ankle and knee (`GAIT.flick`, `toeUp`, `toeLen`, `modeEase`): the toe flicks down at full extension (heel lifts, target
   raised so the toe stays on the ice) and comes up as the skate swings forward; each knee bends out to its own hip's
   side (by where the skate is, a crossover flipped it into the other knee); a change of mode eases for `modeEase` s.
-- Arm follow-through and clearance (render.ts): elbow poles ease (`ANAT.elbowLag`, `lagPole`) so elbows trail the hands;
-  the free one-handed forearm lags in the chest's frame (`ONE_HAND.lag`, backed off if the fist would rise to the
-  shoulder); the bottom hand and the free fist are kept out of a torso capsule and off the helmet (`clearBody`,
-  `ANAT.botClear`, `fistClear`). Review images: verify/limbs_r1..r3 (verify/limbs_before is the baseline).
+- Hand clearance (render.ts `clearBody`): grips are kept out of a torso capsule and off the helmet (`ANAT.botClear`,
+  `ANAT.clear`). Review images: verify/limbs_r1..r3, verify/grip_r1..r3 (verify/limbs_before is the baseline).
 - No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
 - Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
 
