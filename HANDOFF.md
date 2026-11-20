@@ -1,3 +1,35 @@
+# Handoff: skater body looks lifeless at the game camera; try a different approach (2026-11-20)
+
+## The complaint (user, playtest on the live site, screenshot at the normal game camera)
+"The only parts of the skater that seem to have any dynamism are the legs and arms. The head and torso have no
+movement at all; they need some small dynamic movement so the motion feels natural and human." After PR #4 the
+user's reaction was "what have you actually changed?? ... clearly this isn't working". Treat it as NOT fixed.
+
+## What was tried (all live on main, PRs #3 and #4) and why it failed
+- PR #3: one-handed stick hold with the free arm swinging (`ONE_HAND`, `oneHand`, `?twohand`).
+- PR #4: `GAIT.body` (`?nobody`): chest dips with each push (+-2 deg), leans over the gliding skate (+-6 deg), breathes,
+  hips bob +-3 cm (`hipDip` 0.045), head keeps 60% of the chest's motion with a lag (+-4 deg roll).
+- Why it failed: every check was close-up (side and front strips at 4.5 m) or numeric. At the real game camera
+  (high, far, looking down; skaters are about 150 px tall) a few degrees and a few cm are 1-3 px: invisible. The root
+  cause found was real (the absolute lean in `gaitLegs` and the head levelling in `gaitUpper`/`headGaze` freeze the
+  chest and head every frame), but the fix was sized for realism, not for a stylised game seen from far away.
+- Also visible in the user's screenshot, not investigated: several skaters hold the stick out level at chest or
+  shoulder height (bottom right yellow, left purple, right purple), and "You" shows no stick. Check whether that is
+  the one-handed hold, a faceoff/pre-play pose or a bug.
+
+## Ideas for the fresh attempt (not tried)
+- Judge everything at the GAME camera, in motion (a short video or many consecutive full-frame game screenshots of a
+  skater crossing the screen), against the user's screenshot view. Not close-ups, not numbers alone.
+- Size motion for readability at that distance: stylised games exaggerate (shoulder rotation 15-25 deg per stride,
+  clear side-to-side weight shift of the whole upper body, head bob visible in silhouette, lean into turns).
+- Consider replacing the procedural upper-body layers with an authored, exaggerated skating clip (Blender via MCP,
+  keyframed on the existing rig) instead of stacking more corrections on the absolute-pose layers.
+- The layers that pin the upper body: `gaitLegs` absolute lean (pure pitch on spine_01), `gaitUpper` head levelling
+  (`GAIT.headLevel` 0.85), `headGaze` (absolute head pitch, yaw cap, zero roll), `microBlend` (tiny breathing). Any new
+  motion has to survive or replace them.
+- Probes from this round: `tests/torso_probe.mjs`, `tests/torso_trace.mjs` (numbers), `tests/arm_strip.mjs`
+  (close-up strips). None of them shows the game-camera view; add one that does.
+
 # Handoff: Rapier step 4 next (2026-11-19)
 
 ## State
