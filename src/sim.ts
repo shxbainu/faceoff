@@ -4,7 +4,7 @@
 // never reads anything back from the feedback system.
 import { ABILITIES, AbilityId, LOADOUT, ABILITY_AI } from './abilities';
 import type { FxFields } from './feedback/events';
-import { PHYS, puckStep, puckOut, skatersStep } from './physics/rink';
+import { PHYS, puckStep, puckOut, skatersStep, bladeWalls, sweepHit } from './physics/rink';
 
 export const L = 40; // half length (x). Was 22: skaters were ~10% of the rink width, the reference is ~3%
 export const W = 19; // half width (y, screen-down is +y)
@@ -84,7 +84,7 @@ export interface SkateStats { accel: number; topSpeed: number; glide: number; tu
  *  giveGoBoost    top-speed multiplier during that burst
  *  saucerCurve    sideways bend on saucer passes, away from the nearest defender (0 = straight) */
 export interface PassMods { speed: number; homing: number; oneTimerWindow: number; oneTouchHeat: number; giveGoTime: number; giveGoBoost: number; saucerCurve: number }
-export const PASS_BASE: PassMods = { speed: 1, homing: 2.2, oneTimerWindow: 0.28, oneTouchHeat: 75, giveGoTime: 1.3, giveGoBoost: 1.12, saucerCurve: 0 };
+export const PASS_BASE: PassMods = { speed: 1.4, homing: 2.2, oneTimerWindow: 0.28, oneTouchHeat: 75, giveGoTime: 1.3, giveGoBoost: 1.12, saucerCurve: 0 };
 
 /** a defender's blade on the ice, this far out along his facing plus stickAng (it blocks passes; the renderer
  *  draws the blade there) */
@@ -99,7 +99,7 @@ export const STICK_R = 1.3;
  *  lift: how long a lifted stick is useless; tie: how long a stick knocked aside stays out of position; tieOff: how far
  *  it is knocked; shaftR: shaft half-thickness for stick on stick; bodyR: what a blade cannot enter round a skater;
  *  step: swept-test spacing (units) so a fast puck or stick never tunnels; swing: fastest blade speed passed to the puck. */
-export const STICK = { blade: 0.5, r: 0.1, hands: [0.3, 0.28], reach: 2.3, catch: 17, recvCatch: 40, e: 0.35, tip: 0.85,
+export const STICK = { blade: 0.5, r: 0.1, hands: [0.3, 0.28], reach: 2.3, catch: 17, recvCatch: 56, e: 0.35, tip: 0.85,
   poke: { reach: 2.2, time: 0.26, speed: 8 }, lift: 0.5, tie: 0.35, tieOff: 0.6, shaftR: 0.08, bodyR: 0.45, step: 0.05, swing: 22,
   rest: [1.7, 0.45] };   // a stick not laid across a lane rests out front on the forehand side (forward, lateral)
 /** shots carry the shooter's skating: this share of his speed along the shot line is added to the puck */
@@ -108,7 +108,7 @@ export const SHOT = { carry: 0.35 };
  *  Set to where the clips themselves hold the blade (IK off, ?noik: about 1.2-1.8 ahead, 0.6-1.4 to the side),
  *  so the stick IK only makes small corrections; a target much closer to the feet made the IK drag the hands back
  *  through the torso. Re-measure with ?noik and window.__faceoff.blade(i) if the clips change. */
-export const CARRY = { fwd: 1.4, lat: 0.9, backLat: 0.45, dangleAmp: 0.3, dangleMin: 0.32, dangleRate: 8.5 };   // backLat: across the body on the backhand   // blade distance from the body
+export const CARRY = { wall: 0.3, fwd: 1.4, lat: 0.9, backLat: 0.45, dangleAmp: 0.3, dangleMin: 0.32, dangleRate: 8.5 };   // backLat: across the body on the backhand   // blade distance from the body
 export const SPIN_T = 0.42;
 /** Hits: how long a skater stays down, and stick drops. A big hit always knocks the stick loose, a normal knockdown
  *  half the time; he must skate over it to get it back (or a spare comes over the boards after STICK_SPARE s). */
@@ -947,7 +947,17 @@ export class Game {
   }
   private carryPoint(s: Skater, fw: number, la: number): [number, number] {
     const cf = Math.cos(s.face), sf = Math.sin(s.face);
-    return [clamp(s.x + cf * fw - sf * la, -L + 0.3, L - 0.3), clamp(s.y + sf * fw + cf * la, -W + 0.3, W - 0.3)];
+    let x = s.x + cf * fw - sf * la, y = s.y + sf * fw + cf * la;
+    // against the boards the puck slides along them to the side the stick is on, at the same reach, instead of being
+    // pushed back into his skates (where no stick can hold it)
+    if (!insideRink(x, y, CARRY.wall)) {
+      const r = Math.hypot(fw, la), a0 = Math.atan2(la, fw), side = Math.sign(la) || s.hand;
+      search: for (const sd of [side, -side]) for (let k = 1; k <= 10; k++) {   // in a corner his stick side can be walled too
+        const a = s.face + a0 + sd * k * 0.15, qx = s.x + Math.cos(a) * r, qy = s.y + Math.sin(a) * r;
+        if (insideRink(qx, qy, CARRY.wall)) { x = qx; y = qy; break search; }
+      }
+    }
+    return [clamp(x, -L + 0.3, L - 0.3), clamp(y, -W + 0.3, W - 0.3)];
   }
 
   /** Put this skater's stick collider where his hands and input have it this step: on the puck when carrying, out
@@ -987,8 +997,8 @@ export class Game {
         const push = STICK.bodyR * 0.6 - qd; x += (qx - o.x) / qd * push; y += (qy - o.y) / qd * push;
       }
     }
-    t.x = x; t.y = y; t.vx = t.vy = 0;
-    collideNet(t, STICK.r + 0.05, 0); collideBoards(t, STICK.r + 0.05, 0, false);
+    if (PHYS.rapier) [t.x, t.y] = bladeWalls(s.hx, s.hy, x, y);   // cast from the hands: stops at the first wall
+    else { t.x = x; t.y = y; t.vx = t.vy = 0; collideNet(t, STICK.r + 0.05, 0); collideBoards(t, STICK.r + 0.05, 0, false); }
     x = t.x; y = t.y;
     }
     s.pbx = was && Number.isFinite(s.bx) ? s.bx : t.x; s.pby = was && Number.isFinite(s.by) ? s.by : t.y;
@@ -1013,11 +1023,29 @@ export class Game {
     const n = Math.max(1, Math.min(24, Math.ceil(vl / STICK.step)));
     // the carrier's body between the poker and where his blade is: the reach is blocked (turning away shields the puck)
     const shielded = (cx: number, cy: number) => { const [qx, qy] = segClosest(s.x, s.y, cx, cy, car!.x, car!.y); return Math.hypot(qx - car!.x, qy - car!.y) < STICK.bodyR * 0.9; };
-    for (let i = 1; i <= n && car && car.team !== s.team; i++) {
+    const shaftR = STICK.r + STICK.shaftR + 0.08, clear = STICK.bodyR + 0.15;   // + the shaft rises off the ice
+    let hit = 0, sx = 0, sy = 0;   // 1: the puck on his blade, 2: his stick (shaft or blade)
+    if (car && car.team !== s.team && PHYS.rapier) {
+      // exact times of contact: the poke blade against the puck, and its centre against his shaft; the first one not
+      // shielded by his body counts, and the shaft only where it is clear of his body (not through his hips at the
+      // hands; checked at the contact, so a blade that starts the next step on the shaft is checked again there)
+      const tp = sweepHit(p.x, p.y, 0, 0, 0, s.pbx, s.pby, vx, vy, s.ba, undefined, undefined, 0.05);
+      const dx = car.bx - car.hx, dy = car.by - car.hy;
+      const ts = car.bOn ? sweepHit(s.pbx, s.pby, vx, vy, 1e-3, car.hx + dx / 2, car.hy + dy / 2, 0, 0, Math.atan2(dy, dx), Math.hypot(dx, dy) / 2, shaftR) : -1;
+      for (const [k, t] of (tp >= 0 && (ts < 0 || tp <= ts) ? [[1, tp], [2, ts]] : [[2, ts], [1, tp]])) {
+        const bx = s.pbx + vx * t, by = s.pby + vy * t;
+        if (t < 0 || shielded(bx, by)) continue;
+        if (k === 2) { [sx, sy] = segClosest(car.hx, car.hy, car.bx, car.by, bx, by); if (Math.hypot(sx - car.x, sy - car.y) <= clear) continue; }
+        hit = k; break;
+      }
+    } else for (let i = 1; i <= n && car && car.team !== s.team; i++) {
       const bx = s.pbx + vx * i / n, by = s.pby + vy * i / n;
       if (shielded(bx, by)) continue;
-      // the puck on his blade
-      if (this.toBlade(s, p.x, p.y, bx, by)[0] < STICK.r + PR + 0.05) {
+      if (this.toBlade(s, p.x, p.y, bx, by)[0] < STICK.r + PR + 0.05) { hit = 1; break; }
+      [sx, sy] = segClosest(car.hx, car.hy, car.bx, car.by, bx, by);
+      if (car.bOn && Math.hypot(sx - bx, sy - by) < shaftR && Math.hypot(sx - car.x, sy - car.y) > clear) { hit = 2; break; }
+    }
+    if (car && hit === 1) {   // the puck on his blade
         s.pokeHit = true;
         if (car.settle > 0 || car.spinT > 0) { this.ev({ t: 'bump', x: p.x, y: p.y }); return; }   // a just-settled puck and a spin are protected
         const a = Math.atan2(vy, vx);
@@ -1027,11 +1055,8 @@ export class Game {
         this.ev({ t: 'poke', x: car.x, y: car.y }); this.ev({ t: 'stick', text: 'poke', x: p.x, y: p.y });
         this.fx({ t: 'check_landed', i: 0.25, tag: 'poke', team: s.team, id: s.id, vid: car.id, x: car.x, y: car.y });
         return;
-      }
-      // his stick: shaft or blade
-      const [sx, sy] = segClosest(car.hx, car.hy, car.bx, car.by, bx, by);
-      // (the shaft where it is clear of his body: not through his hips at the hands)
-      if (car.bOn && Math.hypot(sx - bx, sy - by) < STICK.r + STICK.shaftR + 0.08 && Math.hypot(sx - car.x, sy - car.y) > STICK.bodyR + 0.15) {   // + the shaft rises off the ice
+    }
+    if (car && hit === 2) {   // his stick: shaft or blade
         s.pokeHit = true;
         const fx = Math.cos(car.face), fy = Math.sin(car.face), dC = Math.hypot(s.x - car.x, s.y - car.y) || 1;
         if (((s.x - car.x) * fx + (s.y - car.y) * fy) / dC < -0.2 && car.spinT <= 0 && car.settle <= 0) {
@@ -1055,7 +1080,6 @@ export class Game {
           }
         }
         return;
-      }
     }
     if (s.pokeT <= 0) { s.pokeHit = true; if (car && car.team !== s.team && Math.hypot(car.x - s.x, car.y - s.y) < 3) this.ev({ t: 'bump', x: p.x, y: p.y }); }
   }
@@ -1079,11 +1103,13 @@ export class Game {
       if (p.checked.has(s.id) && s.team !== p.lastTeam) continue;
       const bmx = s.bx - s.pbx, bmy = s.by - s.pby;
       if (Math.hypot(x0 - s.pbx, y0 - s.pby) > STICK.blade + Math.hypot(mx, my) + Math.hypot(bmx, bmy) + 1) continue;   // nowhere near
-      const n = Math.max(1, Math.min(48, Math.ceil(Math.max(Math.hypot(mx, my), Math.hypot(bmx, bmy)) / STICK.step)));
-      for (let i = 0; i <= n; i++) {
-        const t = i / n, [d, qx, qy] = this.toBlade(s, x0 + mx * t, y0 + my * t, s.pbx + bmx * t, s.pby + bmy * t);
-        if (d < STICK.r + PR) { if (t < bt) { bt = t; best = s; bqx = qx; bqy = qy; } break; }
+      let t = -1;
+      if (PHYS.rapier) t = sweepHit(x0, y0, mx, my, 0, s.pbx, s.pby, bmx, bmy, s.ba);   // exact time of contact
+      else {
+        const n = Math.max(1, Math.min(48, Math.ceil(Math.max(Math.hypot(mx, my), Math.hypot(bmx, bmy)) / STICK.step)));
+        for (let i = 0; i <= n; i++) if (this.toBlade(s, x0 + mx * i / n, y0 + my * i / n, s.pbx + bmx * i / n, s.pby + bmy * i / n)[0] < STICK.r + PR) { t = i / n; break; }
       }
+      if (t >= 0 && t < bt) { bt = t; best = s; [, bqx, bqy] = this.toBlade(s, x0 + mx * t, y0 + my * t, s.pbx + bmx * t, s.pby + bmy * t); }
     }
     if (!best) return false;
     const s = best, cx = x0 + mx * bt, cy = y0 + my * bt;
@@ -1532,7 +1558,7 @@ export class Game {
         mass.push(off(s) ? 0 : 1 + 0.12 * Math.hypot(s.vx, s.vy) + (owner === s ? 0.8 : 0));
         rest.push(s.stun > 0 ? 0.4 : 0.15);
       }
-      const wall = skatersStep(S, mass, rest, dt);
+      const wall = skatersStep(S, mass, rest, dt, this.goalies);
       for (let i = 0; i < S.length; i++) {
         const s = S[i], pre = Math.hypot(pv[i * 2], pv[i * 2 + 1]);
         if (wall[i] && s.stun > 0 && pre > 6) this.ev({ t: 'slam', x: s.x, y: s.y, n: pre, id: s.id });
@@ -1582,8 +1608,8 @@ export class Game {
         for (const k of [a, b]) if (k !== owner) k.disengage = 0.7;
       }
     }
-    // the goalie holds the crease: skaters slide off
-    for (const g of this.goalies) for (const s of S) {
+    // the goalie holds the crease: skaters slide off (with Rapier, the goalies are bodies in the solve)
+    if (!rap) for (const g of this.goalies) for (const s of S) {
       if (s.air || s.out > 0) continue;
       const dx = s.x - g.x, dy = s.y - g.y, d = Math.hypot(dx, dy), m = SR + 0.55;
       if (d >= m || d < 1e-4) continue;

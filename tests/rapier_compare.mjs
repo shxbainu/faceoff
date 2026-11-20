@@ -1,5 +1,6 @@
 // PHYSICS_PLAN.md: the hand-written physics against the Rapier version over seeded bot matches, in Node.
 // Reports what a player would feel (goals, shots, saves, board and post hits, puck speed off the boards) and checks
+// stick contacts (trap, deflect, tip, poke, lift, tie), and checks
 // the Rapier run is deterministic (two runs, same fingerprint) and the puck never leaves the rink.
 // Usage: node tests/rapier_compare.mjs [--matches 8] [--seed 777]
 import { build } from 'esbuild';
@@ -17,7 +18,7 @@ const noInput = { mx: 0, my: 0, pass: false, shoot: false, check: false, burst: 
 const r6 = v => Math.round(v * 1e6);
 function run(rapier) {
   S.PHYS.rapier = rapier;
-  const h = createHash('sha256'), t = { goals: 0, shots: 0, saves: 0, board: 0, post: 0, escapes: 0, boardSpeed: 0, passes: 0, recv: 0, hits: 0, hitN: 0, slams: 0, bodyOut: 0, bodyOverlap: 0, bodyDeep: 0, steps: 0 };
+  const h = createHash('sha256'), t = { goals: 0, shots: 0, saves: 0, board: 0, post: 0, escapes: 0, boardSpeed: 0, passes: 0, recv: 0, hits: 0, hitN: 0, slams: 0, bodyOut: 0, bodyOverlap: 0, bodyDeep: 0, trap: 0, deflect: 0, tip: 0, poke: 0, lift: 0, tie: 0, steps: 0 };
   for (let m = 0; m < MATCHES; m++) {
     const powers = Object.fromEntries(S.POWERS.map(p => [p.id, 0]));
     if (m % 2) { powers.split = 1; powers.shock = 1; powers.curve = 1; }
@@ -28,6 +29,7 @@ function run(rapier) {
       for (const e of g.events) {
         if (e.t === 'goal') t.goals++; else if (e.t === 'shot') t.shots++; else if (e.t === 'save') t.saves++;
         else if (e.t === 'post') t.post++; else if (e.t === 'pass') t.passes++; else if (e.t === 'recv') t.recv++; else if (e.t === 'slam') t.slams++; else if (e.t === 'hit' && e.n) { t.hits++; t.hitN += e.n; } else if (e.t === 'board') { t.board++; t.boardSpeed += e.n ?? 0; }
+        else if (e.t === 'stick' && e.text in t) t[e.text]++;
       }
       g.events.length = 0;
       const st = [g.phase, g.score[0], g.score[1]];
@@ -41,7 +43,7 @@ function run(rapier) {
       if (g.phase === 'play') for (let i = 0; i < g.skaters.length; i++) for (let j = i + 1; j < g.skaters.length; j++) {
         const a = g.skaters[i], b = g.skaters[j];
         if (a.air || b.air || a.out > 0 || b.out > 0 || a.boxed > 0 || b.boxed > 0) continue;
-        if (Math.hypot(a.x - b.x, a.y - b.y) < S.BODY * 2 * 0.66) t.bodyOverlap++;
+        if (Math.hypot(a.x - b.x, a.y - b.y) < S.BODY * 2 * 0.66) { t.bodyOverlap++; t.ov ??= `match ${m} step ${k} skaters ${a.id},${b.id} at ${a.x.toFixed(1)},${a.y.toFixed(1)} stun ${a.stun.toFixed(2)},${b.stun.toFixed(2)}`; }
       }
       h.update(st.join(','));
     }
@@ -56,11 +58,11 @@ row('old', old); row('rapier', rap);
 let fail = 0;
 const ok = (c, msg) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${msg}`); if (!c) fail++; };
 ok(rap.fp === rap2.fp, `Rapier is deterministic (${rap.fp} twice)`);
-ok(rap.escapes === 0, `the puck never leaves the rink with Rapier (${rap.escapes} steps outside; old ${old.escapes})`);
+ok(rap.escapes === 0, `the puck never leaves the rink with Rapier (${rap.escapes} steps outside; old ${old.escapes}) ${old.esc ?? ''}`);
 // Rapier's contacts are soft: a skater can sink a hair into the boards for a step (the old clamp was exact)
 ok(rap.bodyDeep <= 0.15, `skaters stay inside the boards with Rapier (deepest ${rap.bodyDeep} into the boards, ${rap.bodyOut} steps past 0.05; old ${old.bodyDeep}) ${rap.bout ?? ''}`);
-ok(rap.bodyOverlap <= Math.max(5, old.bodyOverlap * 1.5), `skaters don't sink into each other (deep overlaps: old ${old.bodyOverlap}, Rapier ${rap.bodyOverlap})`);
-for (const k of ['goals', 'shots', 'saves', 'board', 'post', 'boardSpeed', 'passPct', 'hits', 'hitN', 'slams']) {
+ok(rap.bodyOverlap <= Math.max(5, old.bodyOverlap * 1.5), `skaters don't sink into each other (deep overlaps: old ${old.bodyOverlap}, Rapier ${rap.bodyOverlap}) ${rap.ov ?? ''}`);
+for (const k of ['goals', 'shots', 'saves', 'board', 'post', 'boardSpeed', 'passPct', 'hits', 'hitN', 'slams', 'trap', 'deflect', 'tip', 'poke', 'lift', 'tie']) {
   // counts are noisy (one changed contact changes the whole match after it): allow 25%, or 3 standard deviations
   // of a count (3 sqrt n) for rare events; other seeds (--seed) show posts and hits swing both ways
   const a = old[k], b = rap[k], rate = k === 'boardSpeed' || k === 'passPct' || k === 'hitN';

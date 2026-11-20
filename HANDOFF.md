@@ -1,14 +1,16 @@
-# Handoff: Rapier step 3 next (2026-11-19)
+# Handoff: Rapier step 4 next (2026-11-19)
 
 ## State
 
 - Live site: PR #2 merged (`9096de0`), https://shxbainu.github.io/faceoff/, step 1 only.
-- Branch `skating-sticks-ragdolls`: Rapier step 2 (skaters) done and verified, **not committed or pushed**. Files:
-  `src/physics/rink.ts`, `src/sim.ts` (`collide`, `updateSkater`, sandbox), `tests/rapier_compare.mjs`,
-  `tests/rapier_entry.ts`, `tests/move_probe.mjs` (`--rapier`), PHYSICS_PLAN.md, CLAUDE.md, this file. Ask before
+- Branch `skating-sticks-ragdolls`: step 2 committed (`e52bdff`). Step 3 (sticks) done and verified, **not
+  committed**: `src/physics/rink.ts`, `src/sim.ts` (`placeBlade`, `bladeSweep`, `pokeContact`),
+  `tests/stick_physics_probe.mjs` (`--rapier`), `tests/rapier_compare.mjs` (stick contact counts), docs. Ask before
   committing; going live (merge to main) needs the user's word.
-- Sim fingerprint without `?rapier`: `8f6475929cc84fc5` (`node tests/fx_determinism.mjs`).
+- Sim fingerprint without `?rapier`: `3b74b3d094685dbe` (`node tests/fx_determinism.mjs`), since the carried puck slides along the boards.
 - The user was playtesting the live site (step 1). Wait for their notes before tuning feel.
+- Since step 2, Rapier traps about 20% fewer pucks than the old physics (PHYSICS_PLAN.md step 3 table). Not a step 3
+  change; watch it when tuning.
 
 ## Physics: moving onto Rapier (PHYSICS_PLAN.md)
 
@@ -17,13 +19,30 @@
   step; the game's rules (checks, momentum keep, catch/deflect) stay in sim.ts; behind `?rapier`; compare old vs
   new over bot matches with `node tests/rapier_compare.mjs --matches 16` on 2-3 seeds (`--seed`): single runs of 8
   matches are noisy, and one changed contact changes the rest of a match.
-- **Next: step 3, sticks.** Kinematic blade and shaft capsules (`placeBlade`'s push-out loop becomes shape casts),
-  puck vs blade contacts into the existing trap, deflect, tip and block rules (`bladeSweep`, `pokeContact`). Check
-  with `node tests/stick_physics_probe.mjs` (add a `--rapier` switch like move_probe) and rapier_compare.
+- **Next: step 4, ragdolls** (`@dimforge/rapier3d-compat`, display only, client side; keep the blend into the
+  get-up). Check with `node tests/ragdoll_probe.mjs`. Then step 5: delete the old physics paths.
 - Rapier skaters can sink up to ~0.14 into the boards for a step (soft contacts; rare). If it shows, project them
   out after the step the way `puckOut` does for the puck.
 
 ## Open issues
+
+- User playtest 2026-11-19 (on `?rapier`): "limbs glitched", "puck inconsistent with the stick", "left arm moves
+  unnaturally with the body". Measured: the same with and without Rapier (stick_state_probe, stick_probe), so it is
+  the render layer. Puck off the drawn blade happens only in the slapshot wind-up (the clip lifts the stick while the
+  sim carries the puck along; `stick_probe` now prints where). Left arm: the top hand popped (jumped in single frames) because the stick's target, the top hand's spot and the fitted stick top switched instantly; now eased (`IK_EASE`), see CLAUDE.md and `tests/arm_motion_probe.mjs`. Waiting on the user's playtest.
+  Fixed from the same notes: faster passes, spin move on simple controls (L with the puck was sent as a poke).
+- Second playtest 2026-11-19: "pretty good". Fixed from it: sprint squish (lean at top speed 0.66 -> 0.52 rad,
+  hips 0.75 -> 0.79 leg lengths in GAIT), goalie save timing and a jolt on contact, shots drawn in the air and goals
+  drawn into the net (CLAUDE.md "Puck height and goalie saves"). Not playtested yet.
+- Third playtest 2026-11-19: puck off the stick at the boards (fixed in the sim: `carryPoint` slides the puck along
+  the boards to the stick side instead of into the skates; it was 0.4 from the body skating into the boards, now 1.3+),
+  and "arms not in sync with the body". Measured (`tests/arm_motion_probe.mjs`, frame-to-frame hand vs shoulder) and
+  seen (`tests/arm_strip.mjs`): both arms held straight down to a rigid stick pinned on the ice while the legs stride;
+  the clip's own arms pump with the stride. The stick target now turns with the chest and rides the top shoulder's
+  swing (ANAT.ride, follow): forward sync 0.21 -> 0.36, sideways still about 0.2 (clip 0.7-0.9). The user picked
+  one-handed skating without the puck (`ONE_HAND` in render.ts, CLAUDE.md): one-handed frames now match the clip's
+  sync (stride fwd/side 0.54/0.68 vs clip 0.52/0.70; cross 0.78/0.92 vs 0.78/0.94), about 75% of no-puck stride
+  frames. Strips in verify/one_hand. Not playtested yet.
 
 - `tests/fx_probe.mjs` fails "the full sweep finishes": the match ends during the effects sweep (sweep has a 120 s
   deadline and `setClock(600)` now, so it no longer hangs). Cause not found yet.

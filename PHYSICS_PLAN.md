@@ -138,3 +138,50 @@ The frame is now a 0.03 wall whose inner face is at 2.145 (the goal rule's puck 
 Single-skater checks in `node tests/move_probe.mjs --rapier` (skating timings, stop, turns, knockback against
 checker speed) give the same numbers as without. Browser: 60 fps either way, no errors, no frames over 40 ms.
 With the flag off the fingerprint is unchanged (`8f6475929cc84fc5`).
+
+## Step 3 results (2026-11-19): sticks, behind `?rapier`
+
+`src/physics/rink.ts` adds two queries; game rules stay in sim.ts:
+- `bladeWalls` (in `placeBlade`): the blade's ball is cast from the hands toward where it is aimed and stops at the
+  first board or net, so a blade can't reach through one (the old push-out could pop it out the far side of a net).
+  Each net also has a closed sensor box in the puck world: the puck passes through it, blade casts don't, so no blade
+  reaches in through the mouth. `puckOut` ignores sensors. Pushes off other skaters' bodies stay in sim.ts (they
+  have a rule: the shaft gets a little give over the hips).
+- `sweepHit` (in `bladeSweep` and `pokeContact`): exact time of contact between the moving puck and each moving
+  blade capsule (Rapier's two-shape cast), replacing up to 48 samples per blade. The trap, deflect, tip and block
+  rules run on that contact unchanged. Pokes cast the poke blade against the puck and against the carrier's
+  whole shaft; the first contact not shielded by his body counts, and a shaft contact counts only where its closest
+  point is clear of his body (the old rule, checked at the contact).
+- Like the old sweep, the blade doesn't turn within a step.
+
+`node tests/stick_physics_probe.mjs --rapier`: all 22 checks pass (as without). Two failed on the first try and
+were fixed: a blade reached into the net through its mouth (the puck world's net is open; fixed with the sensor
+boxes), and a poke from behind lifted a stick the carrier's body shielded (a clipped-shaft shortcut wasn't the old
+rule).
+
+`node tests/rapier_compare.mjs --matches 16` (now also counts stick contacts) on seeds 777, 101, 4242:
+
+| 48 matches | old | step 2 | step 3 |
+|---|---|---|---|
+| traps | 183 | 144 | 146 |
+| deflects | 341 | 305 | 320 |
+| tips | 15 | 13 | 17 |
+| pokes / ties | 20 / 80 | 17 / 76 | 21 / 72 |
+| goals / shots | 155 / 556 | 167 / 498 | 175 / 510 |
+
+Step 3 doesn't move stick contacts compared with step 2. Rapier traps about 20% fewer pucks than the old physics
+since step 2 (not counted then), with fewer shots; one seed's fewer saves and board hits was also already there in
+step 2. Deterministic on every seed; the puck never leaves the rink. Sim cost in Node: 36 -> 52 us a step with
+Rapier (old 13-20), about 0.03 ms a frame. Browser: 60 fps with and without `?rapier`, no errors, worst frame
+23-26 ms either way. With the flag off the fingerprint is unchanged (`8f6475929cc84fc5`).
+
+Found after step 3 (2026-11-19), a step 2 bug: the goalie's "skaters slide off the crease" push ran after Rapier's
+step and moved skaters without Rapier knowing, so a skater squeezed between the goalie and the net was pushed into
+another skater every step (49 steps of deep overlap in one match once passes got faster). The goalies are now
+kinematic balls in the skater world (`skatersStep(..., goalies)`), placed at the goalie each step (no state kept,
+so the result doesn't depend on what ran before), and the old push only runs without Rapier. Overlaps 0 on all
+three seeds, deterministic. Skaters touching a goalie don't count as a wall hit (no slam).
+
+Faster passes (`PASS_BASE.speed` 1 -> 1.4, `STICK.recvCatch` 40 -> 56): release about 26 -> 37 u/s, a typical pass
+lands in 0.20 s instead of 0.28-0.32; pass completion 70% -> 75-79% in both. New fingerprint without `?rapier`:
+`5ee778febb9f033e`. Checks landed under Rapier are lower than old over three seeds (145 vs 179); watch it.
