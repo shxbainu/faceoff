@@ -470,7 +470,7 @@ function perf() {
     body: (i: number) => view.bodyFrame(i),
     head: (i: number) => view.headState(i),
     arms: (i: number) => view.armState(i),
-    limbs: (i: number) => view.limbs(i),
+    limbs: (i: number) => view.limbs(i), torso: (i: number) => view.torso(i),
     puckDrawn: () => view.puckDrawn(),
     stick: (i: number) => view.stickState(i),
     // movement, facing, handedness and AI state for every skater (tests/move_probe.mjs, tests/hockey_probe.mjs)
