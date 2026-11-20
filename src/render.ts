@@ -58,6 +58,8 @@ interface SkaterView {
   /** big check: ragdoll (pending start, the body, its bones, the sim position it last rode from); light check: stagger */
   ragStart?: { nx: number; ny: number; imp: number; kind: HitKind }; rag?: Ragdoll; ragBones?: THREE.Object3D[]; ragNeck?: THREE.Object3D | null; ragX?: number; ragZ?: number;
   stag?: { t: number; dx: number; dy: number; a: number };
+  /** the chest's stride motion this frame (pitch, roll, rad) and the head's eased share of it (gaitLegs, headGaze) */
+  dyn?: { p: number; r: number; hp: number; hr: number };
   gait?: { mode: string; ph: number; amp: number; w: number; turn: number; tgt: number[][]; rig?: GaitRig; contact: boolean[] };
 }
 interface GaitRig { leg: number; footY: number; bones: { th: THREE.Object3D; ca: THREE.Object3D; ft: THREE.Object3D; r: boolean }[]; pelvis: THREE.Object3D; sp1: THREE.Object3D; sp3: THREE.Object3D;
@@ -86,9 +88,13 @@ export const GAIT = {
   out: [0.25, 0.6], inW: 0.09, set: 0.16, back: [0.18, 0.52], lift: 0.06,
   // hip (thigh joint) height above the blade, in leg lengths: about a 115 degree knee standing or gliding, about
   // 100 degrees at full speed; dips a little as each push extends. Absolute, so the clip's own crouch can't stack.
-  hip: [0.85, 0.79], hipDip: 0.025, sway: 0.4, toeMax: 0.7, blend: 14,
+  hip: [0.85, 0.79], hipDip: 0.045, sway: 0.4, toeMax: 0.7, blend: 14,
   // torso lean from vertical (rad, pelvis to neck): ready, glide, stride at a crawl and at top speed, backward, stop
   lean: { ready: 0.22, glide: 0.33, stride: [0.45, 0.52], back: 0.3, stop: 0.2, cross: 0.6 },
+  // the body over each push (rad; scaled by the push's reach): pitch dips the chest as a push extends, roll leans the
+  // chest over the gliding skate, breath a slow chest rise in every mode; head: share of the chest's motion the head
+  // keeps (the rest is stabilised), eased at headLag per s so it trails the chest a little
+  body: { pitch: 0.1, roll: 0.4, breath: 0.015, breathHz: 0.3, head: 0.6, headLag: 10 },
   headLevel: 0.85,   // how level the head is held over the stride (the clip itself carries the hip and shoulder counter-rotation)
   glideW: 0.17, readyW: 0.24, stopW: 0.3, backOut: 0.42, crossOut: 0.5, crossOver: 0.28,
 };
@@ -1369,7 +1375,14 @@ export class View {
     const L = GAIT.lean, leanWant = g.mode === 'stride' ? L.stride[0] + (L.stride[1] - L.stride[0]) * k : g.mode === 'cross' ? L.cross
       : g.mode === 'back' ? L.back : g.mode === 'stop' ? L.stop : g.mode === 'glide' ? L.glide : L.ready;
     const r = R.neck.getWorldPosition(W.b).sub(R.pelvis.getWorldPosition(W.c)), leanNow = Math.atan2(r.dot(fwd), r.y);
-    this.rotWorld(R.sp1, W.c.crossVectors(up, fwd), (leanWant - leanNow) * g.w);   // a pure pitch about the side axis (an axis off r x fwd also yawed the shoulders)
+    // and the body moves with each push: the chest dips as a push extends and leans over the gliding skate (with the
+    // hips), and breathes; held dead still it read as a mannequin on moving legs
+    const Bd = GAIT.body, m0 = v.mb, still = DBG.has('nobody') ? 0 : 1, dP = still * (Bd.pitch * pushX * g.amp + Bd.breath * Math.sin(this.t * Math.PI * 2 * Bd.breathHz + (m0?.phase ?? 0))) * g.w;
+    const dR = still * (stepping ? Bd.roll * latMean / GAIT.out[1] : 0) * g.w;
+    this.rotWorld(R.sp1, W.c.crossVectors(up, fwd), (leanWant - leanNow) * g.w + dP);   // a pure pitch about the side axis (an axis off r x fwd also yawed the shoulders)
+    this.rotWorld(R.sp1, fwd, dR);   // a positive turn about fwd moves the neck toward -side, the way the hips shift for latMean > 0
+    const dy = (v.dyn ??= { p: 0, r: 0, hp: 0, hr: 0 }), ke = 1 - Math.exp(-rdt * Bd.headLag);
+    dy.p = dP; dy.r = dR; dy.hp += (dP - dy.hp) * ke; dy.hr += (dR - dy.hr) * ke;
     // legs
     R.bones.forEach((b, i) => {
       const [lat, fore, lift, yaw] = g.tgt[i];
@@ -1507,6 +1520,10 @@ export class View {
     const want = this.hgC.copy(up).addScaledVector(f, -up.dot(f)); if (want.lengthSq() < 1e-4) return;
     hu.addScaledVector(f, -hu.dot(f));
     this.rotWorld(head, f.clone().multiplyScalar(Math.sign(this.gZ.crossVectors(hu, want).dot(f)) || 1), hu.angleTo(want));
+    // keep a share of the chest's stride motion, a beat late, so the head rides the body instead of floating level
+    const dy = v.dyn; if (!dy || v.gait?.mode === 'off') return;
+    const fw = this.hgA.set(Math.cos(bf), 0, Math.sin(bf));
+    this.rotWorld(head, this.hgB.crossVectors(up, fw), dy.hp * GAIT.body.head); this.rotWorld(head, fw, dy.hr * GAIT.body.head);
   }
   /** Arm IK that respects the elbow as a hinge. 1: bend or straighten the elbow only about its own bend axis (the
    *  clip's, kept in the upper arm's frame) to the angle the reach needs; 2: swing the whole arm from the shoulder so
@@ -1723,6 +1740,18 @@ export class View {
     const dA = (x: number) => +(Math.atan2(Math.sin(x), Math.cos(x)) * 180 / Math.PI).toFixed(0);
     const sq = (y: number) => { const d = dA(y - face) ; return Math.abs(d) > 90 ? dA((y - face) + Math.PI) : d; };   // line direction mod 180
     return { knee, lean: +lean.toFixed(0), hip: +hip.toFixed(2), pts, twist: Math.abs(dA(shYaw - hipYaw)) > 90 ? 180 - Math.abs(dA(shYaw - hipYaw)) : Math.abs(dA(shYaw - hipYaw)), hipsOff: sq(hipYaw + Math.PI / 2), chestOff: sq(shYaw + Math.PI / 2) };
+  }
+  /** test hook: chest and head angles in the heading frame (rad) and heights (m): chest pitch/roll from the
+   *  pelvis-to-neck line, shoulder-line yaw; head pitch/yaw/roll from the visor and helmet axes */
+  torso(i: number) {
+    const v = this.skaters[i], R = v?.gait?.rig, an = v && this.anatOf(v); if (!v || !R || !an) return null;
+    v.root.updateMatrixWorld(true);
+    const P = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3()), face = -v.body.rotation.y;
+    const f = new THREE.Vector3(Math.cos(face), 0, Math.sin(face)), sd = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), f);
+    const r = P(R.neck).sub(P(R.pelvis)), yawOf = (d: THREE.Vector3) => Math.atan2(d.dot(sd), d.dot(f));
+    const sh = P(R.ua[1]).sub(P(R.ua[0])), hf = an.head.clone().transformDirection(R.head.matrixWorld), hu = an.headUp.clone().transformDirection(R.head.matrixWorld);
+    return { cp: Math.atan2(r.dot(f), r.y), cr: Math.atan2(r.dot(sd), r.y), cy: Math.atan2(Math.sin(yawOf(sh) - Math.PI / 2), Math.cos(yawOf(sh) - Math.PI / 2)),
+      ny: P(R.neck).y - v.root.position.y, hp: Math.asin(Math.max(-1, Math.min(1, hf.y))), hy: yawOf(hf), hr: Math.atan2(hu.dot(sd), hu.y), hh: P(R.head).y - v.root.position.y, mode: v.gait!.mode, ph: v.gait!.ph };
   }
   /** test hook: world positions of the two blades (foot bones) and the body's facing, for foot-slide checks */
   feet(i: number) {

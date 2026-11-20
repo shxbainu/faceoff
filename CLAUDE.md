@@ -163,6 +163,12 @@
   clip only; the look layer turns mostly the head (`HEAD.chest` is the spine's share). Extra counter-rotation or a
   bigger chest share twisted the shoulders 30-45 degrees off the hips. `__faceoff.gait()` reports knee, lean, hip,
   twist (shoulder line vs hip line). `?sidecam` puts the camera beside your skater; `?nolook` turns the look off.
+- Body motion (`GAIT.body`, in `gaitLegs` and the end of `headGaze`): the absolute lean and the head levelling had
+  frozen the chest and head (chest pitch +-0.5 deg, head pitch and roll under 0.5 deg, bob +-1 cm in a sprint). Now
+  the chest dips as each push extends (`pitch`), leans over the gliding skate (`roll`) and breathes (`breath`); the
+  hips bob more (`hipDip` 0.045); the head keeps `head` (0.6) of the chest's motion, eased at `headLag` so it trails.
+  `?nobody` turns it off. Checks: `node tests/torso_probe.mjs [query]` (per mode, p95 motion off a 0.4 s mean and
+  p99 per-frame step) and `node tests/torso_trace.mjs` (frame by frame in a straight sprint).
 - No free human-made hockey skating exists (checked 2026-11-18, see PLAN.md); look for one before re-authoring.
 - Checks: `node tests/gait_probe.mjs` (and `--old`): skate spread, alternation and blade skid per phase, close-ups.
 
