@@ -79,3 +79,9 @@ Numeric probe (extra check): stick_state_probe fails one rule, a crossover elbow
 - 5_backhand_carry FAIL: shaft flat at waist height through or behind the hips, one glove visible, blade off the ice.
 - 6_mid_shot FAIL: a second shaft by the thigh with no glove on it (may be the player behind), the other glove low at the hip.
 - 1 of 4 (strict 0). Numbers: tests/grip_check.mjs 60 s, 93-94 skater-frames over 1 cm (worst 32 cm), 22-25 capsule frames.
+
+## Stick setup fixes (verify/hold_r2/low), fresh-context reviewer (2026-11-21)
+- 1_sprint CAN'T JUDGE (from behind, gloves and blade hidden).
+- 3_tight_turn PASS. 5_backhand_carry PASS (borderline: top glove and knob tight to the chest). 6_mid_shot PASS
+  (borderline: knob past the top hand toward the hip, top forearm across the belly).
+- 3 of 4 (strict 1), was 1 of 4 (strict 0). Nothing broken-looking.
