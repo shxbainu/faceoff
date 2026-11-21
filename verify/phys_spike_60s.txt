@@ -1,0 +1,16 @@
+rigs 12 {"rigs":12,"frames":3600,"ms":{"mean":1.228,"p95":1.4,"max":1.6},"angDeg":{"p50":0.021,"p95":2.216,"max":179.952},"posM":{"p95":0.024,"max":1.345},"bladeM":{"p99":0.05,"max":0.053},"tgrip":{"p50":0,"p95":0,"max":0.086},"tgap":{"1:hand_l-stick":8,"8:hand_l-stick":10,"3:hand_l-stick":4,"6:hand_l-stick":1,"0:hand_l-stick":3},"gapM":2.4582,"jumps":2990,"fast":983,"nan":0}
+grip: frames x skaters 35458  over 1 cm 1802  worst 245.642 cm  (skater 6 bottom 2.2448 top 2.4564 clip cross_l gait cross)
+pass cost mean < 2 ms
+pass cost p95 < 3 ms
+FAIL grip every frame < 1 cm
+pass bone angle p50 < 5 deg
+pass bone angle p95 < 15 deg
+pass pelvis/palms p95 < 3 cm
+pass no NaN
+FAIL joint gaps < 2 cm
+FAIL no error jumps > 20 deg
+FAIL no part > 30 m/s
+FAIL blade p99 < 3 cm
+pass blade worst < 6 cm
+pass no errors
+errors 0 []

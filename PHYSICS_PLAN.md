@@ -185,3 +185,63 @@ three seeds, deterministic. Skaters touching a goalie don't count as a wall hit 
 Faster passes (`PASS_BASE.speed` 1 -> 1.4, `STICK.recvCatch` 40 -> 56): release about 26 -> 37 u/s, a typical pass
 lands in 0.20 s instead of 0.28-0.32; pass completion 70% -> 75-79% in both. New fingerprint without `?rapier`:
 `5ee778febb9f033e`. Checks landed under Rapier are lower than old over three seeds (145 vs 179); watch it.
+
+## Step 4, revised (2026-11-20): powered ragdolls, display only
+
+The user asked for real physics on the characters instead of fixed attachments and set animations. Every skater gets a
+3D Rapier body (`@dimforge/rapier3d-compat`, client only, not deterministic, the sim never reads it): about 16 parts
+joined at the joints, each pulled toward its animated pose every step (velocity drive, like Unreal's world-space
+physics controls), so contacts and hits push the body off the pose and the drive pulls it back. The stick is its own
+body, joined to both palms. The existing layers (clip, gait, look, stick IK, grip rig) become the target pose.
+
+**Sim stays in charge.** The 2D sim decides every pass, block, poke and check from its own stick and puck colliders.
+The display world has no puck, so a drawn stick can never block or trap anything. The drawn stick is pulled hard to
+the sim's stick pose (the IK stick, aimed at the sim blade) and may only be pushed off it by contacts within a cap; past
+the cap it is put back. Measured: drawn blade against the sim blade every frame.
+
+**Spike pass/fail, set before building** (`?phys` on all skaters, `?phys=i` one; 60 s bot match, Chromium, this Mac):
+
+| Check | Pass |
+|---|---|
+| Physics cost per frame, 12 skaters (targets, step, write-back) | mean < 2 ms, p95 < 3 ms |
+| Palm to its grip on the drawn stick, from the physics result, no IK snap after | every frame < 1 cm |
+| Drift from the animated pose, outside hits and falls | bone angle p50 < 5 deg, p95 < 15 deg; pelvis and palms p95 < 3 cm |
+| Stability | no NaN; joint gaps < 2 cm; no frame where a bone's error jumps > 20 deg; no part faster than 30 m/s |
+| Drawn blade against the sim blade | p99 < 3 cm, worst < 6 cm |
+| Close-ups at the game camera, fresh-context reviewer | no creases or spikes, both hands on own stick, elbows natural |
+
+Any fail: report and stop, no rollout.
+
+### Spike result (2026-11-20): FAIL, not rolled out
+
+`src/physics/body.ts`, behind `?phys` (off by default). 12 rigs (10 skaters, 2 goalies), 19 bodies each plus a stick
+body, ball joints, velocity drive toward the layered pose, one collision-group bit per rig (contact hooks never fire
+in rapier3d-compat 0.21, checked in Node). `node tests/phys_spike.mjs 60`, this Mac, Chromium:
+
+| Check | Result | |
+|---|---|---|
+| Cost per frame, 12 rigs | mean 1.23 ms, p95 1.4 ms | pass |
+| Palm to grip, physics result | 1802 of 35458 skater-frames over 1 cm, worst 2.46 m | FAIL |
+| Bone angle off the pose | p50 0.02 deg, p95 2.2 deg | pass |
+| Pelvis and palms off the pose | p95 2.4 cm | pass |
+| NaN | 0 | pass |
+| Joint gaps | worst 2.46 m | FAIL |
+| Error jumps > 20 deg / parts > 30 m/s | 2990 / 983 | FAIL |
+| Drawn blade against the sim's | p99 5.0 cm (held at the 5 cm cap), worst 5.3 cm | p99 FAIL, worst pass |
+
+Why it fails: tracking alone is exact (joints and contacts off: bone angle p95 0.3 deg), but the target the layers give
+moves the hands and stick up to 0.3-0.6 m in one frame in crossovers, stops and slapshots. Interpolated per body
+across the substeps, those targets don't fit the joints, the joints fight the drive, and the stick (held to the sim's
+blade) tears away from the gloves. More solver iterations made it worse (grip fails 1658 -> 2538 frames over 15 s).
+
+Sync with the sim (kept, works): the display world has no puck; the drawn stick has no contacts (the sim lets a stick
+lie through other skaters' legs, so any push would contradict it); its blade is held within `BODY.bladeCap` (5 cm) of
+the sim's stick every substep.
+
+Bugs found on the way, fixed for everyone: a hit's squash baked into the stick's scale for good through the grip rig's
+decompose (stick scale now reset with its rest position each frame).
+
+Next options, for the user to pick: (a) fix the source pops first (hands and stick jumping 30-60 cm a frame in
+crossovers and stops are visible without physics too), then retry; (b) hands and stick kinematic, physics on the body
+and arms only, with the grip rig run after the write-back; (c) Rapier multibody joints (reduced coordinates, can't
+drift apart) with motors instead of the velocity drive.

@@ -147,6 +147,11 @@
   below the ice, carried puck on the blade, stickhandling sweep).
 
 
+## Powered ragdolls (physics/body.ts, `?phys`): spike FAILED, off by default
+- Display-only Rapier 3D bodies driven toward the layered pose; results and why it failed in PHYSICS_PLAN.md (step 4,
+  revised). `node tests/phys_spike.mjs [secs]` checks it against the pass/fail table there. Not rolled out.
+- Rapier contact hooks never fire in rapier3d-compat 0.21: filter with collision groups.
+
 ## Skinning (render.ts smoothJoints, spreadTwist)
 - The outfit's skin weights were nearly hard at the joints (elbow: 918 of 1043 vertices on one bone), so bends folded
   into sharp corners. `smoothJoints` averages weights with neighbouring vertices (welded across UV seams) for 4 rounds

@@ -57,3 +57,13 @@ Images: verify/round3/*.png (game camera angle, close in; tests/arm_shots.mjs). 
 
 Not judged by the reviewer: wrist angles (gloves too low-detail), arms hidden behind the body in 1 and 3.
 Numeric probe (extra check): stick_state_probe fails one rule, a crossover elbow reaching shoulder height (max 0.00 m above).
+
+## Powered-ragdoll spike (`?phys`), verify/phys_spike/low, fresh-context reviewer (2026-11-20)
+- 1_sprint FAIL: no stick visible, empty fist at the hip.
+- 2_reach PASS (a pale wedge by the top glove: likely an ice chip).
+- 3_tight_turn PASS.
+- 4_backward PASS, low confidence: the blade looks stood up off the heel; small notch at the left armpit.
+- 5_backhand_carry FAIL: shaft top into the chest, no glove visible, an arm folded up at head height.
+- 6_mid_shot CAN'T JUDGE (hands bunched, elbows hidden).
+- 7_screenshot CAN'T JUDGE (arms hidden); specks at the yellow player's collar.
+- 3 of 7 (strict 2). Spike numbers: verify/phys_spike_60s.txt.

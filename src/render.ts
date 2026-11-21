@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { positionLocal, normalLocal, normalView, positionViewDirection, materialColor, mix, smoothstep, dot, vec3, attribute, float, step, pass, uniform } from 'three/tsl';
 import { Ragdoll, RAGDOLL, RAG_BONES, RAG, HitKind } from './ragdoll';
+import { BodyWorld, initBodies, BODY, type StickSpec } from './physics/body';
 import { rgbShift } from 'three/addons/tsl/display/RGBShiftNode.js';
 import { Game, L, W, CR, GL, GOAL_HALF, NET_DEPTH, TEAM, TeamDef, Ev, Skater, PR, STICK } from './sim';
 
@@ -42,13 +43,13 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; bindQ?: Record<string, THREE.Quaternion>; twB?: Record<string, THREE.Object3D | null>; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
+  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; physOk?: boolean; bindQ?: Record<string, THREE.Quaternion>; twB?: Record<string, THREE.Object3D | null>; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
   anat?: { head: THREE.Vector3; headUp: THREE.Vector3; hand: { q: THREE.Quaternion; ax: THREE.Vector3 }[] } | null;
   /** the stick prop's resting position in the glove (the IK moves it; restored every frame) */
-  stickRest?: THREE.Vector3;
+  stickRest?: THREE.Vector3; stickScale?: THREE.Vector3;
   /** the cloned skater model (mirrored on x for a left shot) */
   model?: THREE.Object3D;
   /** bones the upper-body layer and stick IK turn: the clip's pose for each, and what the layers left last frame */
@@ -844,12 +845,13 @@ export class View {
       'pelvis', 'spine_01', 'neck_01', 'thigh_l', 'calf_l', 'foot_l', 'thigh_r', 'calf_r', 'foot_r', 'clavicle_r']
       .map(n => v.body.getObjectByName(n)).filter((b): b is THREE.Object3D => !!b);
     const st = this.stickOf(v);   // the stick prop is never animated, so its turn in the glove would stack too
-    if (st) { bones.push(st); v.stickRest = st.position.clone(); }
+    if (st) { bones.push(st); v.stickRest = st.position.clone(); v.stickScale = st.scale.clone(); }
     return (v.layer = { bones, base: bones.map(() => new THREE.Quaternion()), out: bones.map(() => new THREE.Quaternion()), ready: false });
   }
   private layerRestore(v: SkaterView) {
     const L = this.layerBones(v);
     if (v.stick && v.stickRest) v.stick.position.copy(v.stickRest);
+    if (v.stick && v.stickScale) v.stick.scale.copy(v.stickScale);   // the grip rig sets the stick from a world pose; under a squashed body (hits) that bakes the squash into its scale, which would stay
     // longer arms (ANAT.arm): the elbow and wrist joints sit further along their bones; nothing is scaled, so the
     // gloves and the stick keep their size (the model's shoulder-to-wrist is about 0.55 m at this scale, a real one 0.6)
     if (ANAT.arm !== 1 && !DBG.has('noarmlen')) for (const n of ['lowerarm_l', 'hand_l', 'lowerarm_r', 'hand_r']) {
@@ -1220,6 +1222,14 @@ export class View {
     v.gripErr = [palmB.getWorldPosition(c).distanceTo(B), palmT.getWorldPosition(d).distanceTo(K)];
   }
   /** test hook (hard check): measured from the final bones and stick of the frame, each palm to its grip */
+  /** ?phys: powered ragdolls (physics/body.ts) on every skater and goalie; ?phys=i on view i only */
+  phys: BodyWorld | null = null; private physHit: number[] = [];
+  private physLoad = DBG.has('phys') ? initBodies().then(() => { BODY.contacts = !DBG.has('nocontact'); if (DBG.get('iters')) BODY.iters = +DBG.get('iters')!; if (DBG.get('drive')) BODY.drive = +DBG.get('drive')!; BODY.echo = DBG.has('physecho'); BODY.joints = !DBG.has('nojoints'); this.phys = new BodyWorld(); }).catch(e => console.warn('powered ragdolls off', e)) : null;
+  private physFor(i: number) { const w = DBG.get('phys'); return !!this.phys && (!w || +w === i); }
+  private stickSpec(v: SkaterView): StickSpec | undefined {
+    const g = this.stickGeo; if (!v.stick || !g || g.gripT <= 0) return undefined;
+    return { obj: v.stick, blade: g.blade.clone(), gripB: g.blade.clone().lerp(g.top, STICK_HOLD.bottom), gripT: g.blade.clone().lerp(g.top, g.gripT - STICK_HOLD.slide) };
+  }
   gripStat: { worst: number; frames: number; over: number; who: string } | null = null;
   private gripMeasure(v: SkaterView) {
     const st = v.stick, g = this.stickGeo, A = v.arms, S = this.gripStat!;
@@ -2312,6 +2322,11 @@ export class View {
     const vi = this.game?.skaters.findIndex(k => k.id === id) ?? -1;
     const v = vi >= 0 ? this.skaters[vi] : null;
     if (v) v.crunch = { t: len, len, dx, dy, a };
+    if (v && this.phys?.rigs.has(vi)) {   // powered ragdoll: loosen it and push the chest along the hit
+      this.physHit[vi] = 0.35;
+      const c = (v.body.getObjectByName('spine_03') ?? v.body).getWorldPosition(new THREE.Vector3());
+      this.phys.push(vi, c, new THREE.Vector3(dx, 0, dy).multiplyScalar(a * 6));
+    }
   }
   /** where the camera is looking (feedback scales far-away events down) */
   camCenter(): [number, number] { return [this.camX, this.camZ]; }
@@ -2403,6 +2418,7 @@ export class View {
       if (v.anim) {
         v.body.rotation.z = 0;   // the clips carry the lean, wind-up and check
         if (v.model) v.model.scale.x = SKATER_SCALE * s.hand;   // a left shot is the mirror image: stick, clips and IK follow
+        this.phys?.restore(i);   // last frame's physics result off the bones: the layers start from their own pose
         this.animate(v, s, p.owner === s, p.kind === 'shot' && p.shooter === s && p.age < 0.25, dt);
         this.layerRestore(v);
         if (!s.air) this.skateFeel(v, s, dt, rdt);
@@ -2415,10 +2431,14 @@ export class View {
         this.ragApply(v, s, dt);
         if (!DBG.has('noik')) this.gripSolve(v);   // last: nothing after it moves the arms or the stick
         this.spreadTwist(v);
-        if (this.gripStat) this.gripMeasure(v);
-        if (this.jointStat) this.jointMeasure(v);
+        const ph = this.physFor(i) && (v.physOk ||= !!this.stickSpec(v));   // wait for the stick's grips before building its rig
+        if (!ph && this.gripStat) this.gripMeasure(v);
+        if (!ph && this.jointStat) this.jointMeasure(v);
         this.layerSave(v);
         this.crunch(v, rdt);
+        if (ph) this.phys!.capture(i, n => v.body.getObjectByName(n) ?? undefined, this.stickSpec(v), v.gripErr !== undefined);
+        if (ph && this.phys!.stat && v.gripErr && v.stick && this.stickGeo) { v.root.updateMatrixWorld(true); const B = new THREE.Vector3(), K = new THREE.Vector3(); this.grips(v.stick, this.stickGeo, B, K);
+          const e = Math.max(v.palmR!.getWorldPosition(new THREE.Vector3()).distanceTo(B), v.palmL!.getWorldPosition(new THREE.Vector3()).distanceTo(K)); const T = this.phys!.stat as unknown as { tgrip?: number[] }; (T.tgrip ??= []).push(e); }   // this pose is the target
         if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is
           const st = this.stickOf(v);
           if (st && this.stickGeo) {
@@ -2447,11 +2467,27 @@ export class View {
       // crouched, facing up the ice, leaning into the slide
       v.body.rotation.set(0, -k.face, v.anim ? 0 : -0.3);   // squared up to the puck
       this.setGoalieLook(v, true);   // pads, blocker, glove, mask and goalie stick instead of the skater kit
+      this.phys?.restore(g.skaters.length + gi);
       if (v.anim) this.animate(v, null, false, false, dt);
       v.body.position.y = 0; v.root.scale.setScalar(1.12); this.crunch(v, rdt);
+      const gi2 = g.skaters.length + gi; if (v.anim && this.physFor(gi2)) { this.phys!.capture(gi2, n => v.body.getObjectByName(n) ?? undefined); }
       // the box goalie leaned into the slide; tipping the real model would push a skate and the stick into the ice
       v.root.rotation.x = v.anim ? 0 : Math.max(-0.25, Math.min(0.25, k.vy * 0.04)) * (k.team === 0 ? 1 : -1);
     });
+    // powered ragdolls: one step for everyone, then the bodies go back onto the bones
+    if (this.phys) {
+      const P = this.phys, live = (k: number) => { const s = g.skaters[k]; return !this.skaters[k]?.crunch && (!s || (s.stun <= 0 && !s.air && !(this.physHit[k] > 0))); };
+      for (let k = 0; k < this.physHit.length; k++) if (this.physHit[k] > 0) this.physHit[k] -= rdt;
+      // a hit loosens the body for a moment (less drive), so it gives under the impact before the drive pulls it back
+      (globalThis as unknown as { __ctx: (i: number) => string }).__ctx = (k: number) => { const s = g.skaters[k], v = this.skaters[k]; return `${v?.anim?.cur}/${v?.gait?.mode} stun ${s?.stun?.toFixed(2)} stick ${v?.stick?.visible} box ${v?.root.scale.x} rdt ${rdt.toFixed(3)}`; };
+      if (rdt > 0) P.step(rdt, id => BODY.drive * (1 - 0.75 * Math.max(0, this.physHit[id] ?? 0) / 0.35));
+      for (const id of P.rigs.keys()) {
+        const v = this.skaters[id]; if (!v || !P.apply(id, live(id))) continue;
+        this.spreadTwist(v);
+        if (id < g.skaters.length) { if (this.gripStat) this.gripMeasure(v); if (this.jointStat) this.jointMeasure(v); }
+      }
+      if (P.stat) P.stat.frames++;
+    }
     // human markers
     const h = g.ctrl;
     this.disc.position.x = h.x; this.disc.position.z = h.y; this.disc.visible = h.out <= 0;
