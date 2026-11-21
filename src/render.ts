@@ -43,13 +43,13 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; physOk?: boolean; pop?: PopState; bindQ?: Record<string, THREE.Quaternion>; twB?: Record<string, THREE.Object3D | null>; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
+  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; physOk?: boolean; bindQ?: Record<string, THREE.Quaternion>; twB?: Record<string, THREE.Object3D | null>; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
   anat?: { head: THREE.Vector3; headUp: THREE.Vector3; hand: { q: THREE.Quaternion; ax: THREE.Vector3 }[] } | null;
   /** the stick prop's resting position in the glove (the IK moves it; restored every frame) */
-  stickRest?: THREE.Vector3; stickScale?: THREE.Vector3;
+  stickR?: THREE.Matrix4; clipQ?: THREE.Quaternion[]; capB?: Record<string, THREE.Object3D>; stickL?: THREE.Matrix4; aim?: { dir: THREE.Vector3; T: THREE.Vector3; w: number };
   /** the cloned skater model (mirrored on x for a left shot) */
   model?: THREE.Object3D;
   /** bones the upper-body layer and stick IK turn: the clip's pose for each, and what the layers left last frame */
@@ -103,30 +103,30 @@ export const GAIT = {
   flick: 0.55, toeUp: 0.2, toeLen: 0.16, modeEase: 0.25,
   post: 7,   // posture (hip height, torso lean, side lean) eases to each mode's and speed's value at this rate (1/s); set outright, a change of mode or a speed burst snapped the chest 10-20 cm in one frame
 };
-/** How a stick is held (stickIK, gripSolve). slide: how far below the knob the top hand may hold the shaft (share of its
+/** How a stick is held (stickIK aims it, stickHold, gripBottom). slide: how far below the knob the top hand may hold the shaft (share of its
  *  length); len: the drawn stick's length as a share of the model's (2.04 units, 91% of the skater's height; 0.9
  *  makes it reach his chin, as a real one does), shortening the shaft above `keep` (share from the blade); bottom:
- *  where the bottom hand holds it (share from the blade; about shoulder width below the knob). */
-export const STICK_HOLD = { slide: 0.03, len: 0.9, keep: 0.15, bottom: 0.72 };
+ *  where the bottom hand holds it (share from the blade; about shoulder width below the knob); botSlide: how far that grip
+ *  may slide toward the blade and toward the knob to stay in the arm's reach. */
+export const STICK_HOLD = { slide: 0.03, len: 0.9, keep: 0.15, bottom: 0.72, botSlide: [0.15, 0.05] };
+/** Body capsules the stick and the hands keep out of (world units; off the outfit mesh: torso 0.22-0.30 from the spine
+ *  line, thigh 0.13-0.16, helmet 0.19-0.31 from the head bone). head runs from the head bone `headUp` up; shaft: the
+ *  stick's radius; palm: a glove's */
+export const BODY_CAPS = { torso: 0.26, thigh: 0.14, head: 0.17, headUp: 0.2, shaft: 0.02, palm: 0.04 };
+/** closest points of segments p1-q1 and p2-q2 (written to c1, c2); returns their distance */
+const segClosest = (p1: THREE.Vector3, q1: THREE.Vector3, p2: THREE.Vector3, q2: THREE.Vector3, c1: THREE.Vector3, c2: THREE.Vector3) => {
+  const d1 = q1.clone().sub(p1), d2 = q2.clone().sub(p2), r = p1.clone().sub(p2), a = d1.dot(d1), e = d2.dot(d2), f = d2.dot(r), cl = (x: number) => Math.max(0, Math.min(1, x));
+  let sv = 0, t = 0;
+  if (a > 1e-9 || e > 1e-9) {
+    if (a <= 1e-9) t = cl(f / e);
+    else { const c = d1.dot(r); if (e <= 1e-9) sv = cl(-c / a); else { const b = d1.dot(d2), dn = a * e - b * b; sv = dn > 1e-12 ? cl((b * f - c * e) / dn) : 0; t = (b * sv + f) / e; if (t < 0) { t = 0; sv = cl(-c / a); } else if (t > 1) { t = 1; sv = cl((b - c) / a); } } }
+  }
+  c1.copy(p1).addScaledVector(d1, sv); c2.copy(p2).addScaledVector(d2, t); return c1.distanceTo(c2);
+};
 const ARM = { floor: 0.015 };
 /** how fast the stick's target on the ice and the top hand's spot follow where they are asked to be (1/s): about
  *  60 ms to close most of a jump, fast enough for a poke, slow enough that a switch is a move, not a pop */
 const IK_EASE = 18;
-/** Pop absorber on the held stick (inertialization): the stick follows its layers exactly, but a jump (a change of
- *  speed faster than `acc` m/s2 or `alpha` rad/s2, which steady motion, even a slapshot, never makes) goes into an
- *  offset that decays like a critically damped spring of half-life `half`, at most `vmax` m/s and `wmax` rad/s. The
- *  hands are solved onto the stick, so they follow. ?nopop: off */
-const POP = { half: 0.06, acc: 80, alpha: 60, vmax: 4, wmax: 3, maxOff: 1, maxRot: 1.5 };
-type PopState = { p: THREE.Vector3; dp: THREE.Vector3; ox: THREE.Vector3; ov: THREE.Vector3; q: THREE.Quaternion; dr: THREE.Vector3; rx: THREE.Vector3; rv: THREE.Vector3; t: number };
-const rotVec = (q: THREE.Quaternion, out: THREE.Vector3) => { const w = q.w < 0 ? -1 : 1, s = Math.hypot(q.x, q.y, q.z), a = 2 * Math.atan2(s, Math.abs(q.w)); return s < 1e-9 ? out.set(0, 0, 0) : out.set(q.x * w, q.y * w, q.z * w).multiplyScalar(a / s); };
-const vecRot = (r: THREE.Vector3, out: THREE.Quaternion) => { const a = r.length(); return a < 1e-9 ? out.identity() : out.setFromAxisAngle(r.clone().divideScalar(a), a); };
-/** critically damped decay of an offset toward 0 (x, its speed v), at most `cap` per second */
-const popDecay = (x: THREE.Vector3, v: THREE.Vector3, dt: number, cap: number) => {
-  const y = 2 * Math.LN2 / POP.half, e = Math.exp(-y * dt), x0 = x.clone();
-  const j = v.clone().addScaledVector(x, y);
-  x.copy(x0).addScaledVector(j, dt).multiplyScalar(e); v.addScaledVector(j, -y * dt).multiplyScalar(e);
-  const step = x.clone().sub(x0), l = step.length(); if (l > cap * dt) { x.copy(x0).addScaledVector(step, cap * dt / l); v.copy(step).multiplyScalar(cap / l); }
-};
 /** shots in the air (drawn only): height at the goal line by a hash of the release spot (low, mid, high), or where
  *  the goalie reads it (glove high, blocker mid, pads and butterfly low); rise: share of the way to the net by
  *  which it is up; g: fall once it is no longer a shot (bounce keeps this share of the speed) */
@@ -134,7 +134,7 @@ const SHOT_ARC = { low: 0.12, high: 1.05, rise: 0.35, g: 22, bounce: 0.35,
   // per save: [height to set (0: keep its own), cap]
   save: { glove: [1.0, 0], blocker: [0.7, 0], butterfly: [0, 0.6], pad_l: [0, 0.25], pad_r: [0, 0.25] } as Record<string, number[]> };
 /** a save the goalie didn't read in time: the clip starts this long (s) before its reach peak, so he visibly reaches */
-const GOALIE_REACT = 0.12;   // stickFloor: lowest the blade may sit (above the ice)
+const GOALIE_REACT = 0.12;
 /** Arms and head judged against a human body, not the clip (the clips hold the stick with the elbows hiked to
  *  shoulder height and look at the sky when the torso leans). pole: where each elbow points (weights of down, back,
  *  out); top: the top hand's spot off spine_01 (forward, up, toward its own shoulder), on the belly in front of the
@@ -147,7 +147,7 @@ const GOALIE_REACT = 0.12;   // stickFloor: lowest the blade may sit (above the 
  *  and it is held level (no roll); ride: share of the chest's twist off the heading the stick target turns with
  *  (stickIK), up to swing (rad); follow: share of the top shoulder's stride swing (its motion around its average over
  *  shAvg s) the top hand rides. */
-export const ANAT = { pole: [1, 0.25, 0.12], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45, ride: 1, swing: 0.6, follow: 1, shAvg: 0.6,
+export const ANAT = { pole: [1, 0.25, 0.12], clear: 0.5, blade: 1.9, shrug: 0.45, arm: 1.12, top: [0.58, -0.05, 0.02], backhand: [0.1, 0.2], reach: 0.88, headGap: 0.42, below: 0.3, wrist: 28, twist: 70, wristHold: 45, gaze: 6, visorTilt: 0.32, head: 0.6, yaw: 0.45, ride: 1, swing: 0.6, follow: 1, shAvg: 0.6,
   // botClear: the bottom hand stays this far off the spine line (it rides lower and to the side, so a thinner capsule);
   // elbowLag: how fast an elbow follows where it should point (1/s), so it trails the hand a beat
   botClear: 0.36, elbowLag: 10,
@@ -785,7 +785,7 @@ export class View {
    *  does not depend on how the exporter laid out the mesh. */
   private stickGeo: { blade: THREE.Vector3; top: THREE.Vector3; gripT: number; gripB?: number; band?: THREE.Vector3[] } | null = null;
   private stickOf(v: SkaterView) {
-    // the stick node (a group of wood and tape meshes, parented to the top hand)
+    // the stick node (a group of wood and tape meshes, modelled in the bottom glove; stickHold moves it to the top one)
     if (!v.stick) v.body.traverse(o => { if (!v.stick && o.name === 'stick' && o.parent?.name === 'hand_r') v.stick = o; });
     const st = v.stick; if (!st) return null;
     if (!this.stickGeo) {
@@ -860,14 +860,10 @@ export class View {
     const bones = ['spine_02', 'spine_03', 'Head', 'upperarm_r', 'lowerarm_r', 'hand_r', 'upperarm_l', 'lowerarm_l', 'hand_l',
       'pelvis', 'spine_01', 'neck_01', 'thigh_l', 'calf_l', 'foot_l', 'thigh_r', 'calf_r', 'foot_r', 'clavicle_r']
       .map(n => v.body.getObjectByName(n)).filter((b): b is THREE.Object3D => !!b);
-    const st = this.stickOf(v);   // the stick prop is never animated, so its turn in the glove would stack too
-    if (st) { bones.push(st); v.stickRest = st.position.clone(); v.stickScale = st.scale.clone(); }
     return (v.layer = { bones, base: bones.map(() => new THREE.Quaternion()), out: bones.map(() => new THREE.Quaternion()), ready: false });
   }
   private layerRestore(v: SkaterView) {
     const L = this.layerBones(v);
-    if (v.stick && v.stickRest) v.stick.position.copy(v.stickRest);
-    if (v.stick && v.stickScale) v.stick.scale.copy(v.stickScale);   // the grip rig sets the stick from a world pose; under a squashed body (hits) that bakes the squash into its scale, which would stay
     // longer arms (ANAT.arm): the elbow and wrist joints sit further along their bones; nothing is scaled, so the
     // gloves and the stick keep their size (the model's shoulder-to-wrist is about 0.55 m at this scale, a real one 0.6)
     if (ANAT.arm !== 1 && !DBG.has('noarmlen')) for (const n of ['lowerarm_l', 'hand_l', 'lowerarm_r', 'hand_r']) {
@@ -983,30 +979,6 @@ export class View {
 
   /** turn the stick in the bottom glove, about the glove, so `from` (a point on the stick) heads toward `to` */
   private tsA = new THREE.Vector3(); private tsB = new THREE.Vector3();
-  private turnStick(v: SkaterView, st: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, lim: number) {
-    const glove = v.arms?.h_r ?? st.parent!, a = glove.getWorldPosition(this.tsA);
-    const e = from.sub(a), t = to.clone().sub(a);
-    if (e.lengthSq() < 1e-6 || t.lengthSq() < 1e-6) return;
-    const ang = Math.min(lim, e.angleTo(t)); if (!(ang >= 1e-4)) return;
-    const pivL = st.worldToLocal(a.clone());
-    this.rotWorld(st, this.tsB.crossVectors(e, t), ang);
-    const moved = st.localToWorld(pivL);   // keep the glove's grip point where it was
-    st.position.add(st.parent!.worldToLocal(a.clone()).sub(st.parent!.worldToLocal(moved)));
-    st.updateMatrixWorld(true);
-  }
-
-  /** Keep the whole blade (heel, middle, toe) on or above the ice: the clips swing it through the floor on the
-   *  stride and the IK can aim a little low, so after both the stick turns up in the glove until it clears. */
-  private stickFloor(v: SkaterView) {
-    const st = v.stick, g = this.stickGeo; if (!st || !g || !st.visible) return;
-    st.updateWorldMatrix(true, false);
-    for (let it = 0; it < 6; it++) {
-      const low = this.bladeLow(st); if (low >= ARM.floor) return;
-      const c = g.blade.clone().applyMatrix4(st.matrixWorld);
-      this.turnStick(v, st, c.clone(), c.clone().setY(c.y + (ARM.floor - low) + 0.01), 0.8);
-    }
-  }
-
   /** lowest world height of the blade: its centre and the two ends of the bottom band (heel and toe) */
   private bladeLow(st: THREE.Object3D): number {
     const g = this.stickGeo!; let m = 1e9; const q = new THREE.Vector3();
@@ -1045,7 +1017,7 @@ export class View {
       if (!ua_r || !la_r || !h_r || !ua_l || !la_l || !h_l) return;
       v.arms = { ua_r, la_r, h_r, ua_l, la_l, h_l };
     }
-    const A = v.arms, T = (v.ikT ??= new THREE.Vector3());
+    const A = v.arms, T = (v.ikT ??= new THREE.Vector3()); v.aim = undefined;
     const busy = ['wrist_shot', 'slapshot', 'fall', 'check'].includes(v.anim.cur) || s.wind >= 0 || s.stun > 0 || s.air;
     const d = Math.hypot(p.x - s.x, p.y - s.y);
     let want = 0;
@@ -1110,11 +1082,9 @@ export class View {
       this.rotWorld(bone, b.crossVectors(e, t), ang);   // no-op when e and t are parallel (zero axis)
       if (bone.quaternion.angleTo(orig) > limit) { bone.quaternion.copy(orig).rotateTowards(bone.quaternion, limit); bone.updateMatrixWorld(true); }
     };
-    // Held like a real stick, anchored on the clip's own top hand (the clip puts that hand somewhere natural): the
-    // blade goes on the ice at the target, the shaft runs from it up through the top hand's palm, the bottom (stick)
-    // hand goes to its grip on that line by hinge arm IK, and the stick is turned in the bottom glove onto the
-    // target. topGrip then moves the top hand the short way onto the knob. Elbows roll back to where the clip had
-    // them. (Choosing a knob spot and dragging the top hand to it swung that arm back or hiked the elbow up.)
+    // The aim: blade on the ice at the target, shaft up through the top hand's spot (in front of the belly, toward its
+    // own shoulder). stickHold puts the stick there in the top glove and the top arm carries it; gripBottom adds the
+    // bottom hand.
     v.armClip = [this.armBend(A.ua_l, A.la_l, A.h_l, v.armClip?.[0]), this.armBend(A.ua_r, A.la_r, A.h_r, v.armClip?.[1])]; v.armClipT = this.t;   // the clip's elbows, before the IK moves them
     (v.palmClip ??= new THREE.Vector3()).copy(this.topSpot(v, this.ikE, s.bh));   // the top hand's anatomical spot
     if (v.shO) { v.palmClip.x += v.shO[0]; v.palmClip.y += v.shO[1]; v.palmClip.z += v.shO[2]; }   // rides the shoulder's swing (above)
@@ -1152,140 +1122,195 @@ export class View {
         if (dd < ANAT.clear && dd > 1e-4) { H.copy(q).addScaledVector(off, ANAT.clear / dd); v.fitO!.copy(H).sub(pl); } }
       dir.copy(H).sub(T).normalize();
     }
-    const sh = A.ua_r.getWorldPosition(this.ikG), tB = Math.max(gripB - 0.15, Math.min(gripB, sh.sub(T).dot(dir) / len));   // the bottom hand slides down toward its shoulder, never up (hands bunch together)
-    (v.botT ??= new THREE.Vector3()).copy(T).addScaledVector(dir, len * tB);   // test hook: where the bottom hand was sent
-    this.clearBody(v, v.botT, ANAT.botClear);   // a stick across the body sent the bottom glove (and forearm) into the belly
-    // out of reach: drop the bottom shoulder toward the grip, as players do (the collarbone turns, up to ANAT.shrug)
-    { const cl = (v.clavR ??= v.body.getObjectByName('clavicle_r') ?? null), need = A.ua_r.getWorldPosition(this.ikF).distanceTo(v.botT), arm = this.armLen(A.ua_r, A.la_r, A.h_r) * 0.97;
-      if (cl && need > arm) { const c0 = cl.getWorldPosition(this.ikC), u = this.ikF.clone().sub(c0), t = v.botT.clone().sub(c0);
-        this.rotWorld(cl, u.clone().cross(t), Math.min(ANAT.shrug, u.angleTo(t)) * w); } }
-    this.hingeIK(A.ua_r, A.la_r, A.h_r, a.copy(v.botT), v.armClip[1].n, this.lagPole(v, 1, this.anatPole(v, A.ua_r, this.apR), rdt), w);
-    this.wristClamp(v, A.h_r, 1);
-    this.turnStick(v, st, blade().clone(), T, Math.PI * w);   // shaft from the glove to the blade target
-    { const bw = blade().clone(), p0 = st.parent!.worldToLocal(bw.clone()), p1 = st.parent!.worldToLocal(bw.lerp(T, w));   // slide the shaft through the glove so the blade lands on the target
-      st.position.add(p1.sub(p0)); st.updateMatrixWorld(true); }
+    v.aim = { dir: dir.clone(), T: T.clone(), w };   // stickHold puts the stick there, in the top glove
   }
   /** shortest shoulder-to-wrist distance the elbow allows (bent at most ANAT.elbowMax from straight) */
   private foldMin(la: number, lb: number) { const c = Math.cos(Math.PI - ANAT.elbowMax * Math.PI / 180); return Math.sqrt(Math.max(1e-6, la * la + lb * lb - 2 * la * lb * c)) + 1e-3; }
+  /** the body's capsules now (world): torso pelvis to neck, each thigh hip to knee, the helmet */
+  private capsOf(v: SkaterView) {
+    const P = (n: string) => ((v.capB ??= {})[n] ??= v.body.getObjectByName(n)!).getWorldPosition(new THREE.Vector3());
+    const hd = P('Head'), nk = P('neck_01'), up = hd.clone().sub(nk).normalize();
+    return [{ n: 'torso', a: P('pelvis'), b: nk, r: BODY_CAPS.torso }, { n: 'thigh', a: P('thigh_l'), b: P('calf_l'), r: BODY_CAPS.thigh },
+      { n: 'thigh', a: P('thigh_r'), b: P('calf_r'), r: BODY_CAPS.thigh }, { n: 'head', a: hd, b: hd.clone().addScaledVector(up, BODY_CAPS.headUp), r: BODY_CAPS.head }];
+  }
+  private hsM = Array.from({ length: 5 }, () => new THREE.Matrix4()); private hsV = Array.from({ length: 8 }, () => new THREE.Vector3()); private hsQ = [new THREE.Quaternion(), new THREE.Quaternion()];
+  /** turn the stick (world matrix M) by q about the point c */
+  private turnAbout(M: THREE.Matrix4, c: THREE.Vector3, q: THREE.Quaternion) {
+    const X = this.hsM[3], R = this.hsM[4];
+    M.premultiply(X.makeTranslation(-c.x, -c.y, -c.z)).premultiply(R.makeRotationFromQuaternion(q)).premultiply(X.makeTranslation(c.x, c.y, c.z));
+  }
+  /** Anti-clipping and floor for a stick pose M, turned about its top grip K: the shaft (heel to knob) out of every body
+   *  capsule, the whole blade above the ice; a top grip inside the torso moves the whole stick out */
+  private clearStick(v: SkaterView, M: THREE.Matrix4, tTop: number) {
+    const g = this.stickGeo!, caps = this.capsOf(v), [K, b0, t0, c1, c2, n, lv] = this.hsV, q = this.hsQ[0];
+    for (let it = 0; it < 10; it++) {
+      K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(M); b0.copy(g.blade).applyMatrix4(M); t0.copy(g.top).applyMatrix4(M);
+      // top grip in the torso (the pivot can't turn itself out): the whole stick moves out
+      { const tc = caps[0], dd = new THREE.Line3(tc.a, tc.b).closestPointToPoint(K, true, c2).distanceTo(K), need = tc.r + BODY_CAPS.palm;
+        if (dd < need) { n.subVectors(K, c2); if (n.lengthSq() < 1e-8) n.set(Math.cos(-v.body.rotation.y), 0, Math.sin(-v.body.rotation.y)); n.normalize().multiplyScalar(need - dd + 0.005); M.premultiply(this.hsM[3].makeTranslation(n.x, n.y, n.z)); continue; } }
+      let worst = 0, wc: THREE.Vector3 | null = null;
+      for (const c of caps) { const d = segClosest(b0, t0, c.a, c.b, c1, c2), push = c.r + BODY_CAPS.shaft - d; if (push > worst) { worst = push; n.subVectors(c1, c2); wc = c1.clone(); if (c.n === 'thigh') n.y = Math.max(0, n.y); if (n.lengthSq() < 1e-8) n.set(Math.cos(-v.body.rotation.y), 0, Math.sin(-v.body.rotation.y)); n.normalize(); } }   // never down off a thigh: that drove the blade into the ice, and the floor back into the leg
+      let low = 1e9; for (const pt of g.band ?? [g.blade]) { const y = c2.copy(pt).applyMatrix4(M).y; if (y < low) { low = y; c1.copy(c2); } }
+      if (worst <= 0 && low >= ARM.floor) return;
+      if (worst > 0) {   // turn the contact point out along n, about the top grip
+        lv.subVectors(wc!, K); const l = lv.length(); if (l < 0.05) { M.premultiply(this.hsM[3].makeTranslation(n.x * (worst + 0.005), n.y * (worst + 0.005), n.z * (worst + 0.005))); continue; }
+        const ax = c2.crossVectors(lv, n); if (ax.lengthSq() < 1e-10) continue;
+        this.turnAbout(M, K, q.setFromAxisAngle(ax.normalize(), (worst + 0.005) / l));
+      } else {   // blade under the ice: tip it up about the top grip
+        lv.subVectors(c1, K); const h = Math.hypot(lv.x, lv.z); if (h < 0.05) return;
+        this.turnAbout(M, K, q.setFromAxisAngle(c2.set(-lv.z, 0, lv.x).normalize(), (ARM.floor - low + 0.005) / h));
+      }
+    }
+  }
+  /** an arm's reach shell, shoulder to palm: [closest the folded elbow allows, a share of the straight arm]. Top arm:
+   *  elbow to wrist plus 0.6 of the palm's offset, x0.9 (its hand turns onto the shaft after this, so not as posed);
+   *  bottom arm: elbow to palm as posed, x0.93 (a straight arm lines up the wrist, not the palm) */
+  private shellOf(ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D, palm: THREE.Object3D, top = false) {
+    const S = ua.getWorldPosition(new THREE.Vector3()), E = la.getWorldPosition(new THREE.Vector3()), H = h.getWorldPosition(new THREE.Vector3()), P = palm.getWorldPosition(new THREE.Vector3()), a = S.distanceTo(E);
+    const f = top ? E.distanceTo(H) + 0.6 * H.distanceTo(P) : E.distanceTo(P);
+    return { S, min: this.foldMin(a, f) * (top ? 1.1 : 1.4), max: (a + f) * (top ? 0.9 : 0.93) };
+  }
+  /** where along the shaft (share from the blade) the bottom hand can hold a stick posed M: STICK_HOLD.bottom, or the
+   *  nearest spot within STICK_HOLD.botSlide of it (down toward the blade, up) that is in the arm's reach and outside the torso and thighs; -1: none */
+  private botSpot(v: SkaterView, M: THREE.Matrix4, sh: { S: THREE.Vector3; min: number; max: number }, caps: ReturnType<View['capsOf']>, out: THREE.Vector3) {
+    const g = this.stickGeo!, c = new THREE.Vector3();
+    const [dn, up] = STICK_HOLD.botSlide;
+    for (let k = 0; k <= 40; k++) {
+      const t = STICK_HOLD.bottom + (k + 1 >> 1) * (k & 1 ? 1 : -1) * 0.01; if (t < STICK_HOLD.bottom - dn - 1e-6 || t > STICK_HOLD.bottom + up + 1e-6) continue;
+      out.copy(g.blade).lerp(g.top, t).applyMatrix4(M); const l = out.distanceTo(sh.S);
+      if (l <= sh.max && l >= sh.min && caps.slice(0, 3).every(q => new THREE.Line3(q.a, q.b).closestPointToPoint(out, true, c).distanceTo(out) >= q.r + BODY_CAPS.palm)) return t;
+    }
+    return -1;
+  }
+  /** a wrist kept within ANAT.wristHold of the clip's own (the clips grip a stick; the bind pose's hands are flat and
+   *  60-95 deg off any grip, so a limit from the bind pose cranked every holding hand) */
+  private holdClamp(h: THREE.Object3D, clip: THREE.Quaternion) {
+    const dv = h.quaternion.angleTo(clip), m = ANAT.wristHold * Math.PI / 180;
+    if (dv > m) { h.quaternion.copy(clip).slerp(h.quaternion.clone(), m / dv); h.updateMatrixWorld(true); }
+  }
+  /** set a bone's world turn to that of the world matrix W (its position stays: the bone keeps its length) */
+  private setWorldTurn(bone: THREE.Object3D, W: THREE.Matrix4) {
+    bone.parent!.updateWorldMatrix(true, false);
+    this.hsM[3].copy(bone.parent!.matrixWorld).invert().multiply(W).decompose(this.hsV[7], this.hsQ[1], this.hsV[6]);
+    bone.quaternion.copy(this.hsQ[1]); bone.updateMatrixWorld(true);
+  }
+  /** The stick rides in the top glove (one object, a fixed hold): its pose is decided (the clip's, turned onto the stick
+   *  IK's aim: blade at the target, shaft through the top hand's spot), cleared of the body and the ice, then the top
+   *  arm carries it there (arm IK onto the wrist the hold needs, the hand turned to the hold, wrist clamped, then the
+   *  wrist nudged so the blade lands where wanted). The hold is read once from a clip pose: the clips hold the stick
+   *  in the bottom glove with the top hand on the knob, so the top glove's turn there is a natural one. */
+  private stickHold(v: SkaterView, s: Skater) {
+    const st = v.stick, g = this.stickGeo, A = v.arms; if (!st || !g || !A || !st.visible || g.gripT <= 0 || !v.anim) return;
+    v.root.updateMatrixWorld(true);
+    const tTop = g.gripT - STICK_HOLD.slide, [S0, Sw, Hw] = this.hsM, [b0, t0, K, P, W, d] = this.hsV;
+    const palmT = (v.palmL ??= v.body.getObjectByName('middle_01_l') ?? A.h_l); v.palmR ??= v.body.getObjectByName('middle_01_r') ?? A.h_r;
+    v.stickR ??= new THREE.Matrix4().compose(st.position, st.quaternion, st.scale);   // as modelled, in the bottom glove
+    S0.multiplyMatrices(A.h_r.matrixWorld, v.stickR);   // the clip's own stick
+    if (!v.stickL) {
+      if (s.stun > 0 || s.air || !['stride', 'glide', 'idle', 'handle', 'back', 'cross_l', 'cross_r'].includes(v.anim.cur)) return;
+      K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(S0); palmT.getWorldPosition(P);
+      Sw.copy(S0).premultiply(this.hsM[3].makeTranslation(P.x - K.x, P.y - K.y, P.z - K.z));   // top grip on the palm
+      v.stickL = A.h_l.matrixWorld.clone().invert().multiply(Sw);
+      A.h_l.add(st);
+    }
+    v.stickL.decompose(st.position, st.quaternion, st.scale); st.updateMatrixWorld(true);   // the hold, every frame (nothing stacks)
+    const clipQ = (v.clipQ ??= [new THREE.Quaternion(), new THREE.Quaternion()])[0].copy(A.h_l.quaternion); v.clipQ[1].copy(A.h_r.quaternion);   // the clip's own wrists: the clips were made gripping a stick
+    const live = !(s.stun > 0 || s.air); if (!live) return;   // down or flying: the ragdoll moves the arm, the stick rides along
+    Sw.copy(S0);
+    const aim = v.aim;
+    if (aim && aim.w > 0.02) {   // turned onto the aim about the blade, then the blade moved onto the target
+      b0.copy(g.blade).applyMatrix4(S0); t0.copy(g.top).applyMatrix4(S0);
+      const q = this.hsQ[0].setFromUnitVectors(t0.sub(b0).normalize(), aim.dir); q.slerpQuaternions(this.hsQ[1].identity(), q.clone(), aim.w);
+      this.turnAbout(Sw, b0, q); d.copy(b0).lerp(aim.T, aim.w).sub(b0); Sw.premultiply(this.hsM[3].makeTranslation(d.x, d.y, d.z));
+    }
+    // the stick where both hands can hold it: top grip in the top arm's reach (the stick slides), out of the body and
+    // off the ice (it turns about the top grip), and if no bottom grip spot in range is in reach, turned about the top
+    // hand toward the bottom shoulder
+    // a bottom grip past the arm: the bottom shoulder drops toward it first, as players do (the collarbone turns, up to ANAT.shrug)
+    { P.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(Sw); const sh0 = this.shellOf(A.ua_r, A.la_r, A.h_r, v.palmR!), cl = (v.clavR ??= v.body.getObjectByName('clavicle_r') ?? null);
+      const ex = P.distanceTo(sh0.S) - sh0.max * 0.9;   // as far as the grip is out of reach, no further (all or nothing, it popped the shoulder)
+      if (cl && ex > 0) { const c0 = cl.getWorldPosition(W), u = sh0.S.clone().sub(c0), tt = P.clone().sub(c0); this.rotWorld(cl, u.clone().cross(tt), Math.min(ANAT.shrug, u.angleTo(tt), ex / Math.max(0.05, u.length()))); } }
+    const shT = this.shellOf(A.ua_l, A.la_l, A.h_l, palmT, true), shB = this.shellOf(A.ua_r, A.la_r, A.h_r, v.palmR!), caps = this.capsOf(v);
+    for (let it = 0; it < 4; it++) {
+      K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(Sw); const l = K.distanceTo(shT.S), lc = Math.max(shT.min, Math.min(shT.max, l));
+      if (Math.abs(lc - l) > 1e-4) { P.copy(K).sub(shT.S).setLength(lc).add(shT.S).sub(K); Sw.premultiply(this.hsM[3].makeTranslation(P.x, P.y, P.z)); }
+      this.clearStick(v, Sw, tTop);
+      if (this.botSpot(v, Sw, shB, caps, P) >= 0) break;
+      K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(Sw); P.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(Sw);
+      const lb = P.distanceTo(shB.S), Q = W.copy(P).sub(shB.S).setLength(Math.max(shB.min * 1.05, Math.min(shB.max * 0.95, lb))).add(shB.S);
+      const u = b0.subVectors(P, K), w2 = t0.subVectors(Q, K); if (u.lengthSq() < 1e-6 || w2.lengthSq() < 1e-6) break;
+      this.turnAbout(Sw, K, this.hsQ[0].setFromUnitVectors(u.normalize(), w2.normalize()));
+    }
+    this.clearStick(v, Sw, tTop);
+    // the top arm puts the palm on that stick's top grip (hinge IK, elbow down and back); the glove is turned the least
+    // from the clip's own wrist so the shaft runs across the palm, and kept within ANAT.wristHold of it
+    K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(Sw); const ax = d.copy(g.top).sub(g.blade).transformDirection(Sw);
+    const n = (v.armClipT === this.t && v.armClip ? v.armClip[0].n : this.armBend(A.ua_l, A.la_l, A.h_l).n).clone(), kn = b0, want = t0;
+    for (let it = 0; it < 6; it++) {
+      if (it < 2) {
+        kn.subVectors(palmT.getWorldPosition(P), A.h_l.getWorldPosition(W)); want.copy(kn).addScaledVector(ax, -kn.dot(ax));
+        if (want.lengthSq() > 1e-8) this.rotWorld(A.h_l, W.crossVectors(kn, want), kn.angleTo(want));
+        this.holdClamp(A.h_l, clipQ);
+      }
+      this.hingeIK(A.ua_l, A.la_l, palmT, K, n, this.anatPole(v, A.ua_l, this.apL), 1);
+    }
+    // the stick sits in the glove where it was decided: parented, so it moves with the hand from here on
+    palmT.getWorldPosition(P).sub(K); Sw.premultiply(this.hsM[3].makeTranslation(P.x, P.y, P.z));   // short of the grip: the stick comes to the palm
+    A.h_l.updateMatrixWorld(true); Hw.copy(A.h_l.matrixWorld).invert().multiply(Sw).decompose(st.position, st.quaternion, st.scale); st.updateMatrixWorld(true);
+    // a squashed body (hits) shears the glove's frame, which a decompose can't keep: slide the stick so its grip is on the palm
+    K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(st.matrixWorld); palmT.getWorldPosition(P);
+    st.position.add(A.h_l.worldToLocal(P.clone()).sub(A.h_l.worldToLocal(K.clone()))); st.updateMatrixWorld(true);
+    if (this.gripStat && aim && aim.w > 0.9) (this.gripStat.blade ??= []).push(P.copy(g.blade).applyMatrix4(st.matrixWorld).setY(aim.T.y).distanceTo(aim.T));
+  }
+  /** Last: the bottom hand onto its grip with two-bone (hinge) IK, elbow pole down and back, wrist clamped. The grip is
+   *  STICK_HOLD.bottom along the shaft; out of the arm's reach (or in the torso or a thigh) it slides up to
+   *  STICK_HOLD.botSlide either way; only if no spot in that range works the stick turns about the top hand toward the
+   *  bottom shoulder. */
+  private gripBottom(v: SkaterView) {
+    const st = v.stick, g = this.stickGeo, A = v.arms;
+    if (!st || !g || !A || !st.visible || g.gripT <= 0 || !v.stickL) { v.gripErr = undefined; return; }
+    v.root.updateMatrixWorld(true);
+    const palmB = v.palmR!, palmT = v.palmL!, [SB, B, c, d, e] = this.hsV;
+    const at = (t: number, out: THREE.Vector3) => out.copy(g.blade).lerp(g.top, t).applyMatrix4(st.matrixWorld);
+    const shB = this.shellOf(A.ua_r, A.la_r, A.h_r, palmB), caps = this.capsOf(v); let t = this.botSpot(v, st.matrixWorld, shB, caps, B);
+    // no spot in range (a shot, a fall, the ragdoll): the stick turns in the top glove, about the top grip, toward the bottom shoulder
+    for (let it = 0; it < 3 && t < 0; it++) {
+      const M = this.hsM[0].copy(st.matrixWorld), K = at(g.gripT - STICK_HOLD.slide, c); at(STICK_HOLD.bottom, B);
+      const Q = d.copy(B).sub(shB.S).setLength(Math.max(shB.min * 1.05, Math.min(shB.max * 0.95, B.distanceTo(shB.S)))).add(shB.S), u = B.clone().sub(K), w2 = Q.sub(K);
+      if (u.lengthSq() < 1e-6 || w2.lengthSq() < 1e-6) break;
+      this.turnAbout(M, K, this.hsQ[0].setFromUnitVectors(u.normalize(), w2.normalize()));
+      M.premultiply(this.hsM[1].copy(st.parent!.matrixWorld).invert()).decompose(st.position, st.quaternion, st.scale); st.updateMatrixWorld(true);
+      t = this.botSpot(v, st.matrixWorld, shB, caps, B);
+    }
+    if (t < 0) t = STICK_HOLD.bottom;   // still none: reach as far as the arm goes
+    at(t, B); (v.botT ??= new THREE.Vector3()).copy(B);
+    const dir = d.copy(g.top).sub(g.blade).transformDirection(st.matrixWorld);
+    // two-bone IK on the wrist (the grip less the palm's offset from it), elbow pole down and back; the hand wraps the
+    // shaft (turned the least from the clip's wrist so its knuckle line crosses the shaft, clamped) and it repeats
+    const pole = this.anatPole(v, A.ua_r, this.apR).clone(), Wt = this.hsV[6];
+    for (let it = 0; it < 10; it++) {
+      if (it < 3) { const kn = e.subVectors(palmB.getWorldPosition(c), A.h_r.getWorldPosition(SB)), want = c.copy(kn).addScaledVector(dir, -kn.dot(dir));
+        if (want.lengthSq() > 1e-8) this.rotWorld(A.h_r, SB.crossVectors(kn, want), kn.angleTo(want));
+        this.holdClamp(A.h_r, v.clipQ![1]); }
+      else if (palmB.getWorldPosition(c).distanceTo(B) < 0.002) break;
+      Wt.copy(B).sub(palmB.getWorldPosition(c)).add(A.h_r.getWorldPosition(SB));
+      this.twoBone(A.ua_r, A.la_r, A.h_r, Wt, pole, 1);
+      // still short at full stretch: the grip moves along the shaft (within the slide range) to the point nearest the palm
+      if (it === 6 && palmB.getWorldPosition(c).distanceTo(B) > 0.005) {
+        const b0 = at(0, SB), tt = c.sub(b0).dot(dir) / at(1, e).distanceTo(b0), [dn, up] = STICK_HOLD.botSlide;
+        t = Math.max(STICK_HOLD.bottom - dn, Math.min(STICK_HOLD.bottom + up, tt)); at(t, B); v.botT!.copy(B);
+      }
+    }
+    v.root.updateMatrixWorld(true);
+    v.gripErr = [palmB.getWorldPosition(c).distanceTo(B), palmT.getWorldPosition(e).distanceTo(at(g.gripT - STICK_HOLD.slide, SB))];
+  }
   /** the two fixed grips on a stick, in the world: bottom (stick) hand at STICK_HOLD.bottom, top hand at the knob grip */
   private grips(st: THREE.Object3D, g: NonNullable<View['stickGeo']>, outB: THREE.Vector3, outT: THREE.Vector3) {
     outB.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(st.matrixWorld);
     outT.copy(g.blade).lerp(g.top, g.gripT - STICK_HOLD.slide).applyMatrix4(st.matrixWorld);   // the glove over the knob, not past it
   }
-  /** Both hands on the stick, every frame, as one rig. Runs last (after the clip, gait, look, stick IK, ragdoll), so
-   *  nothing moves a hand off its grip afterwards. 1: the stick pose so far (blade target, floor) gives the two fixed
-   *  grips; 2: a grip out of an arm's reach (too far, or closer than the elbow can fold) moves the stick, never the
-   *  hand: the bottom grip is pulled into its shell, the shaft re-aimed so the top grip lands in its own, repeated;
-   *  3: each arm is solved (hinge IK, elbow pole down, back and out) so its palm lands on its grip, the hand turned
-   *  to wrap the shaft and the wrist clamped; 4: the stick is set in the bottom glove from the solved pose. Stick
-   *  with no grip yet (gripT not read) or not in his hands: nothing to hold. */
-  private gsV = Array.from({ length: 10 }, () => new THREE.Vector3()); private gsQ = new THREE.Quaternion(); private gsM = [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()];
-  /** the stick (world matrix M) moved the least so both grips are in reach of their shoulders and out of the body:
-   *  each grip within [closest the folded elbow allows, 0.92 of the straight arm] of its shoulder, turned about the
-   *  bottom grip */
-  private gfV = Array.from({ length: 10 }, () => new THREE.Vector3()); private gfQ = new THREE.Quaternion(); private gfM = [new THREE.Matrix4(), new THREE.Matrix4()];
-  private gripFit(v: SkaterView, M: THREE.Matrix4, iters = 16) {
-    const g = this.stickGeo!, A = v.arms!, palmB = v.palmR!, palmT = v.palmL!;
-    const [B, K, bl, tp, dir, SB, ST, c, d, e] = this.gfV, [R, X] = this.gfM;
-    bl.copy(g.blade).applyMatrix4(M); tp.copy(g.top).applyMatrix4(M);
-    const L = bl.distanceTo(tp), D = (g.gripT - STICK_HOLD.slide - STICK_HOLD.bottom) * L;
-    dir.subVectors(tp, bl).normalize();
-    B.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(M); const b0 = B.clone();
-    // reach shells, shoulder to palm: [closest the folded elbow allows, ANAT.reach of the straight arm]
-    const shell = (ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D, palm: THREE.Object3D) => {
-      const a = ua.getWorldPosition(c).distanceTo(la.getWorldPosition(d)), f = d.distanceTo(h.getWorldPosition(e)) + e.distanceTo(palm.getWorldPosition(c));
-      return [this.foldMin(a, f) * 1.1, (a + f) * 0.92];
-    };
-    const rB = shell(A.ua_r, A.la_r, A.h_r, palmB), rT = shell(A.ua_l, A.la_l, A.h_l, palmT);
-    A.ua_r.getWorldPosition(SB); A.ua_l.getWorldPosition(ST);
-    const into = (P: THREE.Vector3, S: THREE.Vector3, r: number[]) => { const o = c.subVectors(P, S), l = o.length(); if (l < 1e-6) return P; return P.copy(S).addScaledVector(o, Math.max(r[0], Math.min(r[1], l)) / l); };
-    for (let it = 0; it < iters; it++) {
-      into(this.clearBody(v, B, ANAT.botClear), SB, rB);
-      K.copy(B).addScaledVector(dir, D); into(this.clearBody(v, K, ANAT.clear * 1.15), ST, rT);   // the knob end out of the chest, with room for the forearm
-      dir.subVectors(K, B).normalize(); if (this.popOn) B.copy(K).addScaledVector(dir, -D); else K.copy(B).addScaledVector(dir, D);   // the stick slides so the top grip stays in reach (the next pass brings the bottom back into its own); down, the old turn about the bottom grip
-    }
-    // the stick's new pose: turned so its shaft runs along dir, moved so the bottom grip sits at B
-    this.gfQ.setFromUnitVectors(c.subVectors(tp, bl).normalize(), dir);
-    M.premultiply(X.makeTranslation(-b0.x, -b0.y, -b0.z)).premultiply(R.makeRotationFromQuaternion(this.gfQ)).premultiply(X.makeTranslation(B.x, B.y, B.z));
-  }
-  /** the stick (world matrix M) tipped up about its bottom grip until no part of the blade is below the ice (stickFloor's
-   *  rule, for a stick the pop absorber moved) */
-  private floorM(M: THREE.Matrix4) {
-    const g = this.stickGeo!, [B, P, r, ax] = this.gfV, [R, X] = this.gfM;
-    B.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(M);
-    for (let it = 0; it < 4; it++) {
-      let low = 1e9; for (const pt of g.band ?? [g.blade]) { const y = r.copy(pt).applyMatrix4(M).y; if (y < low) { low = y; P.copy(r); } }
-      if (low >= ARM.floor) return;
-      r.subVectors(P, B); const h = Math.hypot(r.x, r.z); if (h < 0.05) return;
-      ax.set(-r.z, 0, r.x).normalize();   // horizontal, across the line to the low point: turning about it lifts that point
-      const ang = (ARM.floor - low + 0.005) / h;
-      M.premultiply(X.makeTranslation(-B.x, -B.y, -B.z)).premultiply(R.makeRotationAxis(ax, ang)).premultiply(X.makeTranslation(B.x, B.y, B.z));
-    }
-  }
-  private paV = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]; private paQ = [new THREE.Quaternion(), new THREE.Quaternion()]; private paM = [new THREE.Matrix4(), new THREE.Matrix4()];
-  private popAbsorb(v: SkaterView, M: THREE.Matrix4, rdt: number): boolean {
-    if (DBG.has('nopop')) return false;
-    const [pos, sc, d, r] = this.paV, [q, dq] = this.paQ, [inv, Lm] = this.paM;
-    inv.copy(v.body.matrixWorld).invert(); Lm.multiplyMatrices(inv, M).decompose(pos, q, sc);
-    const S = v.pop;
-    if (!S || this.t - S.t > 0.1 || rdt <= 0) { if (!S || rdt > 0) v.pop = { p: pos.clone(), dp: new THREE.Vector3(), ox: new THREE.Vector3(), ov: new THREE.Vector3(), q: q.clone(), dr: new THREE.Vector3(), rx: new THREE.Vector3(), rv: new THREE.Vector3(), t: this.t }; return false; }
-    S.t = this.t;
-    // the drawn stick's speed (dp, dr per frame) changes by at most POP.acc / POP.alpha; the part of this frame's move
-    // past that is a jump and goes into the offset, so the output moves exactly as fast as dp and never pops
-    const lim = (e: THREE.Vector3, m: number) => { const l = e.length(); return l > m ? e.clone().multiplyScalar(m / l) : e.clone(); };
-    d.subVectors(pos, S.p); { const e = d.clone().sub(S.dp), ec = lim(e, POP.acc * rdt * rdt); S.dp.add(ec); S.ox.sub(e.sub(ec)); }
-    rotVec(dq.copy(q).multiply(S.q.clone().invert()), r); { const e = r.clone().sub(S.dr), ec = lim(e, POP.alpha * rdt * rdt); S.dr.add(ec); S.rx.sub(e.sub(ec)); }
-    if (S.ox.length() > POP.maxOff) S.ox.setLength(POP.maxOff); if (S.rx.length() > POP.maxRot) S.rx.setLength(POP.maxRot);
-    S.p.copy(pos); S.q.copy(q);
-    popDecay(S.ox, S.ov, rdt, POP.vmax); popDecay(S.rx, S.rv, rdt, POP.wmax);
-    if (S.ox.lengthSq() < 1e-10 && S.rx.lengthSq() < 1e-10) return false;
-    pos.add(S.ox); q.premultiply(vecRot(S.rx, dq));
-    M.copy(Lm.compose(pos, q, sc).premultiply(v.body.matrixWorld)); return true;
-  }
-  private gripSolve(v: SkaterView) {
-    const st = v.stick, g = this.stickGeo, A = v.arms;
-    if (!st || !g || !A || !st.visible || g.gripT <= 0) { v.gripErr = undefined; return; }
-    const [B, K, bl, tp, dir, SB, ST, c, d, e] = this.gsV, [M, R, X] = this.gsM;
-    v.root.updateMatrixWorld(true);
-    const palmB = (v.palmR ??= v.body.getObjectByName('middle_01_r') ?? A.h_r), palmT = (v.palmL ??= v.body.getObjectByName('middle_01_l') ?? A.h_l);
-    // the stick fitted to both grips (fit), any jump in that fit taken out (popAbsorb), then fitted again from the
-    // smoothed pose: a small correction, so the solved stick is continuous even when the fit flips between solutions
-    M.copy(st.matrixWorld); this.gripFit(v, M); if (this.popOn && this.popAbsorb(v, M, this.rdtNow)) { this.floorM(M); this.gripFit(v, M, 40); }
-    bl.copy(g.blade).applyMatrix4(M); tp.copy(g.top).applyMatrix4(M); dir.subVectors(tp, bl).normalize();
-    B.copy(g.blade).lerp(g.top, STICK_HOLD.bottom).applyMatrix4(M);
-    // arms: palm onto grip (the hand's turn moves the palm off the wrist, so settle it a few times)
-    const solve = (ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D, palm: THREE.Object3D, P: THREE.Vector3, k: number, pole: THREE.Vector3) => {
-      // the elbow's hinge: the clip's (read by stickIK this frame, before any IK), else the pose as it comes in (shots,
-      // falls); one axis for every pass, so the elbow can't flip against it
-      const n = (v.armClipT === this.t && v.armClip ? v.armClip[k].n : this.armBend(ua, la, h).n).clone();
-      for (let it = 0; it < 6; it++) {
-        if (it < 2) {   // wrap the shaft: turn the hand the least so its knuckle line crosses the shaft (not along it), wrist clamped
-          const kn = d.subVectors(palm.getWorldPosition(c), h.getWorldPosition(e)), want = c.copy(kn).addScaledVector(dir, -kn.dot(dir));
-          if (want.lengthSq() > 1e-8) this.rotWorld(h, e.crossVectors(kn, want), kn.angleTo(want));
-          this.wristClamp(v, h, k);
-        }
-        // the arm puts the palm itself on the grip (forearm and hand as one piece): the swing lands it exactly, the
-        // passes settle the elbow angle when the palm sits off the hinge plane
-        this.hingeIK(ua, la, palm, P, n, this.anatPole(v, ua, pole), 1);
-      }
-    };
-    // bottom hand onto its grip; the stick goes in that glove (bottom grip on the palm it reached); then the top hand
-    // onto the stick's own top grip, last, so it holds wherever the stick ended up
-    solve(A.ua_r, A.la_r, A.h_r, palmB, B, 1, this.apR);
-    v.root.updateMatrixWorld(true); palmB.getWorldPosition(c);
-    M.premultiply(X.makeTranslation(c.x - B.x, c.y - B.y, c.z - B.z));
-    X.copy(st.parent!.matrixWorld).invert().multiply(M).decompose(st.position, st.quaternion, st.scale);
-    st.updateMatrixWorld(true);
-    // a squashed body (hits) shears the glove's frame, which a decompose can't keep: slide the stick so the grip is on the palm
-    this.grips(st, g, B, K); st.position.add(st.parent!.worldToLocal(c.clone()).sub(st.parent!.worldToLocal(B.clone()))); st.updateMatrixWorld(true);
-    this.grips(st, g, B, K);
-    solve(A.ua_l, A.la_l, A.h_l, palmT, K, 0, this.apL);
-    v.root.updateMatrixWorld(true);
-    v.gripErr = [palmB.getWorldPosition(c).distanceTo(B), palmT.getWorldPosition(d).distanceTo(K)];
-  }
   /** test hook (hard check): measured from the final bones and stick of the frame, each palm to its grip */
   /** ?phys: powered ragdolls (physics/body.ts) on every skater and goalie; ?phys=i on view i only */
-  private rdtNow = 0; private popOn = true;
   phys: BodyWorld | null = null; private physHit: number[] = [];
   private physLoad = DBG.has('phys') ? initBodies().then(() => { BODY.contacts = !DBG.has('nocontact'); if (DBG.get('iters')) BODY.iters = +DBG.get('iters')!; if (DBG.get('drive')) BODY.drive = +DBG.get('drive')!; if (DBG.get('bladecap')) BODY.bladeCap = +DBG.get('bladecap')!; BODY.echo = DBG.has('physecho'); BODY.joints = !DBG.has('nojoints'); this.phys = new BodyWorld(); }).catch(e => console.warn('powered ragdolls off', e)) : null;
   private physFor(i: number) { const w = DBG.get('phys'); return !!this.phys && (!w || +w === i); }
@@ -1293,17 +1318,28 @@ export class View {
     const g = this.stickGeo; if (!v.stick || !g || g.gripT <= 0) return undefined;
     return { obj: v.stick, blade: g.blade.clone(), gripB: g.blade.clone().lerp(g.top, STICK_HOLD.bottom), gripT: g.blade.clone().lerp(g.top, g.gripT - STICK_HOLD.slide) };
   }
-  gripStat: { worst: number; frames: number; over: number; who: string } | null = null;
-  private gripMeasure(v: SkaterView) {
-    const st = v.stick, g = this.stickGeo, A = v.arms, S = this.gripStat!;
-    if (!st || !g || !A || !st.visible || g.gripT <= 0) return;
+  /** hard check (tests/grip_check.mjs), from the final bones and stick of each frame: each palm to its grip (the bottom
+   *  one where gripBottom put it), and frames on their feet with the shaft (heel to knob) or a palm inside a body capsule */
+  gripStat: { worst: number; frames: number; over: number; who: string; live: number; clip: number; clipWho: string; byCap: Record<string, number>; blade?: number[] } | null = null;
+  private gripMeasure(v: SkaterView, s: Skater) {
+    const st = v.stick, g = this.stickGeo, S = this.gripStat!;
+    if (!st || !g || !v.arms || !st.visible || g.gripT <= 0 || !v.botT || !v.palmL || !v.palmR || !v.stickL) return;
     v.root.updateMatrixWorld(true);
-    const B = new THREE.Vector3(), K = new THREE.Vector3(); this.grips(st, g, B, K);
-    const pB = (v.body.getObjectByName('middle_01_r') ?? A.h_r).getWorldPosition(new THREE.Vector3()), pT = (v.body.getObjectByName('middle_01_l') ?? A.h_l).getWorldPosition(new THREE.Vector3());
-    const e = Math.max(pB.distanceTo(B), pT.distanceTo(K));
+    const pB = v.palmR.getWorldPosition(new THREE.Vector3()), pT = v.palmL.getWorldPosition(new THREE.Vector3()), K = g.blade.clone().lerp(g.top, g.gripT - STICK_HOLD.slide).applyMatrix4(st.matrixWorld);
+    const e = Math.max(pB.distanceTo(v.botT), pT.distanceTo(K));
     S.frames++; if (e > 0.01) S.over++;
-    if (e > S.worst) { S.worst = e; S.who = `skater ${this.skaters.indexOf(v)} bottom ${pB.distanceTo(B).toFixed(4)} top ${pT.distanceTo(K).toFixed(4)} clip ${v.anim?.cur} gait ${v.gait?.mode}`; }
+    if (e > S.worst) { S.worst = e; S.who = `skater ${this.skaters.indexOf(v)} bottom ${pB.distanceTo(v.botT).toFixed(4)} top ${pT.distanceTo(K).toFixed(4)} clip ${v.anim?.cur} gait ${v.gait?.mode}`; }
+    if (s.stun > 0 || s.air) return;
+    S.live++;
+    const b0 = g.blade.clone().applyMatrix4(st.matrixWorld), t0 = g.top.clone().applyMatrix4(st.matrixWorld), c1 = new THREE.Vector3(), c2 = new THREE.Vector3();
+    const hits: string[] = [];
+    for (const c of this.capsOf(v)) {
+      if (segClosest(b0, t0, c.a, c.b, c1, c2) < c.r + BODY_CAPS.shaft - 0.005) hits.push('shaft-' + c.n);
+      for (const [nm, P] of [['top', pT], ['bottom', pB]] as const) if (new THREE.Line3(c.a, c.b).closestPointToPoint(P, true, c1).distanceTo(P) < c.r - 0.005) hits.push(nm + '-' + c.n);
+    }
+    if (hits.length) { S.clip++; for (const h of hits) S.byCap[h] = (S.byCap[h] ?? 0) + 1; if (!S.clipWho) S.clipWho = `skater ${this.skaters.indexOf(v)} ${hits.join(',')} clip ${v.anim?.cur} gait ${v.gait?.mode}`; }
   }
+
   /** pops (tests/pop_probe.mjs): the palms, the blade, the shoulders and the neck in the body's own frame (skating
    *  taken out), frame to frame. Hands and blade: `d`; shoulders, pelvis, neck: `body`; jumps over 6 cm by clip and mode */
   popStat: { frames: number; d: number[]; body: number[][]; jumps: Record<string, number> } | null = null;
@@ -1679,22 +1715,8 @@ export class View {
     return out;
   }
   /** push a hand target out of the torso (a capsule of radius r round the pelvis-to-neck line) and away from the helmet */
-  private clearBody(v: SkaterView, P: THREE.Vector3, r: number) {
-    const pel = (v.pelB ??= v.body.getObjectByName('pelvis')!), nk = (v.neckB ??= v.body.getObjectByName('neck_01')!), f = -v.body.rotation.y;
-    const near = new THREE.Line3(pel.getWorldPosition(new THREE.Vector3()), nk.getWorldPosition(new THREE.Vector3())).closestPointToPoint(P, true, new THREE.Vector3());
-    const off = P.clone().sub(near), dd = off.length();
-    if (dd < r) P.copy(near).addScaledVector(dd > 1e-4 ? off.divideScalar(dd) : new THREE.Vector3(Math.cos(f), 0, Math.sin(f)), r);
-    const hd = (v.headB ??= v.body.getObjectByName('Head')!).getWorldPosition(new THREE.Vector3()), o2 = P.clone().sub(hd);
-    if (o2.length() < ANAT.headGap) P.copy(hd).add(o2.setY(Math.min(o2.y, 0) - 0.05).normalize().multiplyScalar(ANAT.headGap));
-    return P;
-  }
-  /** an elbow's pole, eased (ANAT.elbowLag) so the elbow trails the hand a beat instead of moving locked to it; the
-   *  hand itself stays on its target (the pole only rolls the arm about the shoulder-to-hand line) */
-  private lagPole(v: SkaterView, k: number, pole: THREE.Vector3, rdt: number) {
-    const L = (v.poleLag ??= [pole.clone(), pole.clone()]);
-    if ((v.ikW ?? 0) < 0.05) L[k].copy(pole); else L[k].lerp(pole, 1 - Math.exp(-rdt * ANAT.elbowLag)).normalize();
-    return pole.copy(L[k]);
-  }
+
+
   private armLen(ua: THREE.Object3D, la: THREE.Object3D, h: THREE.Object3D) { return ua.getWorldPosition(this.irS).distanceTo(la.getWorldPosition(this.irK)) + this.irK.distanceTo(h.getWorldPosition(this.apT)); }
   /** pull a hand target back toward its shoulder until it is within ANAT.reach of the arm's length (no locked-out arm) */
   private irS = new THREE.Vector3(); private irK = new THREE.Vector3();
@@ -1765,6 +1787,9 @@ export class View {
     u.subVectors(K, H); f.subVectors(F, K);
     const a0 = Math.PI - u.angleTo(f), a1 = Math.acos(Math.max(-1, Math.min(1, (la * la + lb * lb - lt * lt) / (2 * la * lb))));
     this.rotWorld(lower, n, (a0 - a1) * w);
+    // a nearly straight clip arm has a poorly defined hinge: if that turn bent the elbow the wrong way, turn it back past
+    { lower.getWorldPosition(K); end.getWorldPosition(F); const a2 = Math.PI - u.subVectors(K, H).angleTo(f.subVectors(F, K));
+      if (Math.abs(a2 - a1) > Math.abs(a0 - a1) + 1e-3) this.rotWorld(lower, n, -2 * (a0 - a1) * w); }
     // 2. swing the arm so the hand points at the target
     end.getWorldPosition(F);
     u.subVectors(F, H); t.subVectors(T, H);
@@ -2512,14 +2537,12 @@ export class View {
         if (s.stun <= 0 && !s.air && !DBG.has('nolook')) this.microBlend(v, s, p, rdt);
         if (v.stick) v.stick.visible = s.stickless <= 0;
         if (s.stickless <= 0 && !DBG.has('noik')) this.stickIK(v, s, p, rdt);
-        if (s.stickless <= 0 && !DBG.has('nofloor')) this.stickFloor(v);
         if (!DBG.has('noanat') && !s.air && s.stun <= 0) this.headGaze(v);   // shots keep the clip's arms: they already hold the stick with the elbows down
         this.ragApply(v, s, dt);
-        this.rdtNow = rdt; if (s.stun > 0 || s.air) v.pop = undefined; this.popOn = !(s.stun > 0 || s.air);   // down or flying, the ragdoll owns the pose
-        if (!DBG.has('noik')) this.gripSolve(v);   // last: nothing after it moves the arms or the stick
+        if (!DBG.has('noik')) { this.stickHold(v, s); this.gripBottom(v); }   // last: nothing after them moves the arms or the stick
         this.spreadTwist(v);
         const ph = this.physFor(i) && (v.physOk ||= !!this.stickSpec(v));   // wait for the stick's grips before building its rig
-        if (!ph && this.gripStat) this.gripMeasure(v);
+        if (!ph && this.gripStat) this.gripMeasure(v, s);
         if (!ph && this.jointStat) this.jointMeasure(v);
         if (this.popStat) this.popMeasure(v, s, rdt);
         this.layerSave(v);
@@ -2572,7 +2595,7 @@ export class View {
       for (const id of P.rigs.keys()) {
         const v = this.skaters[id]; if (!v || !P.apply(id, live(id))) continue;
         this.spreadTwist(v);
-        if (id < g.skaters.length) { if (this.gripStat) this.gripMeasure(v); if (this.jointStat) this.jointMeasure(v); }
+        if (id < g.skaters.length) { if (this.gripStat) this.gripMeasure(v, g.skaters[id]); if (this.jointStat) this.jointMeasure(v); }
       }
       if (P.stat) P.stat.frames++;
     }

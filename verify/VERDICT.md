@@ -72,3 +72,10 @@ Numeric probe (extra check): stick_state_probe fails one rule, a crossover elbow
 - verify/pop_r1 (no physics): 4/7, strict 3. FAIL sprint (no stick, empty fists); borderline tight turn (top hand at the chin); can't judge backhand (glove beside the shaft?) and boards.
 - verify/phys_r2 (`?phys`): 4/7, strict 3. FAIL sprint (no stick), backhand (shaft into the torso, no glove), borderline tight turn (knob at the belly), borderline mid-shot (top glove past the knob).
 - No stretched or torn limbs seen. Spike numbers: verify/phys_spike_retry_60s.txt (still FAIL).
+
+## Standard stick setup (stick in the top glove), verify/hold_r1/low, fresh-context reviewer (2026-11-21)
+- 1_sprint FAIL: gloves bunched at the chest on a short stub, blade floating at hip height.
+- 3_tight_turn PASS (borderline): both hands on, blade on the ice; top glove high by the chin.
+- 5_backhand_carry FAIL: shaft flat at waist height through or behind the hips, one glove visible, blade off the ice.
+- 6_mid_shot FAIL: a second shaft by the thigh with no glove on it (may be the player behind), the other glove low at the hip.
+- 1 of 4 (strict 0). Numbers: tests/grip_check.mjs 60 s, 93-94 skater-frames over 1 cm (worst 32 cm), 22-25 capsule frames.

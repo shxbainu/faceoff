@@ -105,14 +105,21 @@
   pose before layering, and `layerSave` remembers what was left. Without it the turns stack on static frames (title,
   pre-game, hit stop, held wind-up) and the head, spine and arms spin (`?nolayerfix` shows the old bug).
 - Bone turns go through `rotWorld`, which is correct under the mirrored (left shot) model.
-- Stick hold (`stickIK`, `topGrip`, `hingeIK`): anchored on the clip's own top hand, which the clip puts somewhere
-  natural. The blade goes on the ice at its target (puck, lane, or the sim's resting stick, `STICK.rest`), the shaft
-  runs from it up through the top hand's palm, the bottom hand goes to its grip on that line, the stick turns in that
-  glove onto the target, and last (after `stickFloor`) the top hand grips the shaft where it passes, up to
-  `STICK_HOLD.slide` below the knob. Arms use `hingeIK`: the elbow bends only about the clip's own hinge axis (kept in
-  the upper arm's frame, sign-corrected under the left-shot mirror), the arm swings from the shoulder onto the target,
-  then rolls until the elbow points where the clip had it. Earlier versions (a free two-bone solve, a chosen knob
-  spot, a fixed elbow pole, a wrist wrap) each bent the top-hand elbow inward, swung it back or cranked the wrist.
+- Stick hold (2026-11-21, the standard setup; `stickIK` aims, `stickHold`, `gripBottom`): the stick is parented to
+  the top hand (moved there from the bottom glove, where it is modelled, on the first clip pose). Each frame: the clip's
+  stick (as if in the bottom glove) is turned onto the aim (blade on the target, shaft through the top hand's spot);
+  slid so the top grip is in the top arm's reach; cleared of the body capsules (`BODY_CAPS`: torso, thighs, helmet;
+  turned about the top grip, never pushed down off a thigh) and of the ice; if no bottom grip spot is in reach the
+  bottom collarbone drops (`ANAT.shrug`, as far as needed) and the stick turns about the top hand toward the bottom
+  shoulder. The top arm (`hingeIK`, palm onto the top grip, elbow pole down and back) carries it; the glove turns the
+  least from the clip's wrist to wrap the shaft; the stick's place in the glove is set from there. Last, after the
+  ragdoll, `gripBottom`: the grip slides along the shaft (`STICK_HOLD.botSlide`: 0.15 toward the blade, 0.05 up) to a
+  spot in reach and outside the torso and thighs, else the stick turns in the top glove; two-bone IK on the wrist,
+  the hand wrapping the shaft. Wrists are clamped within `ANAT.wristHold` (45 deg) of the clip's own wrist: the bind
+  pose's hands are flat, 60-95 deg off any grip, so a bind-pose limit cranked every holding hand. Reach shells
+  (`shellOf`) are deliberately short of the straight arm (top 0.9, bottom 0.93). `hingeIK` turns back an elbow bend
+  that went the wrong way (a nearly straight clip arm has a poorly defined hinge, and it folded the arm). Removed: the
+  pop absorber, the re-fit passes and the old two-hand grip solver (`gripSolve`).
   Proportions: the drawn stick is shortened to `STICK_HOLD.len` (0.9: to the chin) and the arms lengthened by
   `ANAT.arm` (1.12, joints moved, nothing scaled; `?noarmlen`); with the model's own (91% stick, short arms) both
   hands could not hold the stick below the chest with the blade on the ice.
@@ -127,14 +134,10 @@
   Without it a switching target (puck, lane, rest) or a flipping fit rule popped the stick and top hand in one frame.
   `node tests/arm_motion_probe.mjs [&noik]` reports top-hand sway, speed (p99 near the clip's own, about 9), how much
   it follows the shoulder, single-frame jumps and what moved on those frames.
-  Grip rig (`gripSolve`, runs last every frame, after the ragdoll): both hands always hold the stick. Two fixed grips
-  (bottom at `STICK_HOLD.bottom`, top `STICK_HOLD.slide` under the knob grip `gripT`); the stick pose so far gives
-  them; a grip out of reach (or closer than the elbow folds, `ANAT.elbowMax` 145 deg) or inside the torso moves the
-  stick, never the hand; each arm is solved onto the palm (`middle_01`) with the clip's hinge and an elbow pole down,
-  back and a little out (`ANAT.pole`), the hand turned to wrap the shaft, wrist clamped; the stick is seated in the
-  bottom glove and the top hand solved last onto the stick's own grip. The one-handed hold was removed (2026-11-20,
-  user: hands must always be on the stick). Hard check: `node tests/grip_check.mjs [60]` (every frame of a bot
-  match, each palm within 1 cm of its grip; prints the worst; exit 1 on any frame over).
+  Hard check: `node tests/grip_check.mjs [60]`: every frame of a bot match, each palm within 1 cm of its grip and no
+  frame on his feet with the shaft or a palm inside a body capsule; also prints the drawn blade's distance from its
+  target. Exit 1 on any fail. (2026-11-21: about 94 of 35k skater-frames over 1 cm, worst 32 cm; about 24 capsule
+  frames; blade p50 3-5 cm, p90 about 58 cm where the stick turns for the bottom hand.)
   `node tests/arm_strip.mjs out.png [query] [dist] [angle]` makes a strip.
   Verify poses with `node tests/arm_shots.mjs verify/roundN` (6 shots at the game camera) and a fresh subagent that
   sees only the images and the anatomy rules (verify/VERDICT.md); numeric probes are a secondary check.
@@ -153,8 +156,8 @@
 - Rapier contact hooks never fire in rapier3d-compat 0.21: filter with collision groups.
 - Retry after the pop fixes (2026-11-21) still failed (grip, joint gaps, error jumps, fast parts); `?bladecap=` tests the
   blade cap. Pops: `node tests/pop_probe.mjs [secs] [query]` (hands, blade and body jumps in the skater's frame).
-- Pop fixes for everyone (render.ts): gait posture eases (`GAIT.post`, `?nopost`); the grip rig fits the stick, takes any
-  jump out (`popAbsorb`, `POP`, inertialization, `?nopop`), keeps the blade off the ice (`floorM`) and fits again.
+- Pop fixes for everyone (render.ts): gait posture eases (`GAIT.post`, `?nopost`). The stick pop absorber was removed
+  with the old grip rig (2026-11-21, user); pops are back near their old level (`tests/pop_probe.mjs`).
 
 ## Skinning (render.ts smoothJoints, spreadTwist)
 - The outfit's skin weights were nearly hard at the joints (elbow: 918 of 1043 vertices on one bone), so bends folded

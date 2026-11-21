@@ -467,7 +467,7 @@ function perf() {
       const q = (a: number[], f: number) => +[...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(3), col = (k: number) => r.body.map(x => x[k]);
       return { frames: r.frames, p50: q(r.d, 0.5), p99: q(r.d, 0.99), p999: q(r.d, 0.999), max: q(r.d, 1), over6: r.d.filter(x => x > 0.06).length, over15: r.d.filter(x => x > 0.15).length,
         body: Object.fromEntries((['shoulder', 'pelvis', 'neck'] as const).map((n, k) => [n, [q(col(k), 0.5), q(col(k), 0.99), q(col(k), 1)]])), jumps: Object.entries(r.jumps).sort((x, y) => y[1] - x[1]).slice(0, 15) }; },
-    gripCheck: (on = true) => { if (on) view.gripStat = { worst: 0, frames: 0, over: 0, who: '' }; const r = view.gripStat; if (!on) view.gripStat = null; return r; }, puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
+    gripCheck: (on = true) => { if (on) view.gripStat = { worst: 0, frames: 0, over: 0, who: '', live: 0, clip: 0, clipWho: '', byCap: {} }; const r = view.gripStat; if (!on) view.gripStat = null; return r; }, puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
     knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
     freeze: (on: boolean) => { frozen = on; }, closeCam: (i: number, d = 6, a = 0) => { view.closeCam = i < 0 ? null : { i, d, a }; },
