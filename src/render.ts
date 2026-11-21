@@ -42,7 +42,7 @@ interface SkaterView {
   crunch?: { t: number; len: number; dx: number; dy: number; a: number };
   /** stick IK: arm bones, and how strongly the blade is being driven to its target (0..1, eased) */
   arms?: { ua_r: THREE.Object3D; la_r: THREE.Object3D; h_r: THREE.Object3D; ua_l: THREE.Object3D; la_l: THREE.Object3D; h_l: THREE.Object3D };
-  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
+  ikW?: number; oneW?: number; ikT?: THREE.Vector3; ikTo?: number[]; chestTw?: number; shM?: number[]; shO?: number[]; spotO?: THREE.Vector3; fitO?: THREE.Vector3; palmL?: THREE.Object3D; palmR?: THREE.Object3D; bindQ?: Record<string, THREE.Quaternion>; twB?: Record<string, THREE.Object3D | null>; swM?: THREE.Quaternion; swA?: number; swE?: number; palmClip?: THREE.Vector3; armClipT?: number; poleLag?: THREE.Vector3[]; gripErr?: number[]; neckB?: THREE.Object3D; pelB?: THREE.Object3D; armBase?: Record<string, THREE.Vector3>; clavR?: THREE.Object3D | null; botT?: THREE.Vector3; headB?: THREE.Object3D; sp1?: THREE.Object3D;
   /** each arm's elbow as the clip bends it (left, right): pole direction (world) and the bend's normal in the upper
    *  arm's parent space, so the IK keeps the elbow hinging the way the clip (a real elbow) does */
   armClip?: { pole: THREE.Vector3; n: THREE.Vector3 }[];
@@ -574,6 +574,39 @@ export class View {
     g.setAttribute('ghand', new THREE.BufferAttribute(hand, 1));
   }
 
+  /** The outfit's skin weights switch from one bone to the next within a ring or two at the shoulder, elbow, hip and
+   *  knee (at the elbow 918 of 1043 vertices sat fully on one bone), so linear blend skinning folds the sleeve into a
+   *  sharp corner when the joint bends. Blend them across each joint instead: a few rounds of averaging with the
+   *  neighbouring vertices (welded across UV seams), only on vertices weighted to an arm or leg bone and never on the
+   *  gloves or skates (they stay rigid). Once per geometry, before anything reads the weights. ?nosmooth: as built. */
+  private static smoothJoints(m: THREE.SkinnedMesh, rounds = 4) {
+    const g = m.geometry; if (g.userData.smoothed || DBG.has('nosmooth') || !g.index) return; g.userData.smoothed = true;
+    const pos = g.getAttribute('position'), si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight'), n = pos.count, ix = g.index.array;
+    const names = m.skeleton.bones.map(b => b.name), limb = names.map(nm => /^(clavicle|upperarm|lowerarm|thigh|calf)/.test(nm)), rigid = names.map(nm => /^(hand|index|middle|ring|pinky|thumb|foot|ball|Head)/.test(nm));
+    // weld: split copies of one point (UV seams) share one weight set
+    const key = new Map<string, number>(), id = new Int32Array(n);
+    for (let i = 0; i < n; i++) { const k = `${pos.getX(i).toFixed(4)},${pos.getY(i).toFixed(4)},${pos.getZ(i).toFixed(4)}`; id[i] = key.get(k) ?? key.set(k, i).get(k)!; }
+    const nb = new Map<number, Set<number>>(), link = (a: number, b: number) => { if (a !== b) ((nb.get(a) ?? nb.set(a, new Set()).get(a)!)).add(b); };
+    for (let t = 0; t < ix.length; t += 3) { const a = id[ix[t]], b = id[ix[t + 1]], c = id[ix[t + 2]]; link(a, b); link(b, a); link(b, c); link(c, b); link(a, c); link(c, a); }
+    let w = new Map<number, Map<number, number>>();
+    for (let i = 0; i < n; i++) if (id[i] === i) { const o = new Map<number, number>(); for (let c = 0; c < 4; c++) { const x = sw.getComponent(i, c); if (x > 0) o.set(si.getComponent(i, c), (o.get(si.getComponent(i, c)) ?? 0) + x); } w.set(i, o); }
+    const free = [...w.keys()].filter(i => { const o = w.get(i)!; return [...o.keys()].some(b => limb[b]) && ![...o.keys()].some(b => rigid[b]); });
+    for (let r = 0; r < rounds; r++) {
+      const next = new Map(w);
+      for (const i of free) {
+        const o = new Map<number, number>(), ns = nb.get(i); if (!ns) continue;
+        for (const [b, x] of w.get(i)!) o.set(b, x * 0.5);
+        for (const j of ns) for (const [b, x] of w.get(j)!) o.set(b, (o.get(b) ?? 0) + x * 0.5 / ns.size);
+        next.set(i, o);
+      }
+      w = next;
+    }
+    for (let i = 0; i < n; i++) {
+      const top = [...w.get(id[i])!].sort((a, b) => b[1] - a[1]).slice(0, 4), sum = top.reduce((a, [, x]) => a + x, 0) || 1;
+      for (let c = 0; c < 4; c++) { si.setComponent(i, c, top[c]?.[0] ?? 0); sw.setComponent(i, c, (top[c]?.[1] ?? 0) / sum); }
+    }
+    si.needsUpdate = sw.needsUpdate = true;
+  }
   /** Per-vertex outline-shell thickness (0..1), stored as the 'outlineW' attribute. The inflated shell pokes
    *  through the body where two parts fold against each other, so it shrinks to near zero there:
    *  - skinned meshes: vertices shared between a tight pair of bones (torso/upper arm = shoulder and armpit,
@@ -680,7 +713,7 @@ export class View {
         const m = o as THREE.Mesh;
         if (!m.isMesh) return;
         const name = (m.material as THREE.Material).name || '';
-        if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) { m.material = outfitMats[team]; v.outfit = m as THREE.SkinnedMesh; View.goalieBulk(m as THREE.SkinnedMesh); }
+        if ((m as THREE.SkinnedMesh).isSkinnedMesh && (m.material as THREE.MeshStandardMaterial).map) { m.material = outfitMats[team]; v.outfit = m as THREE.SkinnedMesh; View.smoothJoints(m as THREE.SkinnedMesh); View.goalieBulk(m as THREE.SkinnedMesh); }
         else if (name.startsWith('helmet')) m.material = this.helmetMat[team];
         else if (name === 'gear_body') m.material = this.gearBodyMat[team];   // goalie gear: white takes the team colour
         else if (name === 'gear_trim') m.material = this.gearTrimMat[team];   // and red the trim, like the helmets
@@ -1197,6 +1230,46 @@ export class View {
     const e = Math.max(pB.distanceTo(B), pT.distanceTo(K));
     S.frames++; if (e > 0.01) S.over++;
     if (e > S.worst) { S.worst = e; S.who = `skater ${this.skaters.indexOf(v)} bottom ${pB.distanceTo(B).toFixed(4)} top ${pT.distanceTo(K).toFixed(4)} clip ${v.anim?.cur} gait ${v.gait?.mode}`; }
+  }
+  /** each bone's local rotation in the bind pose (from the skin's inverse bind matrices), read once per skater */
+  private bindOf(v: SkaterView) {
+    const sk = v.outfit?.skeleton; if (!sk) return null;
+    return (v.bindQ ??= (() => { const out: Record<string, THREE.Quaternion> = {}, inv = (i: number) => sk.boneInverses[i].clone().invert();
+      sk.bones.forEach((b, i) => { const pi = sk.bones.indexOf(b.parent as THREE.Bone); if (pi < 0) return; const qq = new THREE.Quaternion(); sk.boneInverses[pi].clone().multiply(inv(i)).decompose(new THREE.Vector3(), qq, new THREE.Vector3()); out[b.name] = qq; }); return out; })());
+  }
+  /** A hand's roll about the forearm, spread along it: the three forearm twist bones (skinned, never animated) take a
+   *  quarter, half and three quarters of it, so the sleeve turns gradually instead of wringing at the cuff. Absolute
+   *  each frame (bind pose plus its share), so nothing stacks on frames the mixer leaves alone. ?notwist: off. */
+  private twQ = new THREE.Quaternion(); private twA = new THREE.Vector3(0, 1, 0);
+  private spreadTwist(v: SkaterView) {
+    const bind = this.bindOf(v); if (!bind || DBG.has('notwist')) return;
+    for (const sd of ['_l', '_r']) {
+      const h = (v.twB ??= {})['hand' + sd] ??= v.body.getObjectByName('hand' + sd) ?? null; if (!h || !bind['hand' + sd]) continue;
+      const q = this.twQ.copy(bind['hand' + sd]).invert().multiply(h.quaternion), ang = 2 * Math.atan2(q.y, q.w);   // roll about the bone (+y)
+      const a = Math.atan2(Math.sin(ang), Math.cos(ang));
+      for (const [k, f] of [[1, 0.25], [2, 0.5], [3, 0.75]] as const) {
+        const nm = `lowerarm_twist_0${k}${sd}`, b = v.twB[nm] ??= v.body.getObjectByName(nm) ?? null; if (!b || !bind[nm]) continue;
+        b.quaternion.copy(bind[nm]).multiply(this.twQ.setFromAxisAngle(this.twA, a * f));
+      }
+    }
+  }
+  /** test hook: each limb joint's turn off its bind pose, after every layer: swing (bend) and twist about the bone,
+   *  deg. Linear blend skinning pinches a joint twisted or bent past what its weights can blend. */
+  jointStat: Record<string, number[]> | null = null;
+  private jointMeasure(v: SkaterView) {
+    if (!v.outfit?.skeleton) return;
+    const bind = this.bindOf(v)!;
+    const S = this.jointStat!, q = new THREE.Quaternion(), tw = new THREE.Quaternion(), ax = new THREE.Vector3();
+    for (const [key, bone, child] of [['shoulder', 'upperarm', 'lowerarm'], ['elbow', 'lowerarm', 'hand'], ['wrist', 'hand', 'middle_01'], ['knee', 'calf', 'foot'], ['hip', 'thigh', 'calf']] as const) for (const sd of ['_l', '_r']) {
+      const b = v.body.getObjectByName(bone + sd), c = v.body.getObjectByName(child + sd); if (!b || !c || !bind[bone + sd]) continue;
+      q.copy(bind[bone + sd]).invert().multiply(b.quaternion); ax.copy(c.position).normalize();
+      const pr = ax.x * q.x + ax.y * q.y + ax.z * q.z; tw.set(ax.x * pr, ax.y * pr, ax.z * pr, q.w).normalize();
+      const twist = 2 * Math.acos(Math.min(1, Math.abs(tw.w))) * 180 / Math.PI, swing = ax.clone().applyQuaternion(q).angleTo(ax) * 180 / Math.PI;
+      (S[key + sd + ' swing'] ??= []).push(swing); (S[key + sd + ' twist'] ??= []).push(twist);
+      const ctx = `${v.anim?.cur}/${v.gait?.mode}/stick ${v.stick?.visible ? 1 : 0}/rag ${(v as { rag?: unknown }).rag ? 1 : 0}`;
+      if (swing > 150) { const c = (S['ctx ' + key + sd + ' swing>150'] ??= []) as unknown as string[]; c.push(ctx); }
+      if (twist > 120) { const c = (S['ctx ' + key + sd + ' twist>120'] ??= []) as unknown as string[]; c.push(ctx); }
+    }
   }
   private ikF = new THREE.Vector3(); private ikC = new THREE.Vector3(); private ikD = new THREE.Vector3(); private ikE = new THREE.Vector3(); private ikG = new THREE.Vector3();
 
@@ -2341,7 +2414,9 @@ export class View {
         if (!DBG.has('noanat') && !s.air && s.stun <= 0) this.headGaze(v);   // shots keep the clip's arms: they already hold the stick with the elbows down
         this.ragApply(v, s, dt);
         if (!DBG.has('noik')) this.gripSolve(v);   // last: nothing after it moves the arms or the stick
+        this.spreadTwist(v);
         if (this.gripStat) this.gripMeasure(v);
+        if (this.jointStat) this.jointMeasure(v);
         this.layerSave(v);
         this.crunch(v, rdt);
         if (DBG.has('bladedbg')) {   // ?bladedbg: red marker where the code thinks the blade is

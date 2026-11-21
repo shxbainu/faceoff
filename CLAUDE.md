@@ -147,6 +147,14 @@
   below the ice, carried puck on the blade, stickhandling sweep).
 
 
+## Skinning (render.ts smoothJoints, spreadTwist)
+- The outfit's skin weights were nearly hard at the joints (elbow: 918 of 1043 vertices on one bone), so bends folded
+  into sharp corners. `smoothJoints` averages weights with neighbouring vertices (welded across UV seams) for 4 rounds
+  at load, on arm and leg vertices only, never gloves, skates or head (`?nosmooth`). `spreadTwist` gives the three
+  forearm twist bones a quarter, half and three quarters of the hand's roll each frame (`?notwist`).
+- `node tests/joint_probe.mjs [secs] [&noik]`: each limb joint's swing and twist off the bind pose (p50..max), and the
+  clip/mode of frames past 150 deg bend or 120 deg twist. `node tests/pinch_shots.mjs dir [query] [mode]`: close-ups.
+
 ## Skating gait (render.ts: gaitStep, gaitFoot, gaitLegs; GAIT config)
 - Legs are procedural, over the clips: each skate gets a target from a stride phase that advances with distance
   skated (`GAIT.cycle` per cycle, shorter when digging hard, cadence clamped by `minHz`/`maxHz`), then two-bone IK

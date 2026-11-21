@@ -1,5 +1,6 @@
 // Six fixed-camera close-ups of skaters' arms, stick and head at the game camera's angle (CAM_EL), for review by
-// eye: sprinting, gliding, tight turn (crossovers), backward skating, carrying the puck on the backhand, mid-shot.
+// eye: sprinting, tight turn (crossovers), backward skating, carrying the puck on the backhand, mid-shot, a stretched
+// reach (blade far out in front), and the playtest screenshot's pose (skating away up the boards beside another player).
 // Left- and right-shot skaters are mixed. The match is frozen on the frame that matched, then shot.
 // Usage: node tests/arm_shots.mjs [outdir=verify] [extra query, e.g. &noik]
 import { chromium } from 'playwright';
@@ -16,7 +17,7 @@ await page.waitForFunction(() => window.__faceoff); await page.evaluate(() => wi
 for (let i = 0; i < 30; i++) { const s = await page.evaluate(() => window.__faceoff.snap()); if (s.mode === 'match' && s.phase === 'play') break; await page.keyboard.press('Enter'); await page.keyboard.press('KeyJ'); await page.waitForTimeout(250); }
 await page.addStyleTag({ content: 'body > *:not(canvas) { display: none !important; }' });   // no HUD in the shots
 // [name, preferred hand (1 right, -1 left), test]
-const shots = [['1_sprint', 1], ['2_glide', -1], ['3_tight_turn', 1], ['4_backward', -1], ['5_backhand_carry', 1], ['6_mid_shot', -1]];
+const shots = [['1_sprint', 1], ['2_reach', -1], ['3_tight_turn', 1], ['4_backward', -1], ['5_backhand_carry', 1], ['6_mid_shot', -1], ['7_screenshot', -1]];
 const got = [];
 for (const [name, hand] of shots) {
   let hit = null;
@@ -27,10 +28,11 @@ for (const [name, hand] of shots) {
       for (let i = 0; i < k.length; i++) {
         const c = k[i], sp = Math.hypot(c.vx, c.vy), m = g[i]?.mode, clip = a[i]?.clip;
         if (c.stun > 0 || (!late && c.hand !== hand)) continue;
-        if (!late && name !== '1_sprint' && Math.cos(c.face) > -0.2) continue;
-        if (!late && k.some((o, j) => j !== i && Math.hypot(o.x - c.x, o.y - c.y) < 2.5)) continue;   // nobody close enough to block the view   // facing the camera (arms in view), except the sprint, shot from behind as in play
+        if (!late && !['1_sprint', '7_screenshot'].includes(name) && Math.cos(c.face) > -0.2) continue;
+        if (!late && name !== '7_screenshot' && k.some((o, j) => j !== i && Math.hypot(o.x - c.x, o.y - c.y) < 2.5)) continue;   // nobody close enough to block the view   // facing the camera (arms in view), except the sprint, shot from behind as in play
         const ok = name === '1_sprint' ? m === 'stride' && sp > 7.5 && own !== i
-          : name === '2_glide' ? m === 'glide' && sp > 3 && own !== i
+          : name === '2_reach' ? (f.stickPose(i)?.fwd ?? 0) > (late ? 1.3 : 1.5) && m !== 'off'
+          : name === '7_screenshot' ? m === 'stride' && sp > 5 && Math.cos(c.face) > 0.3 && k.some((o, j) => j !== i && o.team !== c.team && Math.hypot(o.x - c.x, o.y - c.y) < 1.8)
           : name === '3_tight_turn' ? m === 'cross'
           : name === '4_backward' ? m === 'back' && sp > 2
           : name === '5_backhand_carry' ? own === i && c.bh > 0.7

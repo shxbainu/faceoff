@@ -459,6 +459,7 @@ function perf() {
     anims: () => view.animStates(),
     gait: () => view.gaitState(), feet: (i: number) => view.feet(i), rag: () => view.ragState(),
     stickPose: (i: number) => view.stickPose(i),
+    jointCheck: (on = true) => { if (on) { view.jointStat = {}; return null; } const r = view.jointStat!; view.jointStat = null; const o: Record<string, string> = {}; for (const [k, a] of Object.entries(r)) { if (k.startsWith('ctx')) { const c: Record<string, number> = {}; for (const x of a as unknown as string[]) c[x] = (c[x] ?? 0) + 1; o[k] = JSON.stringify(c); continue; } a.sort((x, y) => x - y); const p = (f: number) => a[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(0); o[k] = `p50 ${p(0.5)} p95 ${p(0.95)} p99 ${p(0.99)} max ${p(1)}`; } return o; },
     gripCheck: (on = true) => { if (on) view.gripStat = { worst: 0, frames: 0, over: 0, who: '' }; const r = view.gripStat; if (!on) view.gripStat = null; return r; }, puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
     knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),
