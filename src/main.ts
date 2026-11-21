@@ -463,6 +463,10 @@ function perf() {
     physCheck: (on = true) => { const P = view.phys; if (!P) return null; if (on) { P.stats(true); return P.rigs.size; } const r = P.stats()!; P.stat = null;
       const q = (a: number[], f: number) => { if (!a.length) return NaN; const b = [...a].sort((x, y) => x - y); return +b[Math.min(b.length - 1, Math.floor(f * b.length))].toFixed(3); };
       return { rigs: P.rigs.size, frames: r.frames, ms: { mean: +(r.ms.reduce((x, y) => x + y, 0) / r.ms.length).toFixed(3), p95: q(r.ms, 0.95), max: q(r.ms, 1) }, angDeg: { p50: q(r.ang, 0.5), p95: q(r.ang, 0.95), max: q(r.ang, 1) }, posM: { p95: q(r.pos, 0.95), max: q(r.pos, 1) }, bladeM: { p99: q(r.blade, 0.99), max: q(r.blade, 1) }, bad: r.bad, tgrip: { p50: q((r as any).tgrip ?? [], 0.5), p95: q((r as any).tgrip ?? [], 0.95), max: q((r as any).tgrip ?? [], 1) }, tgap: r.tgap, gapM: +r.gap.toFixed(4), jumps: r.jumps, fast: r.fast, nan: r.nan }; },
+    popCheck: (on = true) => { if (on) { view.popStat = { frames: 0, d: [], body: [], jumps: {} }; return null; } const r = view.popStat!; view.popStat = null;
+      const q = (a: number[], f: number) => +[...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(3), col = (k: number) => r.body.map(x => x[k]);
+      return { frames: r.frames, p50: q(r.d, 0.5), p99: q(r.d, 0.99), p999: q(r.d, 0.999), max: q(r.d, 1), over6: r.d.filter(x => x > 0.06).length, over15: r.d.filter(x => x > 0.15).length,
+        body: Object.fromEntries((['shoulder', 'pelvis', 'neck'] as const).map((n, k) => [n, [q(col(k), 0.5), q(col(k), 0.99), q(col(k), 1)]])), jumps: Object.entries(r.jumps).sort((x, y) => y[1] - x[1]).slice(0, 15) }; },
     gripCheck: (on = true) => { if (on) view.gripStat = { worst: 0, frames: 0, over: 0, who: '' }; const r = view.gripStat; if (!on) view.gripStat = null; return r; }, puckOwner: () => { const o = game.pucks[0].owner; return o ? game.skaters.indexOf(o) : -1; },
     knock: (i: number, imp = 15, dx = 1, dy = 0) => game.debugKnock(game.skaters[i], dx, dy, imp),
     cam: () => view.camState(),

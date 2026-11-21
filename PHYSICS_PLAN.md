@@ -245,3 +245,42 @@ Next options, for the user to pick: (a) fix the source pops first (hands and sti
 crossovers and stops are visible without physics too), then retry; (b) hands and stick kinematic, physics on the body
 and arms only, with the grip rig run after the write-back; (c) Rapier multibody joints (reduced coordinates, can't
 drift apart) with motors instead of the velocity drive.
+
+### Retry after fixing the source pops (2026-11-21): still FAIL, not rolled out
+
+The user picked (a). Pops measured first without physics (`node tests/pop_probe.mjs [secs]`: palms, blade, shoulders,
+pelvis and neck in the skater's own frame, frame to frame), each pass isolated by stage, then fixed where they start:
+
+- Gait posture (render.ts `gaitLegs`, `GAIT.post`): hip height, torso lean and side lean were set outright from the
+  mode and speed, so every change of mode (stride, glide, stop, pivot, cross) and every speed burst snapped the chest
+  10-20 cm in one frame. Now eased (7/s). `?nopost` restores the old.
+- Grip rig (`gripFit`, `popAbsorb`, `floorM`): the grip fit moved the blade a median 32 cm (up to 1.3 m) off the
+  stick IK's and flipped between solutions. Now: fit, take any jump out with a pop absorber (inertialization: the stick
+  follows exactly, but a change of speed past `POP.acc` / `POP.alpha` goes into an offset that decays like a critically
+  damped spring, half-life 60 ms, capped in speed), keep the blade off the ice, fit again from the smoothed pose. The fit
+  also slides the stick so the top grip stays in reach (it used to only turn about the bottom grip, which could leave
+  the top grip out of reach). `?nopop` turns the absorber off.
+
+Without physics (40 s bot match, 23.7k skater-frames; before -> after): hand or blade jump p99 63 -> 42 cm, p99.9 2.06
+-> 1.30 m, frames over 15 cm 12.3% -> 8.6%; neck p99 20 -> 9 cm, shoulders 21 -> 11 cm. Blades below the ice 5.6% ->
+3.0%; carried puck to drawn blade p90 1.89 m -> 1 cm (`tests/stick_probe.mjs`). Grip check 60 s: 0 frames over 1 cm
+in 4 of 4 runs (the slide rule is off while a skater is down: in falls it left the top grip out of reach). Sim fingerprint unchanged.
+
+Spike, same table, 60 s (verify/phys_spike_retry_60s.txt):
+
+| Check | First spike | Retry |
+|---|---|---|
+| Cost per frame | 1.23 ms | 1.17 ms (pass) |
+| Palm to grip over 1 cm | 1802 of 35458, worst 2.46 m | 667-1144 of ~35k (two runs), worst 1.6-2.0 m (FAIL) |
+| Bone angle p95 / pelvis and palms p95 | 2.2 deg / 2.4 cm | 0.5 deg / 0.2 cm (pass) |
+| Joint gaps | 2.46 m | 1.98-2.14 m (FAIL) |
+| Error jumps / fast parts | 2990 / 983 | 1502-1752 / 458-553 (FAIL) |
+| Target pose's own grip error | up to 8.6 cm | 0 (the layers now hand physics a consistent pose) |
+
+Without the blade cap (`?bladecap=9`, a diagnostic): grip misses 331, worst 48 cm, so the cap's teleport of a jointed
+body is part of what tears the gloves off, but not all of it. Remaining hand and blade jumps (8.6% of frames over 15 cm)
+are mostly in steady stride and crossovers and were not traced further.
+
+Blind review (fresh subagent, images and rules only): without physics verify/pop_r1 4/7 (strict 3), with physics
+verify/phys_r2 4/7 (strict 3), first spike 3/7. Both sprints show no stick at the game camera; physics backhand has the
+shaft into the torso.

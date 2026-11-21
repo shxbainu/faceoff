@@ -151,6 +151,10 @@
 - Display-only Rapier 3D bodies driven toward the layered pose; results and why it failed in PHYSICS_PLAN.md (step 4,
   revised). `node tests/phys_spike.mjs [secs]` checks it against the pass/fail table there. Not rolled out.
 - Rapier contact hooks never fire in rapier3d-compat 0.21: filter with collision groups.
+- Retry after the pop fixes (2026-11-21) still failed (grip, joint gaps, error jumps, fast parts); `?bladecap=` tests the
+  blade cap. Pops: `node tests/pop_probe.mjs [secs] [query]` (hands, blade and body jumps in the skater's frame).
+- Pop fixes for everyone (render.ts): gait posture eases (`GAIT.post`, `?nopost`); the grip rig fits the stick, takes any
+  jump out (`popAbsorb`, `POP`, inertialization, `?nopop`), keeps the blade off the ice (`floorM`) and fits again.
 
 ## Skinning (render.ts smoothJoints, spreadTwist)
 - The outfit's skin weights were nearly hard at the joints (elbow: 918 of 1043 vertices on one bone), so bends folded

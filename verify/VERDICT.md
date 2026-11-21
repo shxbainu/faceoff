@@ -67,3 +67,8 @@ Numeric probe (extra check): stick_state_probe fails one rule, a crossover elbow
 - 6_mid_shot CAN'T JUDGE (hands bunched, elbows hidden).
 - 7_screenshot CAN'T JUDGE (arms hidden); specks at the yellow player's collar.
 - 3 of 7 (strict 2). Spike numbers: verify/phys_spike_60s.txt.
+
+## Pop fixes and spike retry (2026-11-21), fresh-context reviewer, images and rules only
+- verify/pop_r1 (no physics): 4/7, strict 3. FAIL sprint (no stick, empty fists); borderline tight turn (top hand at the chin); can't judge backhand (glove beside the shaft?) and boards.
+- verify/phys_r2 (`?phys`): 4/7, strict 3. FAIL sprint (no stick), backhand (shaft into the torso, no glove), borderline tight turn (knob at the belly), borderline mid-shot (top glove past the knob).
+- No stretched or torn limbs seen. Spike numbers: verify/phys_spike_retry_60s.txt (still FAIL).
