@@ -20,6 +20,7 @@ const r = await page.evaluate(() => window.__faceoff.gripCheck(false));
 console.log(`frames x skaters ${r.frames}  over 1 cm ${r.over}  worst ${(r.worst * 100).toFixed(3)} cm  (${r.who})`);
 console.log(`on their feet ${r.live}  shaft or a palm inside a body capsule: ${r.clip} frames ${JSON.stringify(r.byCap)}  first: ${r.clipWho}`);
 if (r.blade?.length) { const b = r.blade.sort((x, y) => x - y), q = f => (b[Math.floor(f * (b.length - 1))] * 100).toFixed(1); console.log(`drawn blade to its target (aimed frames): p50 ${q(0.5)} p90 ${q(0.9)} p99 ${q(0.99)} cm`); }
+if (r.chest?.length) { const q = (k, f) => { const a = r.chest.map(x => x[k]).sort((x, y) => x - y); return a[Math.floor(f * (a.length - 1))].toFixed(2); }; console.log(`chest: knob from the spine line p5 ${q(0, 0.05)} p50 ${q(0, 0.5)}; top forearm from it p5 ${q(1, 0.05)} p50 ${q(1, 0.5)} (torso capsule ${0.26}); top wrist off the clip's: roll p50 ${q(2, 0.5)} p95 ${q(2, 0.95)} deg, bend p50 ${q(3, 0.5)} p95 ${q(3, 0.95)} deg; forearm inside 0.30: ${(r.chest.filter(x => x[1] < 0.3).length / r.chest.length * 100).toFixed(1)}%; top palm toward its own side p5 ${q(4, 0.05)} p50 ${q(4, 0.5)}, across the midline ${(r.chest.filter(x => x[4] < 0).length / r.chest.length * 100).toFixed(1)}%`); }
 console.log('errors', errs.length, errs.slice(0, 2));
 await browser.close(); try { process.kill(-server.pid); } catch { /* gone */ }
 const ok = r.frames > 1000 && r.over === 0 && r.clip === 0 && errs.length === 0;

@@ -85,3 +85,11 @@ Numeric probe (extra check): stick_state_probe fails one rule, a crossover elbow
 - 3_tight_turn PASS. 5_backhand_carry PASS (borderline: top glove and knob tight to the chest). 6_mid_shot PASS
   (borderline: knob past the top hand toward the hip, top forearm across the belly).
 - 3 of 4 (strict 1), was 1 of 4 (strict 0). Nothing broken-looking.
+
+## Chest clearance attempt (verify/hold_r3/low), strict fresh-context reviewer told to fail the flagged defect (2026-11-21)
+- 0 of 5. 2_reach FAIL: the flagged defect (top arm flat across the belly, fist turned in at the chest).
+  3_tight_turn FAIL (borderline: top glove above the knob at shoulder height). 4_backward FAIL (bottom hand open, not
+  gripping). 1_sprint and 5_backhand CAN'T JUDGE (from behind / spray).
+- Numbers (grip_check 60 s): top hand across the body's midline 19% -> 3%; top forearm within 0.30 of the spine line
+  59% (unchanged after the forward push was removed: it fought the reach rules and doubled the pops); pops 9% of frames
+  over 15 cm; 343 frames over 1 cm, worst 4.5 cm; 14 capsule frames.

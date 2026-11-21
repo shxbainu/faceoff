@@ -109,7 +109,7 @@ export const GAIT = {
  *  where the bottom hand holds it (share from the blade; about shoulder width below the knob); botSlide: how far that grip
  *  may slide toward the blade and toward the knob to stay in the arm's reach; inRate: how fast (share of the way to the
  *  bottom shoulder per second) the top hand comes in or goes back out so the bottom hand can reach. */
-export const STICK_HOLD = { slide: 0.03, len: 0.9, keep: 0.15, bottom: 0.72, botSlide: [0.15, 0.05], inRate: 0.8 };
+export const STICK_HOLD = { slide: 0.03, len: 0.9, keep: 0.15, bottom: 0.72, botSlide: [0.15, 0.1], inRate: 0.8 };
 /** Body capsules the stick and the hands keep out of (world units; off the outfit mesh: torso 0.22-0.30 from the spine
  *  line, thigh 0.13-0.16, helmet 0.19-0.31 from the head bone). head runs from the head bone `headUp` up; shaft: the
  *  stick's radius; palm: a glove's */
@@ -1243,8 +1243,11 @@ export class View {
       // If the bottom hand then has no grip in reach, the top hand comes in toward the bottom shoulder, a step at a time
       b0.copy(g.blade).applyMatrix4(S0); t0.copy(g.top).applyMatrix4(S0); K.copy(g.blade).lerp(g.top, tTop).applyMatrix4(S0);
       const Lk = b0.distanceTo(K), ax0 = t0.sub(b0).normalize().clone(), b00 = b0.clone(), Kt = new THREE.Vector3(), B = new THREE.Vector3(), u = new THREE.Vector3();
+      const tcap = caps[0], spineL = new THREE.Line3(tcap.a, tcap.b), spineAt = (p: THREE.Vector3) => spineL.closestPointToPoint(p, true, new THREE.Vector3());
+      const sideT = A.ua_l.getWorldPosition(new THREE.Vector3()).sub(A.ua_r.getWorldPosition(new THREE.Vector3())).setY(0).normalize();   // toward the top hand's own shoulder
       const place = (f: number) => {
-        Kt.copy(v.palmClip!).lerp(shB.S, f); Kt.y = Math.min(Kt.y, BLADE_ICE + Lk * 0.95);
+        Kt.copy(v.palmClip!).lerp(shB.S, f); Kt.y = Math.min(v.palmClip!.y, BLADE_ICE + Lk * 0.95);   // in across the body, at the spot's height (toward the shoulder itself it rose to the chest)
+        { const lat = Kt.clone().sub(spineAt(Kt)).dot(sideT); if (lat < 0.05) Kt.addScaledVector(sideT, 0.05 - lat); }   // never past the midline: a top hand across the body wrung the forearm round
         const hy = Kt.y - BLADE_ICE, hd = Math.sqrt(Math.max(0, Lk * Lk - hy * hy)); u.copy(aim.T).sub(Kt).setY(0); const dT = u.length();
         if (dT <= hd || dT < 1e-4) B.copy(aim.T).setY(BLADE_ICE); else B.copy(Kt).addScaledVector(u.divideScalar(dT), hd).setY(BLADE_ICE);
         const q = this.hsQ[0].setFromUnitVectors(ax0, d.subVectors(Kt, B).normalize()); q.slerpQuaternions(this.hsQ[1].identity(), q.clone(), aim.w);
@@ -1362,7 +1365,7 @@ export class View {
   }
   /** hard check (tests/grip_check.mjs), from the final bones and stick of each frame: each palm to its grip (the bottom
    *  one where gripBottom put it), and frames on their feet with the shaft (heel to knob) or a palm inside a body capsule */
-  gripStat: { worst: number; frames: number; over: number; who: string; live: number; clip: number; clipWho: string; byCap: Record<string, number>; blade?: number[] } | null = null;
+  gripStat: { worst: number; frames: number; over: number; who: string; live: number; clip: number; clipWho: string; byCap: Record<string, number>; blade?: number[]; chest?: number[][] } | null = null;
   private gripMeasure(v: SkaterView, s: Skater) {
     const st = v.stick, g = this.stickGeo, S = this.gripStat!;
     if (!st || !g || !v.arms || !st.visible || g.gripT <= 0 || !v.botT || !v.palmL || !v.palmR || !v.stickL) return;
@@ -1379,6 +1382,14 @@ export class View {
       if (segClosest(b0, t0, c.a, c.b, c1, c2) < c.r + BODY_CAPS.shaft - 0.005) hits.push('shaft-' + c.n);
       for (const [nm, P] of [['top', pT], ['bottom', pB]] as const) if (new THREE.Line3(c.a, c.b).closestPointToPoint(P, true, c1).distanceTo(P) < c.r - 0.005) hits.push(nm + '-' + c.n);
     }
+    { const tc = this.capsOf(v)[0], L3 = new THREE.Line3(tc.a, tc.b), E = v.arms.la_l.getWorldPosition(new THREE.Vector3()), Wr = v.arms.h_l.getWorldPosition(new THREE.Vector3());
+      const knob = L3.closestPointToPoint(t0, true, c1).distanceTo(t0), fore = segClosest(E, Wr, tc.a, tc.b, c1, c2);
+      const cq = v.clipQ?.[0], hq = v.arms.h_l.quaternion; let tw = 0, sw = 0;
+      if (cq) { const r = cq.clone().invert().multiply(hq); tw = 2 * Math.atan2(Math.abs(r.y), Math.abs(r.w)); sw = r.angleTo(new THREE.Quaternion(0, r.y, 0, r.w).normalize()); }
+      // top palm's side offset from the spine line toward its own shoulder (negative: across the body's midline)
+      const sideAx = v.arms.ua_l.getWorldPosition(new THREE.Vector3()).sub(v.arms.ua_r.getWorldPosition(new THREE.Vector3())).setY(0).normalize(), pt = v.palmL!.getWorldPosition(new THREE.Vector3());
+      const across = pt.clone().sub(L3.closestPointToPoint(pt, true, new THREE.Vector3())).dot(sideAx);
+      (S.chest ??= []).push([knob, fore, tw * 57.3, sw * 57.3, across]); }
     if (hits.length) { S.clip++; for (const h of hits) S.byCap[h] = (S.byCap[h] ?? 0) + 1; if (!S.clipWho) S.clipWho = `skater ${this.skaters.indexOf(v)} ${hits.join(',')} clip ${v.anim?.cur} gait ${v.gait?.mode}`; }
   }
 
